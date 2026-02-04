@@ -41,3 +41,12 @@ Before committing, ensure these run without error:
 2. `python manage.py check`
 3. `python manage.py test`
 4. If models changed: ensure migrations are created and committed (`python manage.py makemigrations` and `python manage.py migrate`).
+
+## 6. Environment & Testing Assumptions
+- **Local Dev:** Uses a `.env` file (never commit).
+- **Template:** Maintain a `.env.example` (or `.env.template`) in the repo with **safe dummy values** and **no secrets**.
+- **Resilience:** `settings.py` must not crash on missing env vars during `python manage.py check` or `python manage.py test`.
+  - Use safe fallbacks for dev/test (e.g. `os.getenv("KEY", "dev-only-dummy")`).
+  - If a variable is truly required for production, document it in `docs/deploy.md`.
+- **Safety:** Defaults must be clearly marked as **dev/test only** and must not silently enable insecure production behaviour.
+
