@@ -14,9 +14,16 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+"""
+URL configuration for core project.
+"""
 from django.contrib import admin
-from django.urls import path
+# WICHTIG: Hier muss 'include' mit importiert werden!
+from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # Das hier hat gefehlt: Leite alles, was auf der Hauptseite ('') landet,
+    # an die webapp weiter.
+    path('', include('webapp.urls')),
 ]

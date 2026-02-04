@@ -1,0 +1,47 @@
+{% extends "webapp/base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1 class="h3 text-dark">Übersicht</h1>
+        <p class="text-muted">
+            {% if user.is_authenticated %}
+                Hallo <strong>{{ user.username }}</strong>, hier ist der aktuelle Status.
+            {% else %}
+                Willkommen im öffentlichen Bereich der Hausverwaltung.
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <div class="card border-0 shadow-sm card-box h-100">
+            <div class="card-body text-center py-5">
+                <h5 class="text-muted text-uppercase small fw-bold">Liegenschaften</h5>
+                <h2 class="display-4 fw-bold text-primary">{{ stats.properties }}</h2>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card border-0 shadow-sm card-box h-100">
+            <div class="card-body text-center py-5">
+                <h5 class="text-muted text-uppercase small fw-bold">Einheiten</h5>
+                <h2 class="display-4 fw-bold text-success">{{ stats.units }}</h2>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card border-0 shadow-sm card-box h-100">
+            <div class="card-body text-center py-5">
+                <h5 class="text-muted text-uppercase small fw-bold">Eigentümer</h5>
+                <h2 class="display-4 fw-bold text-info">{{ stats.owners }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
