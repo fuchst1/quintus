@@ -19,34 +19,32 @@
         </div>
     </div>
 </div>
-{% endblock %} {% block extra_js %}
+{% endblock %} 
+
+{% block extra_js %}
 <script>
-    // Warten, bis das gesamte HTML geladen ist
     document.addEventListener('DOMContentLoaded', function() {
+        // ZIP Code Logik (hast du schon)
         const zipInput = document.getElementById('id_zip_code');
+        // ... (dein ZIP Code Listener)
+
+        // NEU: Heizkosten Logik
+        const heatingInput = document.getElementById('id_heating_share_percent');
         
-        if (zipInput) {
-            console.log("ZIP-Feld gefunden, Überwachung aktiv...");
-            
-            zipInput.addEventListener('input', function() {
-                // Regex für 4 bis 10 Ziffern
-                const regex = /^\d{4,10}$/;
+        if (heatingInput) {
+            heatingInput.addEventListener('input', function() {
+                const val = parseFloat(this.value);
                 
-                if (this.value === "") {
-                    // Falls leer, Farben entfernen
+                if (isNaN(val)) {
                     this.classList.remove('is-invalid', 'is-valid');
-                } else if (!regex.test(this.value)) {
-                    // Fehler: Rot
+                } else if (val < 55 || val > 85) {
                     this.classList.add('is-invalid');
                     this.classList.remove('is-valid');
                 } else {
-                    // OK: Grün
                     this.classList.remove('is-invalid');
                     this.classList.add('is-valid');
                 }
             });
-        } else {
-            console.error("Fehler: Feld 'id_zip_code' wurde nicht gefunden!");
         }
     });
 </script>

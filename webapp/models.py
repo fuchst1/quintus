@@ -1,31 +1,35 @@
-from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 
-# Wir definieren eine Regel: Nur Zahlen, 4 bis 10 Stellen
+# Validator für die Postleitzahl (4 bis 5 Ziffern)
 zip_validator = RegexValidator(
     regex=r'^\d{4,5}$',
     message=_("Die Postleitzahl darf nur aus Zahlen bestehen (4 bis 5 Ziffern).")
 )
 
-
-
 class Property(models.Model):
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     zip_code = models.CharField(
         max_length=20, 
-        validators=[zip_validator], # Das hier ist der Anker
+        validators=[zip_validator],
         verbose_name=_("Postleitzahl")
     )
     city = models.CharField(max_length=100, verbose_name=_("Stadt"))
     street_address = models.CharField(max_length=255, verbose_name=_("Straße und Hausnummer"))
+    
     heating_share_percent = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=85.00,
+        validators=[
+            MinValueValidator(55.00), 
+            MaxValueValidator(85.00)
+        ],
         verbose_name=_("Heizkostenanteil (%)"),
-        help_text=_("Standardwert für Heizkostenanteil in Prozent."),
+        help_text=_("Erlaubter Bereich: 55% bis 85%."),
     )
+    
     notes = models.TextField(blank=True, verbose_name=_("Notizen"))
     owners = models.ManyToManyField(
         "Owner",
