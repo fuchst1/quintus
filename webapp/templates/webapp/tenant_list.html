@@ -1,0 +1,57 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Mieter{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Alle Mieter</h3>
+    <a href="{% url 'tenant_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neuer Mieter
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktionen</th>
+                    <th class="ps-4">Anrede</th>
+                    <th>Vorname</th>
+                    <th>Nachname</th>
+                    <th>Geburtsdatum</th>
+                    <th>E-Mail</th>
+                    <th>Telefon</th>
+                    <th>IBAN</th>
+                    <th>Notizen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tenant in tenants %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'tenant_update' tenant.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'tenant_delete' tenant.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4">{{ tenant.get_salutation_display }}</td>
+                    <td>{{ tenant.first_name }}</td>
+                    <td>{{ tenant.last_name }}</td>
+                    <td>{{ tenant.date_of_birth|date:"d.m.Y"|default:"—" }}</td>
+                    <td>{{ tenant.email }}</td>
+                    <td>{{ tenant.phone|default:"—" }}</td>
+                    <td>{{ tenant.iban|default:"—" }}</td>
+                    <td>{{ tenant.notes|default:"—" }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="9" class="text-center py-5 text-muted">Keine Mieter gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

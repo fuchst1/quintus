@@ -1,0 +1,53 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Verwalter{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Alle Verwalter</h3>
+    <a href="{% url 'manager_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neuer Verwalter
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktionen</th>
+                    <th class="ps-4">Firma</th>
+                    <th>Ansprechpartner</th>
+                    <th>E-Mail</th>
+                    <th>Telefon</th>
+                    <th>Webseite</th>
+                    <th>Steuer-Modus</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for manager in managers %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'manager_update' manager.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'manager_delete' manager.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4 fw-semibold">{{ manager.company_name }}</td>
+                    <td>{{ manager.contact_person }}</td>
+                    <td>{{ manager.email }}</td>
+                    <td>{{ manager.phone|default:"—" }}</td>
+                    <td>{{ manager.website|default:"—" }}</td>
+                    <td>{{ manager.get_tax_mode_display }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7" class="text-center py-5 text-muted">Keine Verwalter gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

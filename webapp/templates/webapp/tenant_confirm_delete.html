@@ -1,0 +1,14 @@
+{% extends "webapp/base.html" %}
+{% block content %}
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <h3>Löschen bestätigen</h3>
+        <p>Möchten Sie den Mieter <strong>{{ object.first_name }} {{ object.last_name }}</strong> wirklich löschen?</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Ja, unwiderruflich löschen</button>
+            <a href="{% url 'tenant_list' %}" class="btn btn-light">Abbrechen</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

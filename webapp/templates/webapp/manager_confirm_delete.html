@@ -1,0 +1,14 @@
+{% extends "webapp/base.html" %}
+{% block content %}
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <h3>Löschen bestätigen</h3>
+        <p>Möchten Sie den Verwalter <strong>{{ object.company_name }}</strong> wirklich löschen?</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Ja, unwiderruflich löschen</button>
+            <a href="{% url 'manager_list' %}" class="btn btn-light">Abbrechen</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

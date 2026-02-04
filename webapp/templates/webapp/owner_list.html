@@ -1,0 +1,57 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Eigentümer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Alle Eigentümer</h3>
+    <a href="{% url 'owner_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neuer Eigentümer
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktionen</th>
+                    <th class="ps-4">Name</th>
+                    <th>E-Mail</th>
+                    <th>Telefon</th>
+                    <th>Adresse</th>
+                    <th>PLZ</th>
+                    <th>Ort</th>
+                    <th>IBAN</th>
+                    <th>Notizen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for owner in owners %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'owner_update' owner.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'owner_delete' owner.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4 fw-semibold">{{ owner.name }}</td>
+                    <td>{{ owner.email }}</td>
+                    <td>{{ owner.phone|default:"—" }}</td>
+                    <td>{{ owner.street_address|default:"—" }}</td>
+                    <td>{{ owner.zip_code|default:"—" }}</td>
+                    <td>{{ owner.city|default:"—" }}</td>
+                    <td>{{ owner.iban|default:"—" }}</td>
+                    <td>{{ owner.notes|default:"—" }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="9" class="text-center py-5 text-muted">Keine Eigentümer gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

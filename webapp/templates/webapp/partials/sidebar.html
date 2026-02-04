@@ -16,6 +16,9 @@
             Stammdaten
         </div>
 
+        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
+            Objekte
+        </div>
         <li>
             <a href="{% url 'property_list' %}" class="nav-link text-white opacity-75 hover-light">
                 <i class="bi bi-building me-2"></i>
@@ -23,15 +26,37 @@
             </a>
         </li>
         <li>
-            <a href="#" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'unit_list' %}" class="nav-link text-white opacity-75 hover-light">
                 <i class="bi bi-door-open me-2"></i>
                 Einheiten
             </a>
         </li>
         <li>
-            <a href="#" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'lease_list' %}" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-file-earmark-text me-2"></i>
+                Mietverträge
+            </a>
+        </li>
+
+        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
+            Personen
+        </div>
+        <li>
+            <a href="{% url 'owner_list' %}" class="nav-link text-white opacity-75 hover-light">
                 <i class="bi bi-people me-2"></i>
                 Eigentümer
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'tenant_list' %}" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-person-badge me-2"></i>
+                Mieter
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'manager_list' %}" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-briefcase me-2"></i>
+                Verwalter
             </a>
         </li>
     </ul>

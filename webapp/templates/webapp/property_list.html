@@ -17,7 +17,10 @@
                     <th class="text-center">Aktionen</th>
                     <th class="ps-4">Name</th>
                     <th>Adresse</th>
+                    <th>PLZ</th>
                     <th>Ort</th>
+                    <th>Notizen</th>
+                    <th>Eigentümer</th>
                 </tr>
             </thead>
             <tbody>
@@ -33,11 +36,23 @@
                     </td>
                     <td class="ps-4 fw-semibold">{{ prop.name }}</td>
                     <td>{{ prop.street_address }}</td>
-                    <td>{{ prop.zip_code }} {{ prop.city }}</td>
+                    <td>{{ prop.zip_code }}</td>
+                    <td>{{ prop.city }}</td>
+                    <td>{{ prop.notes|default:"—" }}</td>
+                    <td>
+                        {% if prop.ownerships.all %}
+                            {% for ownership in prop.ownerships.all %}
+                                {{ ownership.owner.name }} ({{ ownership.share_percent }}%)
+                                {% if not forloop.last %}<br>{% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="4" class="text-center py-5 text-muted">Keine Liegenschaften gefunden.</td>
+                    <td colspan="6" class="text-center py-5 text-muted">Keine Liegenschaften gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>
