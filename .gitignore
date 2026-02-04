@@ -1,6 +1,18 @@
-.venv/
-__pycache__/
-*.pyc
-db.sqlite3
-.DS_Store
+# Django-spezifisch
 *.log
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# Python-spezifisch
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+
+# VSCode-spezifisch
+.vscode/
