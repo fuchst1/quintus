@@ -1,0 +1,53 @@
+{% extends "webapp/base.html" %}
+{% load crispy_forms_tags %}
+{% block page_title %}{% if object %}Liegenschaft bearbeiten{% else %}Neue Liegenschaft{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-4">
+                <form method="post">
+                    {% csrf_token %}
+                    {{ form|crispy }}
+                    <div class="d-flex justify-content-end mt-4">
+                        <a href="{% url 'property_list' %}" class="btn btn-light me-2">Abbrechen</a>
+                        <button type="submit" class="btn btn-primary px-4">Speichern</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} {% block extra_js %}
+<script>
+    // Warten, bis das gesamte HTML geladen ist
+    document.addEventListener('DOMContentLoaded', function() {
+        const zipInput = document.getElementById('id_zip_code');
+        
+        if (zipInput) {
+            console.log("ZIP-Feld gefunden, Überwachung aktiv...");
+            
+            zipInput.addEventListener('input', function() {
+                // Regex für 4 bis 10 Ziffern
+                const regex = /^\d{4,10}$/;
+                
+                if (this.value === "") {
+                    // Falls leer, Farben entfernen
+                    this.classList.remove('is-invalid', 'is-valid');
+                } else if (!regex.test(this.value)) {
+                    // Fehler: Rot
+                    this.classList.add('is-invalid');
+                    this.classList.remove('is-valid');
+                } else {
+                    // OK: Grün
+                    this.classList.remove('is-invalid');
+                    this.classList.add('is-valid');
+                }
+            });
+        } else {
+            console.error("Fehler: Feld 'id_zip_code' wurde nicht gefunden!");
+        }
+    });
+</script>
+{% endblock %}

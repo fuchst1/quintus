@@ -1,0 +1,42 @@
+<div class="d-flex flex-column flex-shrink-0 p-3 text-white h-100" style="width: 280px; background-color: var(--quintus-navy);">
+    <a href="{% url 'dashboard' %}" class="d-flex align-items-center mb-3 mb-md-0 me-md-auto text-white text-decoration-none">
+        <span class="fs-4 fw-bold tracking-tight">QUINTUS</span>
+    </a>
+    <hr style="opacity: 0.2;">
+    
+    <ul class="nav nav-pills flex-column mb-auto">
+        <li class="nav-item mb-2">
+            <a href="{% url 'dashboard' %}" class="nav-link text-white {% if request.resolver_match.url_name == 'dashboard' %}active-quintus{% endif %}">
+                <i class="bi bi-speedometer2 me-2"></i>
+                Dashboard
+            </a>
+        </li>
+
+        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 1.1rem; letter-spacing: 1px;">
+            Stammdaten
+        </div>
+
+        <li>
+            <a href="{% url 'property_list' %}" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-building me-2"></i>
+                Liegenschaften
+            </a>
+        </li>
+        <li>
+            <a href="#" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-door-open me-2"></i>
+                Einheiten
+            </a>
+        </li>
+        <li>
+            <a href="#" class="nav-link text-white opacity-75 hover-light">
+                <i class="bi bi-people me-2"></i>
+                Eigentümer
+            </a>
+        </li>
+    </ul>
+
+    <hr style="opacity: 0.2;">
+    
+
+</div>

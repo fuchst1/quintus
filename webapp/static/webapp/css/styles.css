@@ -1,0 +1,37 @@
+:root {
+    /* Quintus Corporate Identity Colors */
+    --quintus-navy: #1e3a5f;      /* Hauptfarbe */
+    --quintus-active: #3b82f6;    /* Aktive Elemente */
+    --quintus-bg: #f4f6f9;        /* Hintergrund */
+}
+
+body {
+    background-color: var(--quintus-bg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Sidebar Styling */
+.active-quintus {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border-left: 4px solid var(--quintus-active);
+    font-weight: 600;
+}
+
+.nav-link {
+    transition: all 0.2s;
+}
+
+.nav-link:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #fff !important;
+}
+
+/* Karten-Effekte für das Dashboard */
+.card-box { 
+    transition: all 0.3s ease; 
+    border: none;
+}
+.card-box:hover { 
+    transform: translateY(-5px); 
+    box-shadow: 0 10px 20px rgba(30, 58, 95, 0.1) !important; 
+}

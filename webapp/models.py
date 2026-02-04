@@ -1,10 +1,22 @@
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+# Wir definieren eine Regel: Nur Zahlen, 4 bis 10 Stellen
+zip_validator = RegexValidator(
+    regex=r'^\d{4,5}$',
+    message=_("Die Postleitzahl darf nur aus Zahlen bestehen (4 bis 5 Ziffern).")
+)
+
 
 
 class Property(models.Model):
     name = models.CharField(max_length=255, verbose_name=_("Name"))
-    zip_code = models.CharField(max_length=20, verbose_name=_("Postleitzahl"))
+    zip_code = models.CharField(
+        max_length=20, 
+        validators=[zip_validator], # Das hier ist der Anker
+        verbose_name=_("Postleitzahl")
+    )
     city = models.CharField(max_length=100, verbose_name=_("Stadt"))
     street_address = models.CharField(max_length=255, verbose_name=_("Straße und Hausnummer"))
     heating_share_percent = models.DecimalField(

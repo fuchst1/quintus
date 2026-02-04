@@ -1,0 +1,47 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Liegenschaften{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Alle Liegenschaften</h3>
+    <a href="{% url 'property_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neue Liegenschaft
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktionen</th>
+                    <th class="ps-4">Name</th>
+                    <th>Adresse</th>
+                    <th>Ort</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for prop in properties %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'property_update' prop.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'property_delete' prop.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4 fw-semibold">{{ prop.name }}</td>
+                    <td>{{ prop.street_address }}</td>
+                    <td>{{ prop.zip_code }} {{ prop.city }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="4" class="text-center py-5 text-muted">Keine Liegenschaften gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
