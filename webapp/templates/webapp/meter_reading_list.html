@@ -34,7 +34,7 @@
                     </td>
                     <td class="ps-4 fw-semibold">{{ reading.meter }}</td>
                     <td>{{ reading.date|date:"d.m.Y" }}</td>
-                    <td>{{ reading.value }}</td>
+                    <td>{{ reading.value }} {{ reading.meter.get_unit_of_measure_display }}</td>
                     <td>{{ reading.note|default:"—" }}</td>
                 </tr>
                 {% empty %}
