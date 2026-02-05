@@ -15,11 +15,11 @@
             <thead class="table-light">
                 <tr>
                     <th class="text-center">Aktionen</th>
-                    <th class="ps-4">Zählernummer</th>
+                    <th class="ps-4">Liegenschaft</th>
+                    <th>Einheit</th>
                     <th>Typ</th>
                     <th>Eingabeart</th>
-                    <th>Liegenschaft</th>
-                    <th>Einheit</th>
+                    <th>Zählernummer</th>
                     <th>Hauptzähler</th>
                 </tr>
             </thead>
@@ -27,18 +27,24 @@
                 {% for meter in meters %}
                 <tr>
                     <td class="text-center">
-                        <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                        <a href="{% url 'meter_reading_create' %}?meter={{ meter.pk }}" class="btn btn-sm btn-outline-primary me-1" title="Zählerstand erfassen">
+                            <i class="bi bi-plus-circle"></i>
+                        </a>
+                        <a href="{% url 'meter_reading_by_meter_list' meter.pk %}" class="btn btn-sm btn-outline-info me-1" title="Ablesungen anzeigen">
+                            <i class="bi bi-list-ul"></i>
+                        </a>
+                        <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1" title="Zähler bearbeiten">
                             <i class="bi bi-pencil"></i>
                         </a>
-                        <a href="{% url 'meter_delete' meter.pk %}" class="btn btn-sm btn-outline-danger">
+                        <a href="{% url 'meter_delete' meter.pk %}" class="btn btn-sm btn-outline-danger" title="Zähler löschen">
                             <i class="bi bi-trash"></i>
                         </a>
                     </td>
-                    <td class="ps-4 fw-semibold">{{ meter.meter_number|default:"—" }}</td>
+                    <td class="ps-4">{{ meter.property.name }}</td>
+                    <td>{% if meter.unit %}{{ meter.unit.door_number }}{% else %}—{% endif %}</td>
                     <td>{{ meter.get_meter_type_display }}</td>
                     <td>{{ meter.get_kind_display }}</td>
-                    <td>{{ meter.property.name }}</td>
-                    <td>{% if meter.unit %}{{ meter.unit.door_number }}{% else %}—{% endif %}</td>
+                    <td class="fw-semibold">{{ meter.meter_number|default:"—" }}</td>
                     <td>{% if meter.is_main_meter %}Ja{% else %}Nein{% endif %}</td>
                 </tr>
                 {% empty %}

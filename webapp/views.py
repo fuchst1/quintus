@@ -245,11 +245,34 @@ class MeterReadingListView(ListView):
     queryset = MeterReading.objects.select_related("meter")
 
 
+class MeterReadingByMeterListView(ListView):
+    model = MeterReading
+    template_name = "webapp/meter_reading_by_meter_list.html"
+    context_object_name = "readings"
+
+    def get_queryset(self):
+        return MeterReading.objects.select_related("meter", "meter__unit", "meter__property").filter(
+            meter_id=self.kwargs["pk"]
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["meter"] = Meter.objects.select_related("unit", "property").get(pk=self.kwargs["pk"])
+        return context
+
+
 class MeterReadingCreateView(CreateView):
     model = MeterReading
     form_class = MeterReadingForm
     template_name = "webapp/meter_reading_form.html"
     success_url = reverse_lazy("meter_reading_list")
+
+    def get_initial(self):
+        initial = super().get_initial()
+        meter_id = self.request.GET.get("meter")
+        if meter_id and Meter.objects.filter(pk=meter_id).exists():
+            initial["meter"] = meter_id
+        return initial
 
 
 class MeterReadingUpdateView(UpdateView):

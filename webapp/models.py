@@ -369,6 +369,11 @@ class Meter(models.Model):
         WP_WARMWATER = "WP_warmwater", _("Wärmepumpe - Warmwasser")
         ELECTRICITY_PV = "electricity_PV", _("Photovoltaik - Ertrag")
 
+    class UnitOfMeasure(models.TextChoices):
+        KWH = "kwh", _("kWh")
+        M3 = "m3", _("m³")
+        STK = "stk", _("Stk")
+
     class CalculationKind(models.TextChoices):
         READING = "reading", _("Ablesung (Differenz)")
         CONSUMPTION = "consumption", _("Direkteingabe Verbrauch")
@@ -383,6 +388,13 @@ class Meter(models.Model):
         max_length=30,
         choices=MeterType.choices,
         verbose_name=_("Zählertyp"),
+    )
+    unit_of_measure = models.CharField(
+        max_length=10,
+        choices=UnitOfMeasure.choices,
+        default=UnitOfMeasure.KWH,
+        verbose_name=_("Maßeinheit"),
+        help_text=_("Einheit, in der der Zählerstand erfasst wird (z. B. kWh oder m³)."),
     )
     kind = models.CharField(
         max_length=20,

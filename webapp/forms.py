@@ -1,4 +1,7 @@
 from django import forms
+from django.db.models import CharField, Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
 from django.forms import inlineformset_factory
 from .models import LeaseAgreement, Manager, Meter, MeterReading, Property, Ownership, Owner, Tenant, Unit
 
@@ -177,6 +180,7 @@ class MeterForm(forms.ModelForm):
         fields = [
             "meter_number",
             "meter_type",
+            "unit_of_measure",
             "kind",
             "property",
             "unit",
@@ -186,6 +190,7 @@ class MeterForm(forms.ModelForm):
         widgets = {
             "meter_number": forms.TextInput(attrs={"class": "form-control"}),
             "meter_type": forms.Select(attrs={"class": "form-select"}),
+            "unit_of_measure": forms.Select(attrs={"class": "form-select"}),
             "kind": forms.Select(attrs={"class": "form-select"}),
             "property": forms.Select(attrs={"class": "form-select"}),
             "unit": forms.Select(attrs={"class": "form-select"}),
@@ -199,15 +204,38 @@ class MeterReadingForm(forms.ModelForm):
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
         input_formats=["%Y-%m-%d", "%d.%m.%Y"],
     )
+    meter = forms.ModelChoiceField(
+        queryset=Meter.objects.none(),
+        widget=forms.Select(attrs={"class": "form-select"}),
+        label="Zähler",
+    )
 
     class Meta:
         model = MeterReading
         fields = ["meter", "date", "value", "note"]
         widgets = {
-            "meter": forms.Select(attrs={"class": "form-select"}),
             "value": forms.NumberInput(attrs={"class": "form-control", "step": "0.001"}),
             "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["meter"].queryset = (
+            Meter.objects.select_related("unit")
+            .annotate(_unit_name=Coalesce("unit__name", Value(""), output_field=CharField()))
+            .order_by("_unit_name", "meter_type", "meter_number")
+        )
+        self.fields["meter"].label_from_instance = self._meter_label
+        if not self.is_bound and not self.instance.pk:
+            self.fields["date"].initial = timezone.now().date()
+
+    @staticmethod
+    def _meter_label(meter: Meter) -> str:
+        if meter.unit:
+            unit_label = meter.unit.name
+        else:
+            unit_label = "Haus"
+        return f"{unit_label} · {meter.get_meter_type_display()}"
 
 
 class UnitForm(forms.ModelForm):
