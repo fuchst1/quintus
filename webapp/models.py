@@ -1,7 +1,9 @@
 from builtins import property as builtin_property
+from datetime import date
 from decimal import Decimal
 
 from django.db import models
+from django.db.models import Prefetch
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 
@@ -437,6 +439,123 @@ class Meter(models.Model):
     def __str__(self) -> str:
         scope = self.unit.door_number if self.unit else _("Haus")
         return f"{self.get_meter_type_display()} ({scope}) - {self.meter_number or '???'}"
+
+    def calculate_yearly_consumption(self) -> list[dict[str, object]]:
+        readings = list(self.readings.all().order_by("date", "id"))
+        return self._calculate_yearly_consumption_for_meter(self, readings)
+
+    @classmethod
+    def calculate_yearly_consumption_all(cls) -> list[dict[str, object]]:
+        readings_qs = MeterReading.objects.order_by("date", "id")
+        meters = cls.objects.prefetch_related(
+            Prefetch("readings", queryset=readings_qs)
+        )
+        results: list[dict[str, object]] = []
+        for meter in meters:
+            readings = list(meter.readings.all())
+            results.extend(cls._calculate_yearly_consumption_for_meter(meter, readings))
+        results.sort(key=lambda row: (row["meter_id"], row["calc_year"]))
+        return results
+
+    @staticmethod
+    def _calculate_yearly_consumption_for_meter(
+        meter: "Meter",
+        readings: list["MeterReading"],
+    ) -> list[dict[str, object]]:
+        if not readings:
+            return []
+
+        readings = sorted(readings, key=lambda r: (r.date, r.pk))
+        years = sorted({reading.date.year for reading in readings})
+        results: list[dict[str, object]] = []
+
+        for year in years:
+            year_start = date(year, 1, 1)
+            year_end = date(year, 12, 31)
+            readings_in_year = [
+                reading
+                for reading in readings
+                if year_start <= reading.date <= year_end
+            ]
+            if not readings_in_year:
+                continue
+
+            if meter.kind == Meter.CalculationKind.CONSUMPTION:
+                total_value = sum(
+                    (reading.value for reading in readings_in_year),
+                    Decimal("0"),
+                )
+                reading_count = len(readings_in_year)
+                end_date = readings_in_year[-1].date if reading_count == 1 else year_end
+                duration_days = (end_date - year_start).days + 1
+                end_value = total_value
+                avg_per_day = (
+                    end_value / Decimal(duration_days)
+                    if duration_days and end_value is not None
+                    else None
+                )
+                results.append(
+                    {
+                        "meter_id": meter.pk,
+                        "calc_year": year,
+                        "kind": meter.kind,
+                        "start_date": year_start,
+                        "start_value": None,
+                        "end_date": end_date,
+                        "end_value": end_value,
+                        "duration_days": duration_days,
+                        "avg_per_day": avg_per_day,
+                        "consumption": end_value,
+                    }
+                )
+                continue
+
+            start_reading = None
+            for reading in readings:
+                if reading.date <= year_start:
+                    start_reading = reading
+                else:
+                    break
+            if start_reading is None:
+                start_reading = readings_in_year[0]
+            end_reading = readings_in_year[-1]
+            if end_reading is None:
+                continue
+
+            start_date = start_reading.date if start_reading else None
+            end_date = end_reading.date
+            start_value = start_reading.value if start_reading else None
+            end_value = end_reading.value
+            duration_days = (
+                (end_date - start_date).days + 1 if start_date and end_date else None
+            )
+            avg_per_day = None
+            consumption = None
+            if (
+                duration_days
+                and start_value is not None
+                and end_value is not None
+            ):
+                delta = end_value - start_value
+                avg_per_day = delta / Decimal(duration_days)
+                consumption = delta
+
+            results.append(
+                {
+                    "meter_id": meter.pk,
+                    "calc_year": year,
+                    "kind": meter.kind,
+                    "start_date": start_date,
+                    "start_value": start_value,
+                    "end_date": end_date,
+                    "end_value": end_value,
+                    "duration_days": duration_days,
+                    "avg_per_day": avg_per_day,
+                    "consumption": consumption,
+                }
+            )
+
+        return results
 
 
 class MeterReading(models.Model):

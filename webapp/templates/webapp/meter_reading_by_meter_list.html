@@ -26,6 +26,9 @@
                     <th class="text-center">Aktionen</th>
                     <th class="ps-4">Datum</th>
                     <th>Wert</th>
+                    <th>Letzter Verbrauch</th>
+                    <th>Jahresverbrauch {{ current_year }}</th>
+                    <th>Jahresverbrauch {{ current_year|add:"-1" }}</th>
                     <th>Notiz</th>
                 </tr>
             </thead>
@@ -42,11 +45,32 @@
                     </td>
                     <td class="ps-4">{{ reading.date|date:"d.m.Y" }}</td>
                     <td>{{ reading.value }} {{ reading.meter.get_unit_of_measure_display }}</td>
+                    <td>
+                        {% if reading.last_consumption is not None %}
+                            {{ reading.last_consumption }} {{ reading.meter.get_unit_of_measure_display }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if yearly_consumption_current is not None %}
+                            {{ yearly_consumption_current }} {{ reading.meter.get_unit_of_measure_display }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if yearly_consumption_previous is not None %}
+                            {{ yearly_consumption_previous }} {{ reading.meter.get_unit_of_measure_display }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
                     <td>{{ reading.note|default:"—" }}</td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="4" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
+                    <td colspan="7" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>

@@ -2,6 +2,7 @@ from django.urls import reverse_lazy
 from django.db import transaction
 from django.views.generic import TemplateView, ListView, CreateView, UpdateView, DeleteView
 from django.views.generic import DetailView
+from django.utils import timezone
 from .models import LeaseAgreement, Manager, Meter, MeterReading, Property, Unit, Owner, Tenant
 from .forms import (
     LeaseAgreementForm,
@@ -215,7 +216,28 @@ class MeterListView(ListView):
     model = Meter
     template_name = "webapp/meter_list.html"
     context_object_name = "meters"
-    queryset = Meter.objects.select_related("property", "unit")
+    queryset = Meter.objects.select_related("property", "unit").order_by("unit__name", "meter_type", "meter_number")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        grouped = []
+        current_key = None
+        current_group = None
+
+        for meter in context["meters"]:
+            key = (meter.property_id, meter.unit_id)
+            if key != current_key:
+                if meter.unit:
+                    label = f"{meter.property.name} · {meter.unit.name}"
+                else:
+                    label = f"{meter.property.name} (Allgemein)"
+                current_group = {"label": label, "meters": []}
+                grouped.append(current_group)
+                current_key = key
+            current_group["meters"].append(meter)
+
+        context["grouped_meters"] = grouped
+        return context
 
 
 class MeterCreateView(CreateView):
@@ -238,26 +260,38 @@ class MeterDeleteView(DeleteView):
     success_url = reverse_lazy("meter_list")
 
 
-class MeterReadingListView(ListView):
-    model = MeterReading
-    template_name = "webapp/meter_reading_list.html"
-    context_object_name = "readings"
-    queryset = MeterReading.objects.select_related("meter")
-
-
 class MeterReadingByMeterListView(ListView):
     model = MeterReading
     template_name = "webapp/meter_reading_by_meter_list.html"
     context_object_name = "readings"
 
     def get_queryset(self):
-        return MeterReading.objects.select_related("meter", "meter__unit", "meter__property").filter(
-            meter_id=self.kwargs["pk"]
+        return (
+            MeterReading.objects.select_related("meter", "meter__unit", "meter__property")
+            .filter(meter_id=self.kwargs["pk"])
+            .order_by("-date", "-id")
         )
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["meter"] = Meter.objects.select_related("unit", "property").get(pk=self.kwargs["pk"])
+        meter = Meter.objects.select_related("unit", "property").get(pk=self.kwargs["pk"])
+        context["meter"] = meter
+
+        readings = list(context["readings"])
+        for index, reading in enumerate(readings):
+            previous_reading = readings[index + 1] if index + 1 < len(readings) else None
+            if previous_reading is None:
+                reading.last_consumption = None
+            else:
+                reading.last_consumption = reading.value - previous_reading.value
+        context["readings"] = readings
+
+        yearly_rows = Meter._calculate_yearly_consumption_for_meter(meter, readings)
+        yearly_map = {row["calc_year"]: row["consumption"] for row in yearly_rows}
+        current_year = timezone.localdate().year
+        context["current_year"] = current_year
+        context["yearly_consumption_current"] = yearly_map.get(current_year)
+        context["yearly_consumption_previous"] = yearly_map.get(current_year - 1)
         return context
 
 
@@ -265,7 +299,7 @@ class MeterReadingCreateView(CreateView):
     model = MeterReading
     form_class = MeterReadingForm
     template_name = "webapp/meter_reading_form.html"
-    success_url = reverse_lazy("meter_reading_list")
+    success_url = reverse_lazy("meter_list")
 
     def get_initial(self):
         initial = super().get_initial()
@@ -274,18 +308,27 @@ class MeterReadingCreateView(CreateView):
             initial["meter"] = meter_id
         return initial
 
+    def get_success_url(self):
+        if self.request.GET.get("meter"):
+            return reverse_lazy("meter_list")
+        return reverse_lazy("meter_list")
+
 
 class MeterReadingUpdateView(UpdateView):
     model = MeterReading
     form_class = MeterReadingForm
     template_name = "webapp/meter_reading_form.html"
-    success_url = reverse_lazy("meter_reading_list")
+
+    def get_success_url(self):
+        return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
 
 
 class MeterReadingDeleteView(DeleteView):
     model = MeterReading
     template_name = "webapp/meter_reading_confirm_delete.html"
-    success_url = reverse_lazy("meter_reading_list")
+
+    def get_success_url(self):
+        return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
 
 
 class UnitListView(ListView):

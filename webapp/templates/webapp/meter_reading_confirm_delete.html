@@ -7,7 +7,7 @@
         <form method="post">
             {% csrf_token %}
             <button type="submit" class="btn btn-danger">Ja, unwiderruflich löschen</button>
-            <a href="{% url 'meter_reading_list' %}" class="btn btn-light">Abbrechen</a>
+            <a href="{% url 'meter_reading_by_meter_list' object.meter.pk %}" class="btn btn-light">Abbrechen</a>
         </form>
     </div>
 </div>

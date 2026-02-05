@@ -24,29 +24,49 @@
                 </tr>
             </thead>
             <tbody>
-                {% for meter in meters %}
-                <tr>
-                    <td class="text-center">
-                        <a href="{% url 'meter_reading_create' %}?meter={{ meter.pk }}" class="btn btn-sm btn-outline-primary me-1" title="Zählerstand erfassen">
-                            <i class="bi bi-plus-circle"></i>
-                        </a>
-                        <a href="{% url 'meter_reading_by_meter_list' meter.pk %}" class="btn btn-sm btn-outline-info me-1" title="Ablesungen anzeigen">
-                            <i class="bi bi-list-ul"></i>
-                        </a>
-                        <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1" title="Zähler bearbeiten">
-                            <i class="bi bi-pencil"></i>
-                        </a>
-                        <a href="{% url 'meter_delete' meter.pk %}" class="btn btn-sm btn-outline-danger" title="Zähler löschen">
-                            <i class="bi bi-trash"></i>
-                        </a>
-                    </td>
-                    <td class="ps-4">{{ meter.property.name }}</td>
-                    <td>{% if meter.unit %}{{ meter.unit.door_number }}{% else %}—{% endif %}</td>
-                    <td>{{ meter.get_meter_type_display }}</td>
-                    <td>{{ meter.get_kind_display }}</td>
-                    <td class="fw-semibold">{{ meter.meter_number|default:"—" }}</td>
-                    <td>{% if meter.is_main_meter %}Ja{% else %}Nein{% endif %}</td>
+                {% for group in grouped_meters %}
+                <tr class="table-light">
+                    <td colspan="7" class="ps-4 fw-semibold">{{ group.label }}</td>
                 </tr>
+                    {% for meter in group.meters %}
+                    <tr>
+                        <td class="text-center">
+                            <a href="{% url 'meter_reading_create' %}?meter={{ meter.pk }}" class="btn btn-sm btn-outline-primary me-1" title="Zählerstand erfassen">
+                                <i class="bi bi-plus-circle"></i>
+                            </a>
+                            <a href="{% url 'meter_reading_by_meter_list' meter.pk %}" class="btn btn-sm btn-outline-info me-1" title="Ablesungen anzeigen">
+                                <i class="bi bi-list-ul"></i>
+                            </a>
+                            <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1" title="Zähler bearbeiten">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <a href="{% url 'meter_delete' meter.pk %}" class="btn btn-sm btn-outline-danger" title="Zähler löschen">
+                                <i class="bi bi-trash"></i>
+                            </a>
+                        </td>
+                        <td class="ps-4">{{ meter.property.name }}</td>
+                        <td>{% if meter.unit %}{{ meter.unit.door_number }}{% else %}—{% endif %}</td>
+                        <td>
+                            {% if meter.meter_type == "electricity" or meter.meter_type == "WP_electricity" %}
+                                <i class="bi bi-lightning-charge-fill text-warning me-1"></i>
+                            {% elif meter.meter_type == "electricity_PV" %}
+                                <i class="bi bi-brightness-high-fill text-warning me-1"></i>
+                            {% elif meter.meter_type == "water_cold" %}
+                                <i class="bi bi-droplet-fill text-primary me-1"></i>
+                            {% elif meter.meter_type == "water_hot" or meter.meter_type == "WP_warmwater" %}
+                                <i class="bi bi-droplet-fill text-danger me-1"></i>
+                            {% elif meter.meter_type == "heat_energy" or meter.meter_type == "WP_heat" %}
+                                <i class="bi bi-fire text-danger me-1"></i>
+                            {% elif meter.meter_type == "cool_energy" %}
+                                <i class="bi bi-snow2 text-info me-1"></i>
+                            {% endif %}
+                            {{ meter.get_meter_type_display }}
+                        </td>
+                        <td>{{ meter.get_kind_display }}</td>
+                        <td class="fw-semibold">{{ meter.meter_number|default:"—" }}</td>
+                        <td>{% if meter.is_main_meter %}Ja{% else %}Nein{% endif %}</td>
+                    </tr>
+                    {% endfor %}
                 {% empty %}
                 <tr>
                     <td colspan="7" class="text-center py-5 text-muted">Keine Zähler gefunden.</td>

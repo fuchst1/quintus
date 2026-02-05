@@ -11,7 +11,11 @@
                     {% csrf_token %}
                     {{ form|crispy }}
                     <div class="d-flex justify-content-end mt-4">
-                        <a href="{% url 'meter_reading_list' %}" class="btn btn-light me-2">Abbrechen</a>
+                        {% if object %}
+                            <a href="{% url 'meter_reading_by_meter_list' object.meter.pk %}" class="btn btn-light me-2">Abbrechen</a>
+                        {% else %}
+                            <a href="{% url 'meter_list' %}" class="btn btn-light me-2">Abbrechen</a>
+                        {% endif %}
                         <button type="submit" class="btn btn-primary px-4">Speichern</button>
                     </div>
                 </form>
