@@ -1,0 +1,87 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Mietvertrag{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Mietvertrag – Details</h3>
+    <a href="{% url 'lease_list' %}" class="btn btn-light">Zurück</a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="text-muted small">Einheit</div>
+                <div class="fw-semibold">{{ lease.unit }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Mieter</div>
+                <div class="fw-semibold">
+                    {% for tenant in lease.tenants.all %}
+                        {{ tenant.first_name }} {{ tenant.last_name }}{% if not forloop.last %}<br>{% endif %}
+                    {% empty %}
+                        — 
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Verwalter</div>
+                <div class="fw-semibold">{{ lease.manager|default:"—" }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Status</div>
+                <div class="fw-semibold">{{ lease.get_status_display }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Einzug</div>
+                <div class="fw-semibold">{{ lease.entry_date|date:"d.m.Y" }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Auszug</div>
+                <div class="fw-semibold">{{ lease.exit_date|date:"d.m.Y"|default:"—" }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Index-Typ</div>
+                <div class="fw-semibold">{{ lease.get_index_type_display }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Letzte Wertsicherung</div>
+                <div class="fw-semibold">{{ lease.last_index_adjustment|date:"d.m.Y"|default:"—" }}</div>
+            </div>
+            <div class="col-md-6">
+                <div class="text-muted small">Index-Basiswert</div>
+                <div class="fw-semibold">{{ lease.index_base_value|default:"—" }}</div>
+            </div>
+        </div>
+
+        <hr class="my-4">
+
+        <div class="row g-3">
+            <div class="col-md-4">
+                <div class="text-muted small">HMZ Netto</div>
+                <div class="fw-semibold">{{ lease.net_rent }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">BK Netto</div>
+                <div class="fw-semibold">{{ lease.operating_costs_net }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Heizung Netto</div>
+                <div class="fw-semibold">{{ lease.heating_costs_net }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Kaution</div>
+                <div class="fw-semibold">{{ lease.deposit }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">HMZ/m²</div>
+                <div class="fw-semibold">{{ lease.rent_per_sqm }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Bruttomiete (berechnet)</div>
+                <div class="fw-semibold">{{ lease.total_gross_rent }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

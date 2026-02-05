@@ -1,3 +1,4 @@
+from builtins import property as builtin_property
 from decimal import Decimal
 
 from django.db import models
@@ -119,12 +120,16 @@ class Unit(models.Model):
         max_digits=8,
         decimal_places=2,
         validators=[MinValueValidator(0.01)],
+        null=True,
+        blank=True,
         verbose_name=_("Nutzfläche (m²)"),
     )
     operating_cost_share = models.DecimalField(
         max_digits=6,
         decimal_places=2,
         validators=[MinValueValidator(0.01)],
+        null=True,
+        blank=True,
         verbose_name=_("Betriebskostenanteil"),
         help_text=_("Anteil an den Betriebskosten (z. B. Prozent oder Faktor)."),
     )
@@ -135,6 +140,12 @@ class Unit(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.property.name})"
+
+    @builtin_property
+    def current_status(self) -> str:
+        if self.leases.filter(status=LeaseAgreement.Status.AKTIV).exists():
+            return "Vermietet"
+        return "Frei"
 
 
 class Owner(models.Model):
@@ -198,7 +209,7 @@ class Tenant(models.Model):
     first_name = models.CharField(max_length=100, verbose_name=_("Vorname"))
     last_name = models.CharField(max_length=100, verbose_name=_("Nachname"))
     date_of_birth = models.DateField(null=True, blank=True, verbose_name=_("Geburtsdatum"))
-    email = models.EmailField(verbose_name=_("E-Mail"))
+    email = models.EmailField(blank=True, verbose_name=_("E-Mail"))
     phone = models.CharField(
         max_length=50,
         blank=True,
@@ -216,6 +227,7 @@ class Tenant(models.Model):
     class Meta:
         verbose_name = _("Mieter")
         verbose_name_plural = _("Mieter")
+        ordering = ["last_name", "first_name"]
 
     def __str__(self) -> str:
         return f"{self.get_salutation_display()} {self.first_name} {self.last_name}"
@@ -251,11 +263,20 @@ class Ownership(models.Model):
 
 
 class LeaseAgreement(models.Model):
+    class Status(models.TextChoices):
+        AKTIV = "aktiv", _("Laufend")
+        BEENDET = "beendet", _("Beendet")
+
     class IndexType(models.TextChoices):
         VPI = "vpi", _("VPI")
         FIX = "fix", _("Fix")
 
-    unit = models.ForeignKey("Unit", on_delete=models.PROTECT, related_name="leases")
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.CASCADE,
+        related_name="leases",
+        verbose_name=_("Einheit"),
+    )
     tenants = models.ManyToManyField("Tenant", related_name="leases", verbose_name=_("Mieter"))
     manager = models.ForeignKey(
         "Manager",
@@ -263,6 +284,12 @@ class LeaseAgreement(models.Model):
         null=True,
         blank=True,
         verbose_name=_("Verwalter"),
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.AKTIV,
+        verbose_name=_("Status"),
     )
 
     entry_date = models.DateField(verbose_name=_("Einzugsdatum"))
@@ -272,6 +299,7 @@ class LeaseAgreement(models.Model):
         max_length=10,
         choices=IndexType.choices,
         default=IndexType.VPI,
+        verbose_name=_("Index-Typ"),
     )
     last_index_adjustment = models.DateField(null=True, blank=True, verbose_name=_("Letzte Wertsicherung"))
     index_base_value = models.DecimalField(
@@ -280,6 +308,7 @@ class LeaseAgreement(models.Model):
         null=True,
         blank=True,
         validators=[MinValueValidator(0)],
+        verbose_name=_("Index-Basiswert"),
     )
 
     net_rent = models.DecimalField(
@@ -305,6 +334,7 @@ class LeaseAgreement(models.Model):
         decimal_places=2,
         default=Decimal("0.00"),
         validators=[MinValueValidator(0)],
+        verbose_name=_("Kaution"),
     )
 
     @property
@@ -325,3 +355,98 @@ class LeaseAgreement(models.Model):
 
     def __str__(self) -> str:
         return f"{self.unit} · {self.entry_date}"
+
+
+class Meter(models.Model):
+    class MeterType(models.TextChoices):
+        ELECTRICITY = "electricity", _("Strom")
+        WATER_COLD = "water_cold", _("Kaltwasser")
+        WATER_HOT = "water_hot", _("Warmwasser")
+        HEAT_ENERGY = "heat_energy", _("Wärmeenergie")
+        COOL_ENERGY = "cool_energy", _("Kälteenergie")
+        WP_HEAT = "WP_heat", _("Wärmepumpe - Erzeugte Wärme")
+        WP_ELECTRICITY = "WP_electricity", _("Wärmepumpe - Stromverbrauch")
+        WP_WARMWATER = "WP_warmwater", _("Wärmepumpe - Warmwasser")
+        ELECTRICITY_PV = "electricity_PV", _("Photovoltaik - Ertrag")
+
+    class CalculationKind(models.TextChoices):
+        READING = "reading", _("Ablesung (Differenz)")
+        CONSUMPTION = "consumption", _("Direkteingabe Verbrauch")
+
+    meter_number = models.CharField(
+        max_length=50,
+        verbose_name=_("Zählernummer"),
+        null=True,
+        blank=True,
+    )
+    meter_type = models.CharField(
+        max_length=30,
+        choices=MeterType.choices,
+        verbose_name=_("Zählertyp"),
+    )
+    kind = models.CharField(
+        max_length=20,
+        choices=CalculationKind.choices,
+        default=CalculationKind.READING,
+        verbose_name=_("Eingabeart"),
+        help_text=_(
+            "'Ablesung' berechnet die Differenz zweier Stände. "
+            "'Direkteingabe' nimmt den Wert als Jahresverbrauch."
+        ),
+    )
+
+    property = models.ForeignKey(
+        "Property",
+        on_delete=models.CASCADE,
+        related_name="meters",
+        verbose_name=_("Liegenschaft"),
+    )
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="meters",
+        verbose_name=_("Einheit"),
+    )
+
+    is_main_meter = models.BooleanField(
+        default=False,
+        verbose_name=_("Hauptzähler"),
+        help_text=_("Markieren, wenn dies der Zähler für das gesamte Haus ist."),
+    )
+
+    description = models.TextField(blank=True, null=True, verbose_name=_("Beschreibung"))
+
+    class Meta:
+        verbose_name = _("Zähler")
+        verbose_name_plural = _("Zähler")
+
+    def __str__(self) -> str:
+        scope = self.unit.door_number if self.unit else _("Haus")
+        return f"{self.get_meter_type_display()} ({scope}) - {self.meter_number or '???'}"
+
+
+class MeterReading(models.Model):
+    meter = models.ForeignKey(
+        Meter,
+        on_delete=models.CASCADE,
+        related_name="readings",
+        verbose_name=_("Zähler"),
+    )
+    date = models.DateField(verbose_name=_("Ablesedatum"))
+    value = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        verbose_name=_("Wert / Zählerstand"),
+    )
+    note = models.TextField(blank=True, null=True, verbose_name=_("Notiz"))
+
+    class Meta:
+        verbose_name = _("Zählerstand")
+        verbose_name_plural = _("Zählerstände")
+        ordering = ["-date"]
+        unique_together = ("meter", "date")
+
+    def __str__(self) -> str:
+        return f"{self.meter.meter_number} am {self.date}: {self.value}"

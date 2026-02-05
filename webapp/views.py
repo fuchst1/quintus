@@ -1,9 +1,12 @@
 from django.urls import reverse_lazy
 from django.db import transaction
 from django.views.generic import TemplateView, ListView, CreateView, UpdateView, DeleteView
-from .models import LeaseAgreement, Manager, Property, Unit, Owner, Tenant
+from django.views.generic import DetailView
+from .models import LeaseAgreement, Manager, Meter, MeterReading, Property, Unit, Owner, Tenant
 from .forms import (
     LeaseAgreementForm,
+    MeterForm,
+    MeterReadingForm,
     PropertyForm,
     PropertyOwnershipFormSet,
     OwnerForm,
@@ -175,6 +178,12 @@ class LeaseAgreementListView(ListView):
     context_object_name = "leases"
     queryset = LeaseAgreement.objects.select_related("unit", "manager").prefetch_related("tenants")
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["active_leases"] = self.queryset.filter(status=LeaseAgreement.Status.AKTIV)
+        context["ended_leases"] = self.queryset.filter(status=LeaseAgreement.Status.BEENDET)
+        return context
+
 
 class LeaseAgreementCreateView(CreateView):
     model = LeaseAgreement
@@ -196,11 +205,71 @@ class LeaseAgreementDeleteView(DeleteView):
     success_url = reverse_lazy("lease_list")
 
 
+class LeaseAgreementDetailView(DetailView):
+    model = LeaseAgreement
+    template_name = "webapp/lease_detail.html"
+    context_object_name = "lease"
+
+
+class MeterListView(ListView):
+    model = Meter
+    template_name = "webapp/meter_list.html"
+    context_object_name = "meters"
+    queryset = Meter.objects.select_related("property", "unit")
+
+
+class MeterCreateView(CreateView):
+    model = Meter
+    form_class = MeterForm
+    template_name = "webapp/meter_form.html"
+    success_url = reverse_lazy("meter_list")
+
+
+class MeterUpdateView(UpdateView):
+    model = Meter
+    form_class = MeterForm
+    template_name = "webapp/meter_form.html"
+    success_url = reverse_lazy("meter_list")
+
+
+class MeterDeleteView(DeleteView):
+    model = Meter
+    template_name = "webapp/meter_confirm_delete.html"
+    success_url = reverse_lazy("meter_list")
+
+
+class MeterReadingListView(ListView):
+    model = MeterReading
+    template_name = "webapp/meter_reading_list.html"
+    context_object_name = "readings"
+    queryset = MeterReading.objects.select_related("meter")
+
+
+class MeterReadingCreateView(CreateView):
+    model = MeterReading
+    form_class = MeterReadingForm
+    template_name = "webapp/meter_reading_form.html"
+    success_url = reverse_lazy("meter_reading_list")
+
+
+class MeterReadingUpdateView(UpdateView):
+    model = MeterReading
+    form_class = MeterReadingForm
+    template_name = "webapp/meter_reading_form.html"
+    success_url = reverse_lazy("meter_reading_list")
+
+
+class MeterReadingDeleteView(DeleteView):
+    model = MeterReading
+    template_name = "webapp/meter_reading_confirm_delete.html"
+    success_url = reverse_lazy("meter_reading_list")
+
+
 class UnitListView(ListView):
     model = Unit
     template_name = "webapp/unit_list.html"
     context_object_name = "units"
-    queryset = Unit.objects.select_related("property")
+    queryset = Unit.objects.select_related("property").order_by("property__name", "door_number", "name")
 
 
 class UnitCreateView(CreateView):

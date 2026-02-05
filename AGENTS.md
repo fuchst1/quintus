@@ -31,6 +31,7 @@
 - **Workflow:** Codex pushes to GitHub `main`; server deploys via `git pull`.
   - Keep commits small and safe (main is deployed).
   - Do not change user-facing terminology unless requested.
+- **UI language:** All user-facing UI text must be in **German**.
 - **Coding Style:**
   - Prefer Class-Based Views (CBVs) for standard CRUD.
   - Type hints are encouraged.
@@ -49,4 +50,3 @@ Before committing, ensure these run without error:
   - Use safe fallbacks for dev/test (e.g. `os.getenv("KEY", "dev-only-dummy")`).
   - If a variable is truly required for production, document it in `docs/deploy.md`.
 - **Safety:** Defaults must be clearly marked as **dev/test only** and must not silently enable insecure production behaviour.
-

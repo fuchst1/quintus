@@ -1,0 +1,53 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Zähler{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Alle Zähler</h3>
+    <a href="{% url 'meter_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neuer Zähler
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktionen</th>
+                    <th class="ps-4">Zählernummer</th>
+                    <th>Typ</th>
+                    <th>Eingabeart</th>
+                    <th>Liegenschaft</th>
+                    <th>Einheit</th>
+                    <th>Hauptzähler</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for meter in meters %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'meter_delete' meter.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4 fw-semibold">{{ meter.meter_number|default:"—" }}</td>
+                    <td>{{ meter.get_meter_type_display }}</td>
+                    <td>{{ meter.get_kind_display }}</td>
+                    <td>{{ meter.property.name }}</td>
+                    <td>{% if meter.unit %}{{ meter.unit.door_number }}{% else %}—{% endif %}</td>
+                    <td>{% if meter.is_main_meter %}Ja{% else %}Nein{% endif %}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7" class="text-center py-5 text-muted">Keine Zähler gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

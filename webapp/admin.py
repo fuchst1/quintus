@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import LeaseAgreement, Manager, Owner, Ownership, Property, Tenant, Unit
+from .models import LeaseAgreement, Manager, Meter, MeterReading, Owner, Ownership, Property, Tenant, Unit
 
 
 class OwnershipInline(admin.TabularInline):
@@ -59,6 +59,20 @@ class TenantAdmin(admin.ModelAdmin):
 
 @admin.register(LeaseAgreement)
 class LeaseAgreementAdmin(admin.ModelAdmin):
-    list_display = ("unit", "entry_date", "exit_date", "net_rent", "operating_costs_net", "heating_costs_net")
-    list_filter = ("index_type", "manager")
-    search_fields = ("unit__name",)
+    list_display = ("unit", "status", "entry_date", "exit_date", "net_rent")
+    list_filter = ("status", "index_type", "manager")
+    search_fields = ("unit__name", "tenants__first_name", "tenants__last_name")
+
+
+@admin.register(Meter)
+class MeterAdmin(admin.ModelAdmin):
+    list_display = ("meter_number", "meter_type", "kind", "property", "unit", "is_main_meter")
+    list_filter = ("meter_type", "kind", "property", "is_main_meter")
+    search_fields = ("meter_number", "property__name", "unit__name")
+
+
+@admin.register(MeterReading)
+class MeterReadingAdmin(admin.ModelAdmin):
+    list_display = ("meter", "date", "value")
+    list_filter = ("date",)
+    search_fields = ("meter__meter_number",)

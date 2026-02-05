@@ -1,6 +1,6 @@
 from django import forms
 from django.forms import inlineformset_factory
-from .models import LeaseAgreement, Manager, Property, Ownership, Owner, Tenant, Unit
+from .models import LeaseAgreement, Manager, Meter, MeterReading, Property, Ownership, Owner, Tenant, Unit
 
 class PropertyForm(forms.ModelForm):
     class Meta:
@@ -138,6 +138,7 @@ class LeaseAgreementForm(forms.ModelForm):
             "unit",
             "tenants",
             "manager",
+            "status",
             "entry_date",
             "exit_date",
             "index_type",
@@ -152,6 +153,7 @@ class LeaseAgreementForm(forms.ModelForm):
             "unit": forms.Select(attrs={"class": "form-select"}),
             "tenants": forms.SelectMultiple(attrs={"class": "form-select", "size": "6"}),
             "manager": forms.Select(attrs={"class": "form-select"}),
+            "status": forms.Select(attrs={"class": "form-select"}),
             "index_type": forms.Select(attrs={"class": "form-select"}),
             "index_base_value": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
             "net_rent": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
@@ -167,6 +169,45 @@ class LeaseAgreementForm(forms.ModelForm):
         if entry_date and exit_date and exit_date < entry_date:
             self.add_error("exit_date", "Auszugsdatum darf nicht vor dem Einzugsdatum liegen.")
         return cleaned_data
+
+
+class MeterForm(forms.ModelForm):
+    class Meta:
+        model = Meter
+        fields = [
+            "meter_number",
+            "meter_type",
+            "kind",
+            "property",
+            "unit",
+            "is_main_meter",
+            "description",
+        ]
+        widgets = {
+            "meter_number": forms.TextInput(attrs={"class": "form-control"}),
+            "meter_type": forms.Select(attrs={"class": "form-select"}),
+            "kind": forms.Select(attrs={"class": "form-select"}),
+            "property": forms.Select(attrs={"class": "form-select"}),
+            "unit": forms.Select(attrs={"class": "form-select"}),
+            "is_main_meter": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "description": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+
+class MeterReadingForm(forms.ModelForm):
+    date = forms.DateField(
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+        input_formats=["%Y-%m-%d", "%d.%m.%Y"],
+    )
+
+    class Meta:
+        model = MeterReading
+        fields = ["meter", "date", "value", "note"]
+        widgets = {
+            "meter": forms.Select(attrs={"class": "form-select"}),
+            "value": forms.NumberInput(attrs={"class": "form-control", "step": "0.001"}),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
 
 
 class UnitForm(forms.ModelForm):
@@ -196,6 +237,18 @@ class UnitForm(forms.ModelForm):
                 "step": "0.01",
             }),
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        unit_type = cleaned_data.get("unit_type")
+        usable_area = cleaned_data.get("usable_area")
+        operating_cost_share = cleaned_data.get("operating_cost_share")
+        if unit_type in (Unit.UnitType.APARTMENT, Unit.UnitType.COMMERCIAL):
+            if not usable_area:
+                self.add_error("usable_area", "Nutzfläche ist für diesen Einheitstyp erforderlich.")
+            if not operating_cost_share:
+                self.add_error("operating_cost_share", "Betriebskostenanteil ist für diesen Einheitstyp erforderlich.")
+        return cleaned_data
 
 
 class OwnershipForm(forms.ModelForm):
