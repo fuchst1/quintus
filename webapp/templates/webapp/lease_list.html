@@ -38,7 +38,11 @@
                             <i class="bi bi-trash"></i>
                         </a>
                     </td>
-                    <td class="ps-4 fw-semibold">{{ lease.unit }}</td>
+                    <td class="ps-4 fw-semibold">
+                        <a href="{% url 'lease_detail' lease.pk %}" class="text-decoration-none">
+                            {{ lease.unit }}
+                        </a>
+                    </td>
                     <td>
                         {% for tenant in lease.tenants.all %}
                             {{ tenant.first_name }} {{ tenant.last_name }}{% if not forloop.last %}<br>{% endif %}
@@ -83,9 +87,11 @@
             </thead>
             <tbody>
                 {% for lease in ended_leases %}
-                <tr onclick="window.location='{% url 'lease_detail' lease.pk %}'" style="cursor: pointer;">
+                <tr>
                     <td class="ps-4 fw-semibold">
-                        {{ lease.unit }}
+                        <a href="{% url 'lease_detail' lease.pk %}" class="text-decoration-none">
+                            {{ lease.unit }}
+                        </a>
                     </td>
                     <td>
                         {% for tenant in lease.tenants.all %}

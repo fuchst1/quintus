@@ -84,4 +84,85 @@
         </div>
     </div>
 </div>
+
+<div class="card border-0 shadow-sm mt-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0">Mietkonto</h5>
+            <a href="{% url 'buchung_create' %}?lease={{ lease.pk }}" class="btn btn-sm btn-outline-primary">
+                SOLL-Buchung hinzufügen
+            </a>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <div class="text-muted small">Summe Soll</div>
+                <div class="fw-semibold">{{ soll_summe }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Summe Haben</div>
+                <div class="fw-semibold">{{ haben_summe }}</div>
+            </div>
+            <div class="col-md-4">
+                <div class="text-muted small">Kontostand (Haben - Soll)</div>
+                <div class="fw-semibold {% if kontostand < 0 %}text-danger{% elif kontostand > 0 %}text-success{% else %}text-muted{% endif %}">
+                    {{ kontostand }}
+                </div>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Datum</th>
+                        <th>Typ</th>
+                        <th>Kategorie</th>
+                        <th>Buchungstext</th>
+                        <th class="text-end">Bewegung</th>
+                        <th class="text-end">Kontostand</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in konto_rows %}
+                    {% if row.kind == "booking" %}
+                    {% with buchung=row.buchung %}
+                    <tr>
+                        <td>{{ buchung.datum|date:"d.m.Y" }}</td>
+                        <td>{{ buchung.get_typ_display }}</td>
+                        <td>{{ buchung.get_kategorie_display }}</td>
+                        <td>{{ buchung.buchungstext }}</td>
+                        <td class="text-end {% if buchung.kontobewegung < 0 %}text-danger{% else %}text-success{% endif %}">
+                            {{ buchung.kontobewegung }}
+                        </td>
+                        <td class="text-end {% if buchung.kontostand < 0 %}text-danger{% elif buchung.kontostand > 0 %}text-success{% else %}text-muted{% endif %}">
+                            {{ buchung.kontostand }}
+                        </td>
+                    </tr>
+                    {% endwith %}
+                    {% else %}
+                    <tr class="table-secondary">
+                        <td colspan="3" class="fw-semibold">Monatsabschluss {{ row.month_label }}</td>
+                        <td class="small">
+                            Soll {{ row.month_soll }} | Haben {{ row.month_haben }}
+                            {% if row.offen > 0 %}| Offen {{ row.offen }}{% endif %}
+                        </td>
+                        <td class="text-end fw-semibold {% if row.month_delta < 0 %}text-danger{% elif row.month_delta > 0 %}text-success{% else %}text-muted{% endif %}">
+                            {{ row.month_delta }}
+                        </td>
+                        <td class="text-end fw-semibold {% if row.month_end_kontostand < 0 %}text-danger{% elif row.month_end_kontostand > 0 %}text-success{% else %}text-muted{% endif %}">
+                            {{ row.month_end_kontostand }}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="text-center py-4 text-muted">Keine Buchungen vorhanden.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 {% endblock %}

@@ -1,0 +1,57 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Buchungen{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Buchungen</h3>
+    <a href="{% url 'buchung_create' %}" class="btn btn-primary shadow-sm">
+        <i class="bi bi-plus-lg me-1"></i> Neue Buchung
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th class="text-center">Aktion</th>
+                    <th class="ps-4">Datum</th>
+                    <th>Mietvertrag</th>
+                    <th>Kategorie</th>
+                    <th>Typ</th>
+                    <th>Buchungstext</th>
+                    <th class="text-end pe-4">Brutto</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for buchung in buchungen %}
+                <tr>
+                    <td class="text-center">
+                        <a href="{% url 'buchung_update' buchung.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <a href="{% url 'buchung_delete' buchung.pk %}" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </a>
+                    </td>
+                    <td class="ps-4">{{ buchung.datum|date:"d.m.Y" }}</td>
+                    <td>{{ buchung.mietervertrag }}</td>
+                    <td>{{ buchung.get_kategorie_display }}</td>
+                    <td>{{ buchung.get_typ_display }}</td>
+                    <td>{{ buchung.buchungstext }}</td>
+                    <td class="text-end pe-4">
+                        <span class="fw-semibold {% if buchung.brutto < 0 %}text-danger{% elif buchung.brutto > 0 %}text-success{% else %}text-muted{% endif %}">
+                            {{ buchung.brutto }}
+                        </span>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7" class="text-center py-5 text-muted">Keine Buchungen gefunden.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,217 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Bank-Import{% endblock %}
+
+{% block content %}
+<div class="card border-0 shadow-sm mb-4 bank-import-upload">
+    <div class="card-body p-4">
+        <div class="bank-import-upload__header mb-3">
+            <div class="bank-import-upload__icon">
+                <i class="bi bi-cloud-arrow-up"></i>
+            </div>
+            <div>
+                <h5 class="mb-1">Datei importieren</h5>
+                <p class="mb-0 text-muted small">Lade eine JSON-Datei hoch. Gebucht wird erst nach Bestätigung in der Vorschau.</p>
+            </div>
+        </div>
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="preview">
+            <div class="row g-3 align-items-center">
+                <div class="col-lg-9">
+                    <label class="form-label">JSON-Datei</label>
+                    {{ form.json_file }}
+                </div>
+                <div class="col-lg-3 d-grid">
+                    <button type="submit" class="btn btn-primary bank-import-upload__button">Vorschau laden</button>
+                </div>
+            </div>
+            <div class="form-text mt-2">Tipp: Mehrere Zeilen können in der Vorschau manuell angepasst oder verworfen werden.</div>
+        </form>
+    </div>
+</div>
+
+{% if preview_rows %}
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div>
+                <h5 class="mb-1">Vorschau</h5>
+                <div class="text-muted small">
+                    {{ preview_count }} Zeilen, {{ auto_matched_count }} automatisch vorgeschlagen, {{ selected_count }} aktuell zugewiesen.
+                </div>
+            </div>
+            <form method="post" class="m-0">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="discard">
+                <button type="submit" class="btn btn-outline-secondary btn-sm">Vorschau verwerfen</button>
+            </form>
+        </div>
+
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="confirm">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Referenz</th>
+                            <th>Datum</th>
+                            <th class="text-end">Betrag</th>
+                            <th>Partner</th>
+                            <th>Verwendungszweck</th>
+                            <th>Buchung</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in preview_rows %}
+                        <tr>
+                            <td class="small">{{ row.reference_number }}</td>
+                            <td>{{ row.booking_date_display }}</td>
+                            <td class="text-end">
+                                <span class="fw-semibold {% if row.amount|first == '-' %}text-danger{% else %}text-success{% endif %}">
+                                    {{ row.amount }}
+                                </span>
+                            </td>
+                            <td>
+                                <div>{{ row.partner_name|default:"—" }}</div>
+                                <div class="text-muted small">{{ row.iban|default:"—" }}</div>
+                            </td>
+                            <td class="small">{{ row.purpose|default:"—"|truncatechars:140 }}</td>
+                            <td style="min-width: 420px;">
+                                {% if row.bookable %}
+                                <div class="form-check mb-2">
+                                    <input
+                                        type="checkbox"
+                                        class="form-check-input"
+                                        id="dismiss-{{ forloop.counter0 }}"
+                                        name="dismiss_{{ forloop.counter0 }}"
+                                        value="1"
+                                        {% if row.dismiss %}checked{% endif %}
+                                    >
+                                    <label class="form-check-label small" for="dismiss-{{ forloop.counter0 }}">
+                                        Nicht importieren (verwerfen)
+                                    </label>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1">Buchungstyp</label>
+                                    <select name="type_{{ forloop.counter0 }}" class="form-select form-select-sm booking-type-select" data-row="{{ forloop.counter0 }}">
+                                        <option value="miete" {% if row.booking_type == "miete" %}selected{% endif %}>Miete (HABEN)</option>
+                                        <option value="bk" {% if row.booking_type == "bk" %}selected{% endif %}>BK-Beleg</option>
+                                    </select>
+                                </div>
+
+                                <div id="booking-miete-{{ forloop.counter0 }}" class="booking-panel {% if row.booking_type != 'miete' %}d-none{% endif %}">
+                                    <label class="form-label small mb-1">Zuweisung Mietvertrag</label>
+                                    <select name="lease_{{ forloop.counter0 }}" class="form-select form-select-sm">
+                                        <option value="">Bitte auswählen</option>
+                                        {% for option in lease_choices %}
+                                        <option
+                                            value="{{ option.id }}"
+                                            {% if option.id|stringformat:"s" == row.lease_id %}selected{% endif %}
+                                        >
+                                            {% if option.id in row.candidate_lease_ids %}★ {% endif %}{{ option.label }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    {% if row.bookable_for_miete %}
+                                        {% if row.auto_split %}
+                                        <div class="text-success small mt-1">{{ row.auto_reason }}</div>
+                                        <div class="small mt-1">
+                                            {% for allocation in row.auto_split_allocations %}
+                                                <div>{{ allocation.lease_label }}: {{ allocation.amount }}</div>
+                                            {% endfor %}
+                                        </div>
+                                        <div class="text-muted small mt-1">Leer lassen für automatische Aufteilung. Optional kann ein einzelner Vertrag manuell gewählt werden.</div>
+                                        {% elif row.auto_matched %}
+                                        <div class="text-success small mt-1">Auto-Match: {{ row.auto_reason|default:"Vorschlag erstellt" }}</div>
+                                        {% elif row.candidate_lease_ids %}
+                                        <div class="text-warning small mt-1">Mehrere Treffer gefunden, bitte manuell wählen.</div>
+                                        {% else %}
+                                        <div class="text-muted small mt-1">Kein Treffer gefunden, bitte manuell zuweisen.</div>
+                                        {% endif %}
+                                    {% else %}
+                                    <div class="text-muted small mt-1">Für Miete sind nur positive Beträge erlaubt.</div>
+                                    {% endif %}
+                                </div>
+
+                                <div id="booking-bk-{{ forloop.counter0 }}" class="booking-panel {% if row.booking_type != 'bk' %}d-none{% endif %}">
+                                    <div class="row g-2">
+                                        <div class="col-12">
+                                            <label class="form-label small mb-1">Liegenschaft</label>
+                                            <select name="bk_property_{{ forloop.counter0 }}" class="form-select form-select-sm">
+                                                <option value="">Bitte auswählen</option>
+                                                {% for option in property_choices %}
+                                                <option value="{{ option.id }}" {% if option.id|stringformat:"s" == row.bk_property_id %}selected{% endif %}>{{ option.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="col-7">
+                                            <label class="form-label small mb-1">BK-Art</label>
+                                            <select name="bk_art_{{ forloop.counter0 }}" class="form-select form-select-sm">
+                                                {% for option in bk_art_choices %}
+                                                <option value="{{ option.id }}" {% if option.id == row.bk_art %}selected{% endif %}>{{ option.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="col-5">
+                                            <label class="form-label small mb-1">USt %</label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                name="bk_ust_{{ forloop.counter0 }}"
+                                                class="form-control form-control-sm"
+                                                value="{{ row.bk_ust_prozent }}"
+                                            >
+                                        </div>
+                                    </div>
+                                    {% if row.bookable_for_bk %}
+                                    <div class="text-muted small mt-1">Für BK wird der Bankbetrag als Brutto interpretiert.</div>
+                                    {% endif %}
+                                </div>
+                                {% else %}
+                                <span class="badge bg-secondary">Nicht buchbar</span>
+                                <div class="text-muted small mt-1">Nullbeträge können nicht importiert werden.</div>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-end mt-3">
+                <button type="submit" class="btn btn-success">Import abschließen</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const selects = document.querySelectorAll(".booking-type-select");
+        const togglePanels = (row, type) => {
+            const mietePanel = document.getElementById(`booking-miete-${row}`);
+            const bkPanel = document.getElementById(`booking-bk-${row}`);
+            if (!mietePanel || !bkPanel) {
+                return;
+            }
+            if (type === "bk") {
+                mietePanel.classList.add("d-none");
+                bkPanel.classList.remove("d-none");
+                return;
+            }
+            bkPanel.classList.add("d-none");
+            mietePanel.classList.remove("d-none");
+        };
+
+        selects.forEach((select) => {
+            const row = select.dataset.row;
+            togglePanels(row, select.value);
+            select.addEventListener("change", () => togglePanels(row, select.value));
+        });
+    });
+</script>
+{% endblock %}

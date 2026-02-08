@@ -1,11 +1,13 @@
 from builtins import property as builtin_property
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import models
 from django.db.models import Prefetch
+from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
+from simple_history.models import HistoricalRecords
 
 # Validator für die Postleitzahl (4 bis 5 Ziffern)
 zip_validator = RegexValidator(
@@ -338,6 +340,7 @@ class LeaseAgreement(models.Model):
         validators=[MinValueValidator(0)],
         verbose_name=_("Kaution"),
     )
+    history = HistoricalRecords(m2m_fields=["tenants"])
 
     @property
     def rent_per_sqm(self):
@@ -347,9 +350,13 @@ class LeaseAgreement(models.Model):
 
     @property
     def total_gross_rent(self):
-        return (self.net_rent + self.operating_costs_net) * Decimal("1.10") + (
-            self.heating_costs_net * Decimal("1.20")
-        )
+        hmz_tax_rate = Decimal("0.10")
+        if self.unit and self.unit.unit_type == Unit.UnitType.PARKING:
+            hmz_tax_rate = Decimal("0.20")
+        hmz_gross = self.net_rent * (Decimal("1.00") + hmz_tax_rate)
+        bk_gross = self.operating_costs_net * Decimal("1.10")
+        hk_gross = self.heating_costs_net * Decimal("1.20")
+        return hmz_gross + bk_gross + hk_gross
 
     class Meta:
         verbose_name = _("Mietvertrag")
@@ -357,6 +364,202 @@ class LeaseAgreement(models.Model):
 
     def __str__(self) -> str:
         return f"{self.unit} · {self.entry_date}"
+
+
+class BankTransaktion(models.Model):
+    referenz_nummer = models.CharField(
+        max_length=255,
+        unique=True,
+        verbose_name=_("Referenznummer"),
+    )
+    partner_name = models.CharField(
+        max_length=255,
+        blank=True,
+        verbose_name=_("Partner"),
+    )
+    iban = models.CharField(
+        max_length=34,
+        blank=True,
+        verbose_name=_("IBAN"),
+    )
+    betrag = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        verbose_name=_("Betrag"),
+    )
+    buchungsdatum = models.DateField(verbose_name=_("Buchungsdatum"))
+    verwendungszweck = models.TextField(blank=True, verbose_name=_("Verwendungszweck"))
+
+    class Meta:
+        verbose_name = _("Banktransaktion")
+        verbose_name_plural = _("Banktransaktionen")
+        ordering = ["-buchungsdatum"]
+
+    def __str__(self) -> str:
+        return f"{self.referenz_nummer} ({self.buchungsdatum})"
+
+
+class Buchung(models.Model):
+    class Typ(models.TextChoices):
+        SOLL = "soll", _("Forderung an Mieter")
+        IST = "ist", _("Zahlungseingang vom Mieter")
+
+    class Kategorie(models.TextChoices):
+        HMZ = "hmz", _("Hauptmietzins")
+        BK = "bk", _("Betriebskosten")
+        HK = "hk", _("Heizkosten")
+        WASSER = "wasser", _("Wasser/Abwasser")
+        SONST = "sonst", _("Sonstiges")
+        ZAHLUNG = "zahlung", _("Geldeingang")
+
+    mietervertrag = models.ForeignKey(
+        "LeaseAgreement",
+        on_delete=models.PROTECT,
+        related_name="buchungen",
+        null=True,
+        blank=True,
+        verbose_name=_("Mietvertrag"),
+    )
+    einheit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="buchungen",
+        null=True,
+        blank=True,
+        verbose_name=_("Einheit"),
+    )
+    bank_transaktion = models.ForeignKey(
+        "BankTransaktion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="buchungen",
+        verbose_name=_("Banktransaktion"),
+    )
+    typ = models.CharField(
+        max_length=20,
+        choices=Typ.choices,
+        verbose_name=_("Typ"),
+    )
+    kategorie = models.CharField(
+        max_length=20,
+        choices=Kategorie.choices,
+        verbose_name=_("Kategorie"),
+    )
+    buchungstext = models.CharField(max_length=255, verbose_name=_("Buchungstext"))
+    datum = models.DateField(verbose_name=_("Datum"))
+    netto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Netto"))
+    ust_prozent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("10.00"),
+        verbose_name=_("USt (%)"),
+    )
+    brutto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Brutto"))
+    storniert_von = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stornos",
+        verbose_name=_("Storniert von"),
+    )
+    history = HistoricalRecords()
+
+    class Meta:
+        verbose_name = _("Buchung")
+        verbose_name_plural = _("Buchungen")
+
+    def __str__(self) -> str:
+        return f"{self.datum} · {self.mietervertrag} · {self.brutto}"
+
+    def clean(self):
+        super().clean()
+        if self.netto is None or self.ust_prozent is None or self.brutto is None:
+            return
+        expected = (
+            self.netto + (self.netto * self.ust_prozent / Decimal("100"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        actual = Decimal(self.brutto).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        tolerance = Decimal("0.00")
+        if self.typ == self.Typ.IST and self.kategorie == self.Kategorie.ZAHLUNG:
+            # Bank-Bruttowerte kommen fix in Cent; bei Rückrechnung auf Netto mit 10/20 %
+            # kann durch Rundung in seltenen Fällen 1 Cent Differenz entstehen.
+            tolerance = Decimal("0.01")
+        if (expected - actual).copy_abs() > tolerance:
+            raise ValidationError(
+                {
+                    "brutto": _(
+                        "Brutto entspricht nicht Netto plus USt. (2 Nachkommastellen)."
+                    )
+                }
+            )
+
+
+class BetriebskostenBeleg(models.Model):
+    class BKArt(models.TextChoices):
+        STROM = "strom", _("Strom")
+        WASSER = "wasser", _("Wasser")
+        BETRIEBSKOSTEN = "betriebskosten", _("Betriebskosten")
+        SONSTIG = "sonstig", _("Sonstiges")
+
+    liegenschaft = models.ForeignKey(
+        "Property",
+        on_delete=models.PROTECT,
+        related_name="betriebskosten_belege",
+        verbose_name=_("Liegenschaft"),
+    )
+    bk_art = models.CharField(
+        max_length=30,
+        choices=BKArt.choices,
+        verbose_name=_("BK-Art"),
+    )
+    datum = models.DateField(verbose_name=_("Datum"))
+    netto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Netto"))
+    ust_prozent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("20.00"),
+        verbose_name=_("USt (%)"),
+    )
+    brutto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Brutto"))
+    lieferant_name = models.CharField(max_length=255, blank=True, verbose_name=_("Lieferant"))
+    iban = models.CharField(max_length=34, blank=True, verbose_name=_("IBAN"))
+    buchungstext = models.CharField(max_length=255, blank=True, verbose_name=_("Buchungstext"))
+    import_referenz = models.CharField(max_length=255, blank=True, default="", verbose_name=_("Import-Referenz"))
+    import_quelle = models.CharField(max_length=100, blank=True, default="bankimport", verbose_name=_("Import-Quelle"))
+
+    class Meta:
+        verbose_name = _("Betriebskostenbeleg")
+        verbose_name_plural = _("Betriebskostenbelege")
+        ordering = ["-datum", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["import_quelle", "import_referenz"],
+                condition=models.Q(import_referenz__gt=""),
+                name="uniq_bkbeleg_importquelle_referenz_not_blank",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.datum} · {self.liegenschaft} · {self.brutto}"
+
+    def clean(self):
+        super().clean()
+        if self.netto is None or self.ust_prozent is None or self.brutto is None:
+            return
+        expected = (
+            self.netto + (self.netto * self.ust_prozent / Decimal("100"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        actual = Decimal(self.brutto).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if expected != actual:
+            raise ValidationError(
+                {
+                    "brutto": _(
+                        "Brutto entspricht nicht Netto plus USt. (2 Nachkommastellen)."
+                    )
+                }
+            )
 
 
 class Meter(models.Model):

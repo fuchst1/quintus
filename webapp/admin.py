@@ -1,6 +1,23 @@
-from django.contrib import admin
+from decimal import Decimal, ROUND_HALF_UP
 
-from .models import LeaseAgreement, Manager, Meter, MeterReading, Owner, Ownership, Property, Tenant, Unit
+from django import forms
+from django.contrib import admin
+from simple_history.admin import SimpleHistoryAdmin
+
+from .models import (
+    BankTransaktion,
+    BetriebskostenBeleg,
+    Buchung,
+    LeaseAgreement,
+    Manager,
+    Meter,
+    MeterReading,
+    Owner,
+    Ownership,
+    Property,
+    Tenant,
+    Unit,
+)
 
 
 class OwnershipInline(admin.TabularInline):
@@ -58,10 +75,11 @@ class TenantAdmin(admin.ModelAdmin):
 
 
 @admin.register(LeaseAgreement)
-class LeaseAgreementAdmin(admin.ModelAdmin):
+class LeaseAgreementAdmin(SimpleHistoryAdmin):
     list_display = ("unit", "status", "entry_date", "exit_date", "net_rent")
     list_filter = ("status", "index_type", "manager")
     search_fields = ("unit__name", "tenants__first_name", "tenants__last_name")
+    history_list_display = ("status", "entry_date", "exit_date", "net_rent", "history_user", "history_date")
 
 
 @admin.register(Meter)
@@ -76,3 +94,47 @@ class MeterReadingAdmin(admin.ModelAdmin):
     list_display = ("meter", "date", "value")
     list_filter = ("date",)
     search_fields = ("meter__meter_number",)
+
+
+@admin.register(BankTransaktion)
+class BankTransaktionAdmin(admin.ModelAdmin):
+    list_display = ("buchungsdatum", "partner_name", "iban", "betrag", "referenz_nummer")
+    search_fields = ("partner_name", "iban", "referenz_nummer", "verwendungszweck")
+    list_filter = ("buchungsdatum",)
+
+
+@admin.register(Buchung)
+class BuchungAdmin(SimpleHistoryAdmin):
+    class BuchungAdminForm(forms.ModelForm):
+        class Meta:
+            model = Buchung
+            fields = "__all__"
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if "brutto" in self.fields:
+                self.fields["brutto"].disabled = True
+
+        def clean(self):
+            cleaned_data = super().clean()
+            netto = cleaned_data.get("netto")
+            ust_prozent = cleaned_data.get("ust_prozent")
+            if netto is None or ust_prozent is None:
+                return cleaned_data
+            computed = (
+                netto + (netto * ust_prozent / Decimal("100"))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            cleaned_data["brutto"] = computed
+            self.instance.brutto = computed
+            return cleaned_data
+
+    form = BuchungAdminForm
+    list_display = ("datum", "mietervertrag", "kategorie", "typ", "brutto")
+    list_filter = ("typ", "kategorie", "datum")
+
+
+@admin.register(BetriebskostenBeleg)
+class BetriebskostenBelegAdmin(admin.ModelAdmin):
+    list_display = ("datum", "liegenschaft", "bk_art", "netto", "ust_prozent", "brutto")
+    list_filter = ("bk_art", "datum", "liegenschaft")
+    search_fields = ("buchungstext", "lieferant_name", "iban", "import_referenz")

@@ -1,0 +1,118 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Offene Posten{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h3 class="fw-bold mb-2">Offene Posten</h3>
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <a href="?monat={{ previous_month_input }}" class="btn btn-outline-secondary btn-sm offene-posten-month-nav">
+            <i class="bi bi-chevron-left"></i> {{ previous_month_label }}
+        </a>
+        <a href="?monat={{ next_month_input }}" class="btn btn-outline-secondary btn-sm offene-posten-month-nav">
+            {{ next_month_label }} <i class="bi bi-chevron-right"></i>
+        </a>
+        <a href="{% url 'offene_posten' %}" class="btn btn-outline-dark btn-sm">Aktueller Monat</a>
+        <div class="offene-posten-current-month">
+            <span class="offene-posten-current-month__label">Aktiver Monat</span>
+            <span class="offene-posten-current-month__value">{{ month_label }}</span>
+        </div>
+    </div>
+    <div class="text-muted small">Abgleich für den Monat {{ month_label }}</div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="text-muted small">Vortrag</div>
+                <div class="h4 mb-0 {% if total_vortrag < 0 %}text-danger{% elif total_vortrag > 0 %}text-primary{% else %}text-muted{% endif %}">
+                    {{ total_vortrag }}
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="text-muted small">Soll (Monat)</div>
+                <div class="h4 mb-0">{{ total_soll }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="text-muted small">Haben (Monat)</div>
+                <div class="h4 mb-0">{{ total_haben }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="text-muted small">Endsaldo</div>
+                <div class="h4 mb-0 {% if total_endsaldo < 0 %}text-danger{% elif total_endsaldo > 0 %}text-primary{% else %}text-success{% endif %}">
+                    {{ total_endsaldo }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-4">Mietvertrag</th>
+                        <th>Mieter</th>
+                        <th class="text-end">Vortrag</th>
+                        <th class="text-end">Soll</th>
+                        <th class="text-end">Haben</th>
+                        <th class="text-end">Endsaldo</th>
+                        <th class="text-end">Offen</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td class="ps-4">
+                            <a href="{% url 'lease_detail' row.lease.pk %}" class="text-decoration-none">
+                                {{ row.lease.unit.property.name }} · {{ row.lease.unit.name }}
+                            </a>
+                        </td>
+                        <td>
+                            {% for tenant in row.lease.tenants.all %}
+                                {{ tenant.first_name }} {{ tenant.last_name }}{% if not forloop.last %}, {% endif %}
+                            {% empty %}
+                                —
+                            {% endfor %}
+                        </td>
+                        <td class="text-end {% if row.vortrag < 0 %}text-danger{% elif row.vortrag > 0 %}text-primary{% else %}text-muted{% endif %}">
+                            {{ row.vortrag }}
+                        </td>
+                        <td class="text-end">{{ row.soll }}</td>
+                        <td class="text-end">{{ row.haben }}</td>
+                        <td class="text-end {% if row.endsaldo < 0 %}text-danger{% elif row.endsaldo > 0 %}text-primary{% else %}text-success{% endif %}">
+                            {{ row.endsaldo }}
+                        </td>
+                        <td class="text-end {% if row.offen > 0 %}text-danger{% elif row.offen < 0 %}text-primary{% else %}text-success{% endif %}">
+                            {{ row.offen }}
+                        </td>
+                        <td>
+                            <span class="badge text-bg-{{ row.status_class }}">{{ row.status_label }}</span>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center py-5 text-muted">Keine Mietverträge für diesen Monat gefunden.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

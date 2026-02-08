@@ -27,8 +27,7 @@
                     <th class="ps-4">Datum</th>
                     <th>Wert</th>
                     <th>Letzter Verbrauch</th>
-                    <th>Jahresverbrauch {{ current_year }}</th>
-                    <th>Jahresverbrauch {{ current_year|add:"-1" }}</th>
+                    <th>Jahresverbrauch</th>
                     <th>Notiz</th>
                 </tr>
             </thead>
@@ -53,15 +52,8 @@
                         {% endif %}
                     </td>
                     <td>
-                        {% if yearly_consumption_current is not None %}
-                            {{ yearly_consumption_current }} {{ reading.meter.get_unit_of_measure_display }}
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if yearly_consumption_previous is not None %}
-                            {{ yearly_consumption_previous }} {{ reading.meter.get_unit_of_measure_display }}
+                        {% if reading.yearly_consumption is not None %}
+                            {{ reading.yearly_consumption }} {{ reading.meter.get_unit_of_measure_display }}
                         {% else %}
                             —
                         {% endif %}
@@ -70,7 +62,7 @@
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="7" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
+                    <td colspan="6" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>

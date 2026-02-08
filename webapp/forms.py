@@ -1,9 +1,24 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django import forms
 from django.db.models import CharField, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.forms import inlineformset_factory
-from .models import LeaseAgreement, Manager, Meter, MeterReading, Property, Ownership, Owner, Tenant, Unit
+from .models import (
+    BankTransaktion,
+    BetriebskostenBeleg,
+    Buchung,
+    LeaseAgreement,
+    Manager,
+    Meter,
+    MeterReading,
+    Ownership,
+    Owner,
+    Property,
+    Tenant,
+    Unit,
+)
 
 class PropertyForm(forms.ModelForm):
     class Meta:
@@ -302,3 +317,179 @@ PropertyOwnershipFormSet = inlineformset_factory(
     extra=1,
     can_delete=True,
 )
+
+
+class BankImportForm(forms.Form):
+    json_file = forms.FileField(
+        label="JSON-Datei",
+        widget=forms.ClearableFileInput(
+            attrs={
+                "class": "form-control",
+                "accept": "application/json",
+            }
+        ),
+    )
+
+
+class BuchungForm(forms.ModelForm):
+    liegenschaft = forms.ModelChoiceField(
+        queryset=Property.objects.all(),
+        required=True,
+        label="Liegenschaft",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    datum = forms.DateField(
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+        input_formats=["%Y-%m-%d", "%d.%m.%Y"],
+    )
+
+    class Meta:
+        model = Buchung
+        fields = [
+            "liegenschaft",
+            "einheit",
+            "typ",
+            "kategorie",
+            "buchungstext",
+            "datum",
+            "netto",
+            "ust_prozent",
+            "brutto",
+            "storniert_von",
+        ]
+        widgets = {
+            "typ": forms.Select(attrs={"class": "form-select"}),
+            "kategorie": forms.Select(attrs={"class": "form-select"}),
+            "buchungstext": forms.TextInput(attrs={"class": "form-control"}),
+            "netto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "ust_prozent": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "brutto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "storniert_von": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        self.prefill_mietervertrag_id = kwargs.pop("mietervertrag_prefill_id", None)
+        super().__init__(*args, **kwargs)
+        self.fields["einheit"].required = False
+        self.fields["einheit"].widget.attrs.setdefault("class", "form-select")
+        property_id = None
+        if self.is_bound:
+            property_id = self.data.get("liegenschaft") or self.initial.get("liegenschaft")
+        elif self.initial.get("liegenschaft"):
+            property_id = self.initial.get("liegenschaft")
+        elif self.instance.pk and self.instance.einheit_id:
+            property_id = self.instance.einheit.property_id
+            self.initial["liegenschaft"] = property_id
+
+        if property_id:
+            self.fields["einheit"].queryset = Unit.objects.filter(
+                property_id=property_id
+            ).order_by("door_number", "name")
+        else:
+            self.fields["einheit"].queryset = Unit.objects.none()
+        if not self.is_bound and not self.instance.pk:
+            self.fields["datum"].initial = timezone.now().date()
+        self.fields["brutto"].widget.attrs["readonly"] = "readonly"
+
+    def clean(self):
+        cleaned_data = super().clean()
+        liegenschaft = cleaned_data.get("liegenschaft")
+        einheit = cleaned_data.get("einheit")
+        netto = cleaned_data.get("netto")
+        ust_prozent = cleaned_data.get("ust_prozent")
+        prefill_lease = None
+        if self.prefill_mietervertrag_id:
+            prefill_lease = (
+                LeaseAgreement.objects.select_related("unit")
+                .filter(pk=self.prefill_mietervertrag_id)
+                .first()
+            )
+        if liegenschaft and einheit and einheit.property_id != liegenschaft.id:
+            self.add_error("einheit", "Die Einheit gehört nicht zur gewählten Liegenschaft.")
+        if einheit:
+            if prefill_lease and prefill_lease.unit_id == einheit.id:
+                cleaned_data["mietervertrag"] = prefill_lease
+                self.instance.mietervertrag = prefill_lease
+            elif self.instance.pk and self.instance.mietervertrag and einheit == self.instance.einheit:
+                cleaned_data["mietervertrag"] = self.instance.mietervertrag
+            else:
+                active_leases = LeaseAgreement.objects.filter(
+                    unit=einheit,
+                    status=LeaseAgreement.Status.AKTIV,
+                )
+                if active_leases.count() == 1:
+                    mietervertrag = active_leases.first()
+                    cleaned_data["mietervertrag"] = mietervertrag
+                    self.instance.mietervertrag = mietervertrag
+                elif active_leases.count() == 0:
+                    self.add_error(
+                        "einheit",
+                        "Für diese Einheit gibt es keinen laufenden Mietvertrag.",
+                    )
+                else:
+                    self.add_error(
+                        "einheit",
+                        "Für diese Einheit gibt es mehrere laufende Mietverträge.",
+                    )
+        else:
+            cleaned_data["mietervertrag"] = None
+            self.instance.mietervertrag = None
+        if netto is None or ust_prozent is None:
+            return cleaned_data
+        brutto = (
+            netto + (netto * ust_prozent / Decimal("100"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        cleaned_data["brutto"] = brutto
+        self.instance.brutto = brutto
+        return cleaned_data
+
+
+class BetriebskostenBelegForm(forms.ModelForm):
+    datum = forms.DateField(
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+        input_formats=["%Y-%m-%d", "%d.%m.%Y"],
+    )
+
+    class Meta:
+        model = BetriebskostenBeleg
+        fields = [
+            "liegenschaft",
+            "bk_art",
+            "datum",
+            "netto",
+            "ust_prozent",
+            "brutto",
+            "buchungstext",
+            "lieferant_name",
+            "iban",
+        ]
+        widgets = {
+            "liegenschaft": forms.Select(attrs={"class": "form-select"}),
+            "bk_art": forms.Select(attrs={"class": "form-select"}),
+            "netto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "ust_prozent": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "brutto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "buchungstext": forms.TextInput(attrs={"class": "form-control"}),
+            "lieferant_name": forms.TextInput(attrs={"class": "form-control"}),
+            "iban": forms.TextInput(attrs={"class": "form-control"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.is_bound and not self.instance.pk:
+            self.fields["datum"].initial = timezone.now().date()
+            self.fields["ust_prozent"].initial = Decimal("20.00")
+        self.fields["brutto"].widget.attrs["readonly"] = "readonly"
+
+    def clean(self):
+        cleaned_data = super().clean()
+        netto = cleaned_data.get("netto")
+        ust_prozent = cleaned_data.get("ust_prozent")
+        if netto is None or ust_prozent is None:
+            return cleaned_data
+        brutto = (
+            netto + (netto * ust_prozent / Decimal("100"))
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        cleaned_data["brutto"] = brutto
+        self.instance.brutto = brutto
+        return cleaned_data

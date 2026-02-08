@@ -1,0 +1,144 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Betriebskostenbeleg{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Betriebskostenbeleg</h3>
+    <a href="{% url 'betriebskostenbeleg_list' %}" class="btn btn-light">Zurück</a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <form method="post">
+            {% csrf_token %}
+            {% if form.errors %}
+                <div class="alert alert-danger">
+                    Bitte korrigiere die markierten Felder.
+                </div>
+            {% endif %}
+            {% if form.non_field_errors %}
+                <div class="alert alert-danger">
+                    {{ form.non_field_errors }}
+                </div>
+            {% endif %}
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Liegenschaft</label>
+                    {{ form.liegenschaft }}
+                    {% if form.liegenschaft.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.liegenschaft.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Art</label>
+                    {{ form.bk_art }}
+                    {% if form.bk_art.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.bk_art.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Datum</label>
+                    {{ form.datum }}
+                    {% if form.datum.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.datum.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Netto</label>
+                    {{ form.netto }}
+                    {% if form.netto.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.netto.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">USt (%)</label>
+                    {{ form.ust_prozent }}
+                    {% if form.ust_prozent.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.ust_prozent.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Brutto (berechnet)</label>
+                    {{ form.brutto }}
+                    {% if form.brutto.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.brutto.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-8">
+                    <label class="form-label">Buchungstext</label>
+                    {{ form.buchungstext }}
+                    {% if form.buchungstext.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.buchungstext.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Lieferant</label>
+                    {{ form.lieferant_name }}
+                    {% if form.lieferant_name.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.lieferant_name.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">IBAN</label>
+                    {{ form.iban }}
+                    {% if form.iban.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.iban.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="mt-4 d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Speichern</button>
+                <a href="{% url 'betriebskostenbeleg_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const nettoInput = document.getElementById("id_netto");
+        const ustInput = document.getElementById("id_ust_prozent");
+        const bruttoInput = document.getElementById("id_brutto");
+
+        const updateBrutto = () => {
+            if (!nettoInput || !ustInput || !bruttoInput) {
+                return;
+            }
+            const netto = parseFloat(nettoInput.value.replace(",", "."));
+            const ust = parseFloat(ustInput.value.replace(",", "."));
+            if (Number.isNaN(netto) || Number.isNaN(ust)) {
+                bruttoInput.value = "";
+                return;
+            }
+            const brutto = netto + (netto * ust / 100);
+            bruttoInput.value = brutto.toFixed(2);
+        };
+
+        if (nettoInput && ustInput) {
+            nettoInput.addEventListener("input", updateBrutto);
+            ustInput.addEventListener("input", updateBrutto);
+            updateBrutto();
+        }
+    });
+</script>
+{% endblock %}

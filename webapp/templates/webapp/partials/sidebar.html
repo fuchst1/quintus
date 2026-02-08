@@ -12,55 +12,84 @@
             </a>
         </li>
 
-        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 1.1rem; letter-spacing: 1px;">
-            Stammdaten
-        </div>
-
         <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
             Objekte
         </div>
         <li>
-            <a href="{% url 'property_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'property_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-building me-2"></i>
                 Liegenschaften
             </a>
         </li>
         <li>
-            <a href="{% url 'unit_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'unit_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-door-open me-2"></i>
                 Einheiten
             </a>
         </li>
         <li>
-            <a href="{% url 'lease_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'lease_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' %}active-quintus{% endif %}">
                 <i class="bi bi-file-earmark-text me-2"></i>
                 Mietverträge
             </a>
         </li>
         <li>
-            <a href="{% url 'meter_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'meter_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-speedometer2 me-2"></i>
                 Zähler
             </a>
         </li>
 
         <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
+            Verwaltung
+        </div>
+        <li>
+            <a href="{% url 'bank_import' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'bank_import' %}active-quintus{% endif %}">
+                <i class="bi bi-bank me-2"></i>
+                Bankimport
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'offene_posten' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'offene_posten' %}active-quintus{% endif %}">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                Offene Posten
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'buchung_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' %}active-quintus{% endif %}">
+                <i class="bi bi-receipt me-2"></i>
+                Buchungen
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'betriebskostenbeleg_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' %}active-quintus{% endif %}">
+                <i class="bi bi-file-earmark-bar-graph me-2"></i>
+                Betriebskosten
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'betriebskostenabrechnung' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'betriebskostenabrechnung' %}active-quintus{% endif %}">
+                <i class="bi bi-calculator me-2"></i>
+                BK-Abrechnung
+            </a>
+        </li>
+        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
             Personen
         </div>
         <li>
-            <a href="{% url 'owner_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'owner_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-people me-2"></i>
                 Eigentümer
             </a>
         </li>
         <li>
-            <a href="{% url 'tenant_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'tenant_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-person-badge me-2"></i>
                 Mieter
             </a>
         </li>
         <li>
-            <a href="{% url 'manager_list' %}" class="nav-link text-white opacity-75 hover-light">
+            <a href="{% url 'manager_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}active-quintus{% endif %}">
                 <i class="bi bi-briefcase me-2"></i>
                 Verwalter
             </a>

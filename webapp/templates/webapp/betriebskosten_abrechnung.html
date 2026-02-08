@@ -1,0 +1,215 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Betriebskostenabrechnung{% endblock %}
+
+{% block content %}
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <input type="hidden" name="reiter" value="{{ selected_tab }}">
+            <div class="col-md-6 col-lg-6">
+                <label for="id_liegenschaft" class="form-label">Liegenschaft</label>
+                <select id="id_liegenschaft" name="liegenschaft" class="form-select" onchange="this.form.submit()">
+                    {% for property in properties %}
+                    <option value="{{ property.pk }}" {% if property.pk|stringformat:"s" == selected_property_id %}selected{% endif %}>
+                        {{ property.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-6 col-lg-3">
+                <label for="id_jahr" class="form-label">Jahr</label>
+                <select
+                    id="id_jahr"
+                    name="jahr"
+                    class="form-select"
+                    {% if year_choices %}onchange="this.form.submit()"{% else %}disabled{% endif %}
+                >
+                    {% if not year_choices %}
+                    <option>Keine Buchungsjahre</option>
+                    {% endif %}
+                    {% for year in year_choices %}
+                    <option value="{{ year }}" {% if year == selected_year %}selected{% endif %}>{{ year }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <ul class="nav nav-tabs bk-abrechnung-tabs mb-4">
+            {% for tab in tabs %}
+            <li class="nav-item">
+                <a
+                    class="nav-link {% if selected_tab == tab.id %}active{% endif %}"
+                    href="?liegenschaft={{ selected_property_id }}&jahr={{ selected_year }}&reiter={{ tab.id }}"
+                >
+                    {{ tab.label }}
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+
+        {% if not selected_property %}
+        <div class="alert alert-warning mb-0">Bitte eine Liegenschaft auswählen.</div>
+        {% elif not year_choices %}
+        <div class="alert alert-info mb-0">
+            Für diese Liegenschaft gibt es noch keine Buchungsjahre für die Betriebskostenabrechnung.
+        </div>
+        {% elif selected_tab == "uebersicht" %}
+        <div class="row g-4">
+            <div class="col-12 col-xl-6">
+                <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <h5 class="mb-0">Finanzen</h5>
+                    <div class="small text-muted">Alle Beträge netto</div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table align-middle bk-finance-table mb-2">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Kategorie</th>
+                                <th class="text-end">Ausgaben</th>
+                                <th class="text-end">Einnahmen</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Betriebskosten</td>
+                                <td class="text-end text-danger">€ {{ ausgaben_betriebskosten }}</td>
+                                <td class="text-end text-success">€ {{ einnahmen_betriebskosten }}</td>
+                            </tr>
+                            <tr>
+                                <td>Strom</td>
+                                <td class="text-end text-danger">€ {{ ausgaben_strom }}</td>
+                                <td class="text-end">€ 0,00</td>
+                            </tr>
+                            <tr>
+                                <td>Wasser</td>
+                                <td class="text-end text-danger">€ {{ ausgaben_wasser }}</td>
+                                <td class="text-end">€ 0,00</td>
+                            </tr>
+                            <tr>
+                                <td>Heizung</td>
+                                <td class="text-end">€ 0,00</td>
+                                <td class="text-end text-success">€ {{ einnahmen_heizung }}</td>
+                            </tr>
+                            <tr class="table-light fw-semibold bk-finance-table__sum-row">
+                                <td>Summen (Netto)</td>
+                                <td class="text-end text-danger">€ {{ ausgaben_gesamt }}</td>
+                                <td class="text-end text-success">€ {{ einnahmen_gesamt }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="bk-finance-result d-flex justify-content-between align-items-center">
+                    <div class="fw-semibold">Saldo / Differenz</div>
+                    <div class="bk-finance-result__value {% if saldo < 0 %}text-danger{% elif saldo > 0 %}text-success{% else %}text-muted{% endif %}">
+                        {% if saldo < 0 %}
+                            -€ {{ saldo|slice:"1:" }}
+                        {% else %}
+                            € {{ saldo }}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <h5 class="mb-0">Zählerstände</h5>
+                    <div class="small text-muted">Verbrauch {{ period_label }}</div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle bk-meter-table mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Typ</th>
+                                <th class="text-end">Verbrauch</th>
+                                <th>Einheit</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for group in meter_consumption_groups %}
+                            <tr class="table-light fw-semibold">
+                                <td colspan="3">{{ group.label }}</td>
+                            </tr>
+                                {% for row in group.rows %}
+                                <tr>
+                                    <td>
+                                        {{ row.meter_type }}
+                                        {% if row.meter_number %}
+                                        <div class="small text-muted">Nr. {{ row.meter_number }}</div>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">{{ row.consumption_display }}</td>
+                                    <td>{{ row.unit_label }}</td>
+                                </tr>
+                                {% endfor %}
+                            {% empty %}
+                            <tr>
+                                <td colspan="3" class="text-center py-3 text-muted">
+                                    Keine Zähler für diese Liegenschaft vorhanden.
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% elif selected_tab == "bk-allgemein" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">BK allg. {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">Verteilung nach BK-Anteil</div>
+        </div>
+        {% if not bk_allg.has_source_costs %}
+        <div class="alert alert-info mb-0">
+            Keine Betriebskosten-Belege mit BK-Art "Betriebskosten" für dieses Jahr gefunden.
+        </div>
+        {% elif not bk_allg.has_distribution_rows %}
+        <div class="alert alert-warning mb-0">
+            Es sind keine Einheiten mit BK-Anteil für die Verteilung hinterlegt.
+        </div>
+        {% else %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit / Mieter</th>
+                        <th class="text-end">BK-Anteil</th>
+                        <th class="text-end">Kostenanteil (€)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in bk_allg.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">{{ row.bk_anteil }}</td>
+                        <td class="text-end">€ {{ row.cost_share }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td colspan="2">Verteilte Summe</td>
+                        <td class="text-end">€ {{ bk_allg.distributed_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">Original Rechnungssumme</td>
+                        <td class="text-end">€ {{ bk_allg.original_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">Rundungsdifferenz</td>
+                        <td class="text-end {% if bk_allg.rounding_diff == 0 %}text-success{% elif bk_allg.rounding_diff < 0 %}text-danger{% else %}text-warning{% endif %}">
+                            € {{ bk_allg.rounding_diff }}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="alert alert-info mb-0">
+            Der Reiter "{{ selected_tab_label }}" wird in einem nächsten Schritt umgesetzt.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
