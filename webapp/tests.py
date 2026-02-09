@@ -264,6 +264,42 @@ class SollStellungCommandTests(TestCase):
         self.assertEqual(first_run_count, 3)
         self.assertEqual(second_run_count, 3)
 
+    def test_generate_monthly_soll_keeps_one_entry_per_category_after_double_run(self):
+        month_start = date(2026, 4, 1)
+        Buchung.objects.create(
+            mietervertrag=self.lease,
+            einheit=self.unit,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext="SOLL Hauptmietzins 04.2026",
+            datum=month_start,
+            netto=Decimal("500.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("550.00"),
+        )
+
+        call_command("generate_monthly_soll", month="2026-04")
+        call_command("generate_monthly_soll", month="2026-04")
+
+        month_entries = Buchung.objects.filter(
+            mietervertrag=self.lease,
+            typ=Buchung.Typ.SOLL,
+            datum=month_start,
+        )
+        self.assertEqual(month_entries.count(), 3)
+        self.assertEqual(
+            month_entries.filter(kategorie=Buchung.Kategorie.HMZ).count(),
+            1,
+        )
+        self.assertEqual(
+            month_entries.filter(kategorie=Buchung.Kategorie.BK).count(),
+            1,
+        )
+        self.assertEqual(
+            month_entries.filter(kategorie=Buchung.Kategorie.HK).count(),
+            1,
+        )
+
     def test_generate_rent_debits_alias_works(self):
         call_command("generate_rent_debits", month="2026-02")
         self.assertEqual(

@@ -469,6 +469,16 @@ class Buchung(models.Model):
     class Meta:
         verbose_name = _("Buchung")
         verbose_name_plural = _("Buchungen")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["mietervertrag", "datum", "kategorie", "typ"],
+                condition=models.Q(
+                    typ="soll",
+                    mietervertrag__isnull=False,
+                ),
+                name="uniq_buchung_soll_mietvertrag_datum_kategorie_typ",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.datum} · {self.mietervertrag} · {self.brutto}"

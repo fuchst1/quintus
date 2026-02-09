@@ -30,23 +30,16 @@ class Command(BaseCommand):
         )
         lease_ids = [lease.pk for lease in leases]
 
-        existing_keys = set(
-            Buchung.objects.filter(
-                typ=Buchung.Typ.SOLL,
-                datum=month_start,
-                mietervertrag_id__in=lease_ids,
-            ).values_list("mietervertrag_id", "kategorie")
-        )
-
         to_create = []
+        soll_categories = [
+            Buchung.Kategorie.HMZ,
+            Buchung.Kategorie.BK,
+            Buchung.Kategorie.HK,
+        ]
         for lease in leases:
             for category, netto, tax_rate in self._soll_components_for_lease(lease):
                 if netto is None or netto <= 0:
                     continue
-                key = (lease.pk, category)
-                if key in existing_keys:
-                    continue
-                existing_keys.add(key)
 
                 ust_prozent = (tax_rate * Decimal("100")).quantize(
                     Decimal("0.01"),
@@ -71,13 +64,30 @@ class Command(BaseCommand):
                 )
 
         for buchung in to_create:
-            buchung.full_clean()
+            buchung.full_clean(validate_unique=False, validate_constraints=False)
+
+        base_queryset = Buchung.objects.filter(
+            typ=Buchung.Typ.SOLL,
+            datum=month_start,
+            mietervertrag_id__in=lease_ids,
+            kategorie__in=soll_categories,
+        )
+        existing_before = base_queryset.count()
+        created_count = 0
+        skipped_conflicts = 0
+
         if to_create:
-            Buchung.objects.bulk_create(to_create)
+            Buchung.objects.bulk_create(to_create, ignore_conflicts=True)
+            existing_after = base_queryset.count()
+            created_count = max(existing_after - existing_before, 0)
+            skipped_conflicts = max(len(to_create) - created_count, 0)
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"{len(to_create)} SOLL-Buchungen für {month_start.strftime('%m.%Y')} erstellt."
+                (
+                    f"{created_count} SOLL-Buchungen für {month_start.strftime('%m.%Y')} erstellt. "
+                    f"{skipped_conflicts} aufgrund bestehender Einträge/Konflikte übersprungen."
+                )
             )
         )
 
