@@ -205,9 +205,253 @@
             </table>
         </div>
         {% endif %}
+        {% elif selected_tab == "wasser" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Wasserabrechnung {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">Hauszähler minus Wohnungszähler (Schwund-Verteilung)</div>
+        </div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Kostenpool (Netto)</div><div class="fw-semibold">€ {{ water_allocation.cost_pool }}</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Hausverbrauch</div><div class="fw-semibold">{{ water_allocation.house_consumption_m3 }} m³</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Gemessen (Einheiten)</div><div class="fw-semibold">{{ water_allocation.measured_units_m3 }} m³</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Schwund</div><div class="fw-semibold">{{ water_allocation.schwund_m3 }} m³</div></div></div>
+        </div>
+        <div class="small text-muted mb-2">Preis pro m³: € {{ water_allocation.price_per_m3 }}</div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit</th>
+                        <th class="text-end">Anteil %</th>
+                        <th class="text-end">Gemessen m³</th>
+                        <th class="text-end">Schwund m³</th>
+                        <th class="text-end">Abrechnung m³</th>
+                        <th class="text-end">Kostenanteil (€)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in water_allocation.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">{{ row.anteil_prozent }}</td>
+                        <td class="text-end">{{ row.measured_m3 }}</td>
+                        <td class="text-end">{{ row.schwund_anteil_m3 }}</td>
+                        <td class="text-end">{{ row.abrechnungsmenge_m3 }}</td>
+                        <td class="text-end">€ {{ row.cost_share }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">Keine Verteilungsdaten vorhanden.</td></tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td colspan="5">Verteilte Summe</td>
+                        <td class="text-end">€ {{ water_allocation.distributed_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="5">Rundungs-/Differenzwert</td>
+                        <td class="text-end">€ {{ water_allocation.rounding_diff }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% elif selected_tab == "allgemeinstrom" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Allgemeinstrom {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">Hausstrom minus WP-Strom, Verteilung nach BK-Anteil</div>
+        </div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Stromkosten gesamt</div><div class="fw-semibold">€ {{ electricity_common_allocation.stromkosten_total }}</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Hausstrom</div><div class="fw-semibold">{{ electricity_common_allocation.hausstrom_kwh }} kWh</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP-Strom</div><div class="fw-semibold">{{ electricity_common_allocation.wp_strom_kwh }} kWh</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Allgemeinstrom</div><div class="fw-semibold">{{ electricity_common_allocation.allgemeinstrom_kwh }} kWh</div></div></div>
+        </div>
+        <div class="small text-muted mb-2">
+            Preis pro kWh: € {{ electricity_common_allocation.price_per_kwh }} · Kostenpool: € {{ electricity_common_allocation.cost_pool }}
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit</th>
+                        <th class="text-end">Anteil %</th>
+                        <th class="text-end">Kostenanteil (€)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in electricity_common_allocation.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">{{ row.anteil_prozent }}</td>
+                        <td class="text-end">€ {{ row.cost_share }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="text-center text-muted py-3">Keine Verteilungsdaten vorhanden.</td></tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td colspan="2">Verteilte Summe</td>
+                        <td class="text-end">€ {{ electricity_common_allocation.distributed_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">Rundungsdifferenz</td>
+                        <td class="text-end">€ {{ electricity_common_allocation.rounding_diff }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% elif selected_tab == "warmwasser" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Warmwasser {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">WP-Aufteilung über Verhältnis Wärme/Warmwasser</div>
+        </div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Input</div><div class="fw-semibold">{{ wp_metrics.input_kwh }} kWh</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Output Wärme</div><div class="fw-semibold">{{ wp_metrics.output_heat_kwh }} kWh</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Output Warmwasser</div><div class="fw-semibold">{{ wp_metrics.output_ww_kwh }} kWh</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Ratio WW</div><div class="fw-semibold">{{ wp_metrics.ratio_ww }}</div></div></div>
+        </div>
+        <div class="small text-muted mb-2">
+            Kostenpool: € {{ hot_water_allocation.cost_pool }} · Hausverbrauch WW: {{ hot_water_allocation.house_consumption_m3 }} m³ · Preis/m³: € {{ hot_water_allocation.price_per_m3 }}
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit</th>
+                        <th class="text-end">Verbrauch m³</th>
+                        <th class="text-end">Kostenanteil (€)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in hot_water_allocation.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">{{ row.consumption_m3 }}</td>
+                        <td class="text-end">€ {{ row.cost_share }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="text-center text-muted py-3">Keine Warmwasser-Verbrauchsdaten vorhanden.</td></tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td colspan="2">Verteilte Summe</td>
+                        <td class="text-end">€ {{ hot_water_allocation.distributed_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">Differenz zum Kostenpool</td>
+                        <td class="text-end">€ {{ hot_water_allocation.rounding_diff }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% elif selected_tab == "heizung" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Heizung {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">Fix/variabel gemäß Heizkostenanteil der Liegenschaft</div>
+        </div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Heizkostenpool</div><div class="fw-semibold">€ {{ heating_allocation.cost_pool }}</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Fixpool ({{ heating_allocation.fixed_percent }}%)</div><div class="fw-semibold">€ {{ heating_allocation.fixed_pool }}</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Variabler Pool</div><div class="fw-semibold">€ {{ heating_allocation.variable_pool }}</div></div></div>
+            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Gesamtverbrauch</div><div class="fw-semibold">{{ heating_allocation.total_consumption_kwh }} kWh</div></div></div>
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit</th>
+                        <th class="text-end">Anteil %</th>
+                        <th class="text-end">Verbrauch kWh</th>
+                        <th class="text-end">Fix (€)</th>
+                        <th class="text-end">Variabel (€)</th>
+                        <th class="text-end">Gesamt (€)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in heating_allocation.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">{{ row.anteil_prozent }}</td>
+                        <td class="text-end">{{ row.consumption_kwh }}</td>
+                        <td class="text-end">€ {{ row.fixed_cost_share }}</td>
+                        <td class="text-end">€ {{ row.variable_cost_share }}</td>
+                        <td class="text-end">€ {{ row.cost_share }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">Keine Heizungsdaten vorhanden.</td></tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td colspan="5">Verteilte Summe</td>
+                        <td class="text-end">€ {{ heating_allocation.distributed_sum }}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="5">Differenz zum Heizkostenpool</td>
+                        <td class="text-end">€ {{ heating_allocation.rounding_diff }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        {% elif selected_tab == "zusammenfassung" %}
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <h5 class="mb-0">Gesamtabrechnung je Einheit {{ selected_property.name }} · {{ period_label }}</h5>
+            <div class="small text-muted">USt-Topf 10% (BK/Wasser/Strom/WW) + USt-Topf 20% (Heizung)</div>
+        </div>
+        <div class="table-responsive mb-3">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Einheit</th>
+                        <th class="text-end">Netto 10%</th>
+                        <th class="text-end">Netto 20%</th>
+                        <th class="text-end">Brutto gesamt</th>
+                        <th class="text-end">Akonto BK</th>
+                        <th class="text-end">Akonto HK</th>
+                        <th class="text-end">Saldo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in annual_statement.rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="text-end">€ {{ row.costs_net_10 }}</td>
+                        <td class="text-end">€ {{ row.costs_net_20 }}</td>
+                        <td class="text-end">€ {{ row.gross_total }}</td>
+                        <td class="text-end">€ {{ row.akonto_bk }}</td>
+                        <td class="text-end">€ {{ row.akonto_hk }}</td>
+                        <td class="text-end {% if row.saldo|first == '-' %}text-danger{% else %}text-success{% endif %}">€ {{ row.saldo }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="7" class="text-center text-muted py-3">Keine Einheitsdaten vorhanden.</td></tr>
+                    {% endfor %}
+                    <tr class="table-light fw-semibold">
+                        <td>Summe</td>
+                        <td class="text-end">€ {{ annual_statement.totals.net_10 }}</td>
+                        <td class="text-end">€ {{ annual_statement.totals.net_20 }}</td>
+                        <td class="text-end">€ {{ annual_statement.totals.gross_total }}</td>
+                        <td class="text-end" colspan="2">€ {{ annual_statement.totals.akonto_total }}</td>
+                        <td class="text-end">€ {{ annual_statement.totals.saldo_total }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="mb-2">Plausibilitätscheck 10%</h6>
+                    <div class="small">Pool: € {{ allocation_checks.sum_10_pool }}</div>
+                    <div class="small">Einheiten: € {{ allocation_checks.sum_10_units }}</div>
+                    <div class="small fw-semibold">Delta: € {{ allocation_checks.delta_10 }}</div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="border rounded p-3 h-100">
+                    <h6 class="mb-2">Plausibilitätscheck 20%</h6>
+                    <div class="small">Pool: € {{ allocation_checks.sum_20_pool }}</div>
+                    <div class="small">Einheiten: € {{ allocation_checks.sum_20_units }}</div>
+                    <div class="small fw-semibold">Delta: € {{ allocation_checks.delta_20 }}</div>
+                </div>
+            </div>
+        </div>
         {% else %}
         <div class="alert alert-info mb-0">
-            Der Reiter "{{ selected_tab_label }}" wird in einem nächsten Schritt umgesetzt.
+            Für diesen Reiter sind aktuell keine Daten verfügbar.
         </div>
         {% endif %}
     </div>

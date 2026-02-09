@@ -2,6 +2,10 @@
 from django.urls import path
 from .views import (
     DashboardView,
+    DateiArchiveView,
+    DateiDownloadView,
+    DateiPreviewView,
+    DateiUploadView,
     PropertyListView,
     PropertyCreateView,
     PropertyUpdateView,
@@ -50,6 +54,11 @@ from .views import (
 
 urlpatterns = [
     path('', DashboardView.as_view(), name='dashboard'),
+    path('dateien/upload/', DateiUploadView.as_view(), name='datei_upload'),
+    path('dateien/<int:pk>/download/', DateiDownloadView.as_view(), name='datei_download'),
+    path('dateien/<int:pk>/vorschau/', DateiPreviewView.as_view(), name='datei_preview'),
+    path('dateien/<int:pk>/archive/', DateiArchiveView.as_view(), name='datei_archive'),
+    path('dateien/<int:pk>/delete/', DateiArchiveView.as_view(), name='datei_delete'),
     path('properties/', PropertyListView.as_view(), name='property_list'),
     path('properties/add/', PropertyCreateView.as_view(), name='property_create'),
     path('properties/<int:pk>/edit/', PropertyUpdateView.as_view(), name='property_update'),

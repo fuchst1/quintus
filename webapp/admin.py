@@ -1,13 +1,16 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from simple_history.admin import SimpleHistoryAdmin
 
 from .models import (
     BankTransaktion,
     BetriebskostenBeleg,
     Buchung,
+    Datei,
+    DateiOperationLog,
+    DateiZuordnung,
     LeaseAgreement,
     Manager,
     Meter,
@@ -18,6 +21,7 @@ from .models import (
     Tenant,
     Unit,
 )
+from .services.files import DateiService
 
 
 class OwnershipInline(admin.TabularInline):
@@ -138,3 +142,118 @@ class BetriebskostenBelegAdmin(admin.ModelAdmin):
     list_display = ("datum", "liegenschaft", "bk_art", "netto", "ust_prozent", "brutto")
     list_filter = ("bk_art", "datum", "liegenschaft")
     search_fields = ("buchungstext", "lieferant_name", "iban", "import_referenz")
+
+
+@admin.register(Datei)
+class DateiAdmin(admin.ModelAdmin):
+    list_display = (
+        "original_name",
+        "kategorie",
+        "is_archived",
+        "mime_type",
+        "size_bytes",
+        "uploaded_by",
+        "archived_by",
+        "archived_at",
+        "duplicate_of",
+        "created_at",
+    )
+    list_filter = ("kategorie", "is_archived", "created_at", "archived_at")
+    search_fields = ("original_name", "beschreibung", "checksum_sha256")
+    readonly_fields = (
+        "original_name",
+        "mime_type",
+        "size_bytes",
+        "checksum_sha256",
+        "duplicate_of",
+        "created_at",
+        "archived_at",
+        "archived_by",
+    )
+    actions = ("archive_selected", "restore_selected")
+
+    @admin.action(description="Ausgewählte Dateien archivieren")
+    def archive_selected(self, request, queryset):
+        updated = 0
+        for datei in queryset:
+            if datei.is_archived:
+                continue
+            DateiService.archive(user=request.user, datei=datei)
+            updated += 1
+        if updated:
+            self.message_user(request, f"{updated} Datei(en) archiviert.", level=messages.SUCCESS)
+        else:
+            self.message_user(
+                request,
+                "Keine Dateien archiviert (bereits archiviert oder ohne Berechtigung).",
+                level=messages.WARNING,
+            )
+
+    @admin.action(description="Ausgewählte Dateien wiederherstellen")
+    def restore_selected(self, request, queryset):
+        updated = 0
+        for datei in queryset:
+            if not datei.is_archived:
+                continue
+            DateiService.restore(user=request.user, datei=datei)
+            updated += 1
+        if updated:
+            self.message_user(
+                request,
+                f"{updated} Datei(en) wiederhergestellt.",
+                level=messages.SUCCESS,
+            )
+        else:
+            self.message_user(
+                request,
+                "Keine Dateien wiederhergestellt.",
+                level=messages.WARNING,
+            )
+
+
+@admin.register(DateiZuordnung)
+class DateiZuordnungAdmin(admin.ModelAdmin):
+    list_display = (
+        "datei",
+        "content_type",
+        "object_id",
+        "kontext",
+        "sichtbar_fuer_verwalter",
+        "sichtbar_fuer_eigentuemer",
+        "sichtbar_fuer_mieter",
+        "created_at",
+    )
+    list_filter = (
+        "content_type",
+        "sichtbar_fuer_verwalter",
+        "sichtbar_fuer_eigentuemer",
+        "sichtbar_fuer_mieter",
+        "created_at",
+    )
+    search_fields = ("datei__original_name", "kontext")
+
+
+@admin.register(DateiOperationLog)
+class DateiOperationLogAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "operation",
+        "success",
+        "actor",
+        "datei_name",
+        "content_type",
+        "object_id",
+    )
+    list_filter = ("operation", "success", "created_at")
+    search_fields = ("datei_name", "detail", "actor__username")
+    readonly_fields = (
+        "created_at",
+        "operation",
+        "success",
+        "actor",
+        "datei",
+        "datei_name",
+        "content_type",
+        "object_id",
+        "detail",
+    )

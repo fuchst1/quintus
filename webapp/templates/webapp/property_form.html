@@ -64,6 +64,9 @@
                 </form>
             </div>
         </div>
+        {% if object %}
+            {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel %}
+        {% endif %}
     </div>
 </div>
 {% endblock %} 

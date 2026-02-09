@@ -1,21 +1,26 @@
 import json
+import os
 from calendar import monthrange
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
 
 from django.contrib import messages
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import FileResponse, Http404
 from django.db.models import DecimalField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views.generic import TemplateView, ListView, CreateView, UpdateView, DeleteView
-from django.views.generic import DetailView
+from django.views.generic import DetailView, View
 from .models import (
     BetriebskostenBeleg,
     Buchung,
+    Datei,
     LeaseAgreement,
     Manager,
     Meter,
@@ -29,6 +34,7 @@ from .forms import (
     BankImportForm,
     BetriebskostenBelegForm,
     BuchungForm,
+    DateiUploadForm,
     LeaseAgreementForm,
     MeterForm,
     MeterReadingForm,
@@ -39,6 +45,60 @@ from .forms import (
     ManagerForm,
     TenantForm,
 )
+from .services.files import DateiService
+from .services.operating_cost_service import OperatingCostService
+
+
+def build_attachments_panel_context(request, target_object, *, title: str):
+    selected_filter = DateiService.normalize_filter_key(request.GET.get("datei_filter"))
+    assignments = DateiService.list_assignments_for_object(
+        target_object=target_object,
+        filter_key=selected_filter,
+        include_archived=False,
+    )
+    rows = []
+    for assignment in assignments:
+        datei = assignment.datei
+        if datei is None:
+            continue
+        mime_type = (datei.mime_type or "").lower()
+        is_image = mime_type.startswith("image/") or datei.kategorie in {
+            Datei.Kategorie.BILD,
+            Datei.Kategorie.ZAEHLERFOTO,
+        }
+        rows.append(
+            {
+                "assignment": assignment,
+                "datei": datei,
+                "is_image": is_image,
+                "can_download": DateiService.can_download(user=request.user, datei=datei),
+                "can_archive": DateiService.can_archive(user=request.user, datei=datei),
+            }
+        )
+
+    filters = []
+    for item in DateiService.filter_definitions():
+        filters.append(
+            {
+                "key": item["key"],
+                "label": item["label"],
+                "active": item["key"] == selected_filter,
+                "url": f"{request.path}?datei_filter={item['key']}",
+            }
+        )
+
+    return {
+        "title": title,
+        "target_app_label": target_object._meta.app_label,
+        "target_model": target_object._meta.model_name,
+        "target_object_id": target_object.pk,
+        "category_choices": DateiService.category_choices(),
+        "rows": rows,
+        "filters": filters,
+        "selected_filter": selected_filter,
+        "can_upload": DateiService.can_upload(target_object=target_object),
+        "next_url": request.get_full_path(),
+    }
 
 # Bestehendes Dashboard
 class DashboardView(TemplateView):
@@ -52,6 +112,97 @@ class DashboardView(TemplateView):
             'owners': Owner.objects.count(),
         }
         return context
+
+
+class DateiUploadView(View):
+    http_method_names = ["post"]
+    form_class = DateiUploadForm
+
+    def post(self, request, *args, **kwargs):
+        next_url = request.POST.get("next") or reverse_lazy("dashboard")
+        form = self.form_class(request.POST, request.FILES)
+        if not form.is_valid():
+            for errors in form.errors.values():
+                for error in errors:
+                    messages.error(request, error)
+            return redirect(next_url)
+
+        try:
+            datei = form.save()
+        except (ValidationError, PermissionDenied) as exc:
+            messages.error(request, str(exc))
+            return redirect(next_url)
+
+        messages.success(request, "Datei wurde hochgeladen.")
+        if datei.duplicate_of_id:
+            messages.warning(
+                request,
+                "Hinweis: Die Datei ist inhaltlich bereits vorhanden und wurde als Duplikat markiert.",
+            )
+        return redirect(next_url)
+
+
+class DateiDownloadView(LoginRequiredMixin, View):
+    http_method_names = ["get"]
+
+    def get(self, request, pk, *args, **kwargs):
+        datei = get_object_or_404(
+            Datei.objects.select_related("uploaded_by").prefetch_related("zuordnungen__content_type"),
+            pk=pk,
+        )
+        DateiService.prepare_download(user=request.user, datei=datei)
+        if not datei.file:
+            raise Http404("Datei wurde nicht gefunden.")
+
+        download_name = datei.original_name or os.path.basename(datei.file.name or "")
+        response = FileResponse(
+            datei.file.open("rb"),
+            as_attachment=True,
+            filename=download_name,
+        )
+        response["Content-Type"] = datei.mime_type or "application/octet-stream"
+        return response
+
+
+class DateiPreviewView(LoginRequiredMixin, View):
+    http_method_names = ["get"]
+
+    def get(self, request, pk, *args, **kwargs):
+        datei = get_object_or_404(
+            Datei.objects.select_related("uploaded_by").prefetch_related("zuordnungen__content_type"),
+            pk=pk,
+        )
+        DateiService.prepare_download(user=request.user, datei=datei)
+        if not datei.file:
+            raise Http404("Datei wurde nicht gefunden.")
+
+        mime_type = (datei.mime_type or "").lower()
+        if not mime_type.startswith("image/"):
+            raise Http404("Für diese Datei ist keine Vorschau verfügbar.")
+
+        response = FileResponse(
+            datei.file.open("rb"),
+            as_attachment=False,
+        )
+        response["Content-Type"] = mime_type
+        return response
+
+
+class DateiArchiveView(LoginRequiredMixin, View):
+    http_method_names = ["post"]
+
+    def post(self, request, pk, *args, **kwargs):
+        next_url = request.POST.get("next") or reverse_lazy("dashboard")
+        datei = get_object_or_404(Datei, pk=pk)
+        try:
+            DateiService.archive(user=request.user, datei=datei)
+        except PermissionDenied as exc:
+            messages.error(request, str(exc))
+            return redirect(next_url)
+
+        messages.success(request, "Datei wurde archiviert.")
+        return redirect(next_url)
+
 
 # NEU: CRUD Views für Liegenschaften
 class PropertyListView(ListView):
@@ -100,6 +251,11 @@ class PropertyUpdateView(UpdateView):
             )
         else:
             context["ownership_formset"] = PropertyOwnershipFormSet(instance=self.object)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zur Liegenschaft",
+        )
         return context
 
     def form_valid(self, form):
@@ -189,6 +345,15 @@ class TenantUpdateView(UpdateView):
     form_class = TenantForm
     template_name = "webapp/tenant_form.html"
     success_url = reverse_lazy("tenant_list")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zum Mieter",
+        )
+        return context
 
 
 class TenantDeleteView(DeleteView):
@@ -310,6 +475,11 @@ class LeaseAgreementDetailView(DetailView):
         context["soll_summe"] = soll_summe.quantize(cent)
         context["haben_summe"] = haben_summe.quantize(cent)
         context["kontostand"] = kontostand.quantize(cent)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zum Mietverhältnis",
+        )
         return context
 
 
@@ -397,6 +567,11 @@ class MeterReadingByMeterListView(ListView):
                 reading.yearly_consumption = yearly_map.get(reading.date.year)
             else:
                 reading.yearly_consumption = None
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            meter,
+            title="Dateien zum Verbrauchszähler",
+        )
         return context
 
 
@@ -1587,79 +1762,27 @@ class BetriebskostenAbrechnungView(TemplateView):
         if selected_tab not in valid_tabs:
             selected_tab = "uebersicht"
 
-        period_start = date(selected_year, 1, 1)
-        period_end = date(selected_year, 12, 31)
-        cent = Decimal("0.01")
+        report = OperatingCostService(
+            property=selected_property,
+            year=selected_year,
+        ).get_report_data()
 
-        ausgaben_strom = Decimal("0.00")
-        ausgaben_wasser = Decimal("0.00")
-        ausgaben_betriebskosten = Decimal("0.00")
-        einnahmen_betriebskosten = Decimal("0.00")
-        einnahmen_heizung = Decimal("0.00")
-        meter_consumption_groups = []
-        bk_allg = self._empty_bk_allg_data()
+        financials = report["financials"]
+        expenses = financials["expenses"]
+        income = financials["income"]
+        distribution = report["distribution"]["bk_allgemein"]
+        allocations = report.get("allocations", {})
 
-        if selected_property:
-            ausgaben = (
-                BetriebskostenBeleg.objects.filter(
-                    liegenschaft=selected_property,
-                    datum__gte=period_start,
-                    datum__lte=period_end,
-                ).aggregate(
-                    strom=Coalesce(
-                        Sum(
-                            "netto",
-                            filter=Q(bk_art=BetriebskostenBeleg.BKArt.STROM),
-                            output_field=DecimalField(max_digits=12, decimal_places=2),
-                        ),
-                        Value(Decimal("0.00")),
-                    ),
-                    wasser=Coalesce(
-                        Sum(
-                            "netto",
-                            filter=Q(bk_art=BetriebskostenBeleg.BKArt.WASSER),
-                            output_field=DecimalField(max_digits=12, decimal_places=2),
-                        ),
-                        Value(Decimal("0.00")),
-                    ),
-                    betriebskosten=Coalesce(
-                        Sum(
-                            "netto",
-                            filter=Q(bk_art__in=[
-                                BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
-                                BetriebskostenBeleg.BKArt.SONSTIG,
-                            ]),
-                            output_field=DecimalField(max_digits=12, decimal_places=2),
-                        ),
-                        Value(Decimal("0.00")),
-                    ),
-                )
-            )
-            ausgaben_strom = Decimal(ausgaben.get("strom") or Decimal("0.00")).quantize(cent)
-            ausgaben_wasser = Decimal(ausgaben.get("wasser") or Decimal("0.00")).quantize(cent)
-            ausgaben_betriebskosten = Decimal(
-                ausgaben.get("betriebskosten") or Decimal("0.00")
-            ).quantize(cent)
-
-            einnahmen_betriebskosten, einnahmen_heizung = self._einnahmen_aus_ist_buchungen(
-                liegenschaft=selected_property,
-                period_start=period_start,
-                period_end=period_end,
-            )
-            meter_consumption_groups = self._meter_consumption_groups(
-                liegenschaft=selected_property,
-                selected_year=selected_year,
-            )
-            bk_allg = self._bk_allgemein_data(
-                liegenschaft=selected_property,
-                selected_year=selected_year,
-            )
-
-        ausgaben_gesamt = (
-            ausgaben_strom + ausgaben_wasser + ausgaben_betriebskosten
-        ).quantize(cent)
-        einnahmen_gesamt = (einnahmen_betriebskosten + einnahmen_heizung).quantize(cent)
-        saldo = (einnahmen_gesamt - ausgaben_gesamt).quantize(cent)
+        ausgaben_strom = self._to_money_decimal(expenses.get("strom"))
+        ausgaben_wasser = self._to_money_decimal(expenses.get("wasser"))
+        ausgaben_betriebskosten = self._to_money_decimal(expenses.get("betriebskosten"))
+        ausgaben_gesamt = self._to_money_decimal(expenses.get("gesamt"))
+        einnahmen_betriebskosten = self._to_money_decimal(income.get("betriebskosten"))
+        einnahmen_heizung = self._to_money_decimal(income.get("heizung"))
+        einnahmen_gesamt = self._to_money_decimal(income.get("gesamt"))
+        saldo = self._to_money_decimal(financials.get("saldo"))
+        meter_consumption_groups = report["meter"].get("groups", [])
+        bk_allg = self._deserialize_bk_allg(distribution)
 
         context["tabs"] = [{"id": tab_id, "label": label} for tab_id, label in self.tabs]
         context["selected_tab"] = selected_tab
@@ -1673,6 +1796,15 @@ class BetriebskostenAbrechnungView(TemplateView):
         context["selected_property_id"] = selected_property_id
         context["selected_property"] = selected_property
         context["period_label"] = str(selected_year)
+        context["operating_cost_report"] = report
+        context["bk_distribution_legacy"] = allocations.get("bk_distribution", {})
+        context["water_allocation"] = allocations.get("water", {})
+        context["electricity_common_allocation"] = allocations.get("electricity_common", {})
+        context["wp_metrics"] = allocations.get("wp_metrics", {})
+        context["hot_water_allocation"] = allocations.get("hot_water", {})
+        context["heating_allocation"] = allocations.get("heating", {})
+        context["annual_statement"] = allocations.get("annual_statement", {})
+        context["allocation_checks"] = allocations.get("checks", {})
 
         context["ausgaben_strom"] = ausgaben_strom
         context["ausgaben_wasser"] = ausgaben_wasser
@@ -1763,327 +1895,35 @@ class BetriebskostenAbrechnungView(TemplateView):
             return year_choices[-1]
         return current_year
 
-    def _einnahmen_aus_ist_buchungen(self, liegenschaft, period_start, period_end):
-        cent = Decimal("0.01")
-        einnahmen_bk = Decimal("0.00")
-        einnahmen_hk = Decimal("0.00")
-        soll_profile_cache = {}
-
-        ist_buchungen = (
-            Buchung.objects.filter(
-                Q(mietervertrag__unit__property=liegenschaft) | Q(einheit__property=liegenschaft),
-                typ=Buchung.Typ.IST,
-                datum__gte=period_start,
-                datum__lte=period_end,
-            )
-            .select_related("mietervertrag", "mietervertrag__unit")
-            .order_by("datum", "id")
-        )
-
-        for buchung in ist_buchungen:
-            netto = Decimal(buchung.netto or Decimal("0.00")).quantize(cent)
-            if netto <= Decimal("0.00"):
-                continue
-
-            if buchung.kategorie == Buchung.Kategorie.BK:
-                einnahmen_bk += netto
-                continue
-            if buchung.kategorie == Buchung.Kategorie.HK:
-                einnahmen_hk += netto
-                continue
-
-            lease = buchung.mietervertrag
-            if not lease:
-                continue
-
-            profile = self._soll_profile_for_month(
-                lease=lease,
-                booking_date=buchung.datum,
-                cache=soll_profile_cache,
-            )
-            bucket_key = self._rate_bucket_key(buchung.ust_prozent)
-            bucket_data = profile.get(bucket_key)
-            if not bucket_data:
-                continue
-
-            bucket_total = bucket_data["total"]
-            if bucket_total <= Decimal("0.00"):
-                continue
-
-            bk_anteil = (
-                netto * bucket_data["bk"] / bucket_total
-            ).quantize(cent, rounding=ROUND_HALF_UP)
-            hk_anteil = (
-                netto * bucket_data["hk"] / bucket_total
-            ).quantize(cent, rounding=ROUND_HALF_UP)
-            einnahmen_bk += bk_anteil
-            einnahmen_hk += hk_anteil
-
-        return (
-            einnahmen_bk.quantize(cent),
-            einnahmen_hk.quantize(cent),
-        )
-
-    def _soll_profile_for_month(self, lease, booking_date, cache):
-        cent = Decimal("0.01")
-        cache_key = (lease.pk, booking_date.year, booking_date.month)
-        if cache_key in cache:
-            return cache[cache_key]
-
-        month_start, month_end = month_bounds(booking_date)
-        rows = (
-            Buchung.objects.filter(
-                mietervertrag=lease,
-                typ=Buchung.Typ.SOLL,
-                datum__gte=month_start,
-                datum__lte=month_end,
-                kategorie__in=[
-                    Buchung.Kategorie.HMZ,
-                    Buchung.Kategorie.BK,
-                    Buchung.Kategorie.HK,
-                ],
-            )
-            .values("kategorie", "ust_prozent")
-            .annotate(
-                netto_sum=Coalesce(
-                    Sum(
-                        "netto",
-                        output_field=DecimalField(max_digits=12, decimal_places=2),
-                    ),
-                    Value(Decimal("0.00")),
-                )
-            )
-        )
-
-        profile = {}
-        for row in rows:
-            bucket_key = self._rate_bucket_key(row["ust_prozent"])
-            if bucket_key not in profile:
-                profile[bucket_key] = {
-                    "hmz": Decimal("0.00"),
-                    "bk": Decimal("0.00"),
-                    "hk": Decimal("0.00"),
-                    "total": Decimal("0.00"),
-                }
-            amount = Decimal(row["netto_sum"] or Decimal("0.00")).quantize(cent)
-            category = row["kategorie"]
-            if category == Buchung.Kategorie.HMZ:
-                profile[bucket_key]["hmz"] += amount
-            elif category == Buchung.Kategorie.BK:
-                profile[bucket_key]["bk"] += amount
-            elif category == Buchung.Kategorie.HK:
-                profile[bucket_key]["hk"] += amount
-
-        if not profile:
-            hmz_tax = hmz_tax_percent_for_unit(lease.unit)
-            hmz_bucket = self._rate_bucket_key(hmz_tax)
-            bk_bucket = self._rate_bucket_key(Decimal("10.00"))
-            hk_bucket = self._rate_bucket_key(Decimal("20.00"))
-
-            profile = {
-                hmz_bucket: {
-                    "hmz": Decimal(lease.net_rent or Decimal("0.00")).quantize(cent),
-                    "bk": Decimal("0.00"),
-                    "hk": Decimal("0.00"),
-                    "total": Decimal("0.00"),
-                },
-                bk_bucket: {
-                    "hmz": Decimal("0.00"),
-                    "bk": Decimal(lease.operating_costs_net or Decimal("0.00")).quantize(cent),
-                    "hk": Decimal("0.00"),
-                    "total": Decimal("0.00"),
-                },
-                hk_bucket: {
-                    "hmz": Decimal("0.00"),
-                    "bk": Decimal("0.00"),
-                    "hk": Decimal(lease.heating_costs_net or Decimal("0.00")).quantize(cent),
-                    "total": Decimal("0.00"),
-                },
-            }
-
-        for bucket_data in profile.values():
-            bucket_data["total"] = (
-                bucket_data["hmz"] + bucket_data["bk"] + bucket_data["hk"]
-            ).quantize(cent)
-
-        cache[cache_key] = profile
-        return profile
-
     @staticmethod
-    def _rate_bucket_key(rate):
-        return str(
-            Decimal(rate or Decimal("0.00")).quantize(
-                Decimal("0.01"),
-                rounding=ROUND_HALF_UP,
-            )
+    def _to_money_decimal(value):
+        return Decimal(str(value or "0.00")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
         )
 
-    def _meter_consumption_groups(self, liegenschaft, selected_year):
-        cent3 = Decimal("0.001")
-        meters = list(
-            Meter.objects.filter(property=liegenschaft)
-            .select_related("unit")
-            .prefetch_related(
-                Prefetch("readings", queryset=MeterReading.objects.order_by("date", "id"))
-            )
-        )
-        meters.sort(
-            key=lambda meter: (
-                0 if meter.unit is None else 1,
-                (meter.unit.name or "").casefold() if meter.unit else "",
-                meter.meter_type,
-                meter.pk,
-            )
-        )
-
-        groups = []
-        group_map = {}
-
-        for meter in meters:
-            scope_key = meter.unit_id or 0
-            if scope_key not in group_map:
-                if meter.unit is None:
-                    label = f"{liegenschaft.name} (Allgemein)"
-                else:
-                    label = meter.unit.name
-                    if meter.unit.door_number:
-                        label = f"{label} · {meter.unit.door_number}"
-                group = {"label": label, "rows": []}
-                group_map[scope_key] = group
-                groups.append(group)
-
-            yearly_rows = Meter._calculate_yearly_consumption_for_meter(
-                meter,
-                list(meter.readings.all()),
-            )
-            year_row = next(
-                (row for row in yearly_rows if row["calc_year"] == selected_year),
-                None,
-            )
-            consumption = None
-            if year_row is not None and year_row.get("consumption") is not None:
-                consumption = Decimal(year_row["consumption"]).quantize(cent3)
-
-            group_map[scope_key]["rows"].append(
-                {
-                    "meter_type": meter.get_meter_type_display(),
-                    "meter_number": meter.meter_number or "",
-                    "unit_label": meter.get_unit_of_measure_display(),
-                    "consumption": consumption,
-                    "consumption_display": "—"
-                    if consumption is None
-                    else str(consumption),
-                }
-            )
-
-        return groups
-
-    @staticmethod
-    def _empty_bk_allg_data():
-        return {
-            "rows": [],
-            "original_sum": Decimal("0.00"),
-            "distributed_sum": Decimal("0.00"),
-            "rounding_diff": Decimal("0.00"),
-            "has_source_costs": False,
-            "has_distribution_rows": False,
-        }
-
-    def _bk_allgemein_data(self, liegenschaft, selected_year):
-        cent = Decimal("0.01")
-        if liegenschaft is None:
-            return self._empty_bk_allg_data()
-
-        period_start = date(selected_year, 1, 1)
-        period_end = date(selected_year, 12, 31)
-        original_sum = (
-            BetriebskostenBeleg.objects.filter(
-                liegenschaft=liegenschaft,
-                datum__gte=period_start,
-                datum__lte=period_end,
-                bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
-            ).aggregate(
-                total=Coalesce(
-                    Sum(
-                        "netto",
-                        output_field=DecimalField(max_digits=12, decimal_places=2),
-                    ),
-                    Value(Decimal("0.00")),
-                )
-            )["total"]
-            or Decimal("0.00")
-        )
-        original_sum = Decimal(original_sum).quantize(cent)
-        if original_sum <= Decimal("0.00"):
-            return self._empty_bk_allg_data()
-
-        lease_queryset = (
-            LeaseAgreement.objects.filter(entry_date__lte=period_end)
-            .filter(Q(exit_date__isnull=True) | Q(exit_date__gte=period_start))
-            .prefetch_related("tenants")
-            .order_by("-entry_date", "-id")
-        )
-        units = (
-            Unit.objects.filter(property=liegenschaft)
-            .prefetch_related(Prefetch("leases", queryset=lease_queryset, to_attr="leases_for_year"))
-            .order_by("name", "door_number", "id")
-        )
-
+    @classmethod
+    def _deserialize_bk_allg(cls, data):
         rows = []
-        total_share = Decimal("0.00")
-        for unit in units:
-            share = Decimal(unit.operating_cost_share or Decimal("0.00")).quantize(cent)
-            if share <= Decimal("0.00"):
-                continue
-            tenant_label = self._unit_tenant_label(unit)
+        for row in data.get("rows", []):
             rows.append(
                 {
-                    "label": f"{unit.name} - {tenant_label}" if tenant_label else unit.name,
-                    "bk_anteil": share,
-                    "cost_share": Decimal("0.00"),
+                    "unit_id": row.get("unit_id"),
+                    "label": row.get("label", ""),
+                    "bk_anteil": cls._to_money_decimal(row.get("bk_anteil")),
+                    "cost_share": cls._to_money_decimal(row.get("cost_share")),
                 }
             )
-            total_share += share
-
-        total_share = total_share.quantize(cent)
-        if total_share > Decimal("0.00"):
-            for row in rows:
-                row["cost_share"] = (
-                    original_sum * row["bk_anteil"] / total_share
-                ).quantize(cent, rounding=ROUND_HALF_UP)
-
-        distributed_sum = sum(
-            (row["cost_share"] for row in rows),
-            Decimal("0.00"),
-        ).quantize(cent)
-        rounding_diff = (original_sum - distributed_sum).quantize(cent)
-
         return {
             "rows": rows,
-            "original_sum": original_sum,
-            "distributed_sum": distributed_sum,
-            "rounding_diff": rounding_diff,
-            "has_source_costs": original_sum > Decimal("0.00"),
-            "has_distribution_rows": bool(rows),
+            "original_sum": cls._to_money_decimal(data.get("original_sum")),
+            "distributed_sum": cls._to_money_decimal(data.get("distributed_sum")),
+            "rounding_diff": cls._to_money_decimal(data.get("rounding_diff")),
+            "has_source_costs": bool(data.get("has_source_costs")),
+            "has_distribution_rows": bool(data.get("has_distribution_rows")),
+            "strategy": data.get("strategy", "operating_cost_share"),
+            "strategy_label": data.get("strategy_label", "BK-Anteil"),
         }
-
-    @staticmethod
-    def _unit_tenant_label(unit):
-        leases = list(getattr(unit, "leases_for_year", []) or [])
-        if not leases:
-            return ""
-
-        active_lease = next(
-            (lease for lease in leases if lease.status == LeaseAgreement.Status.AKTIV),
-            None,
-        )
-        selected_lease = active_lease or leases[0]
-        tenant_names = [
-            f"{tenant.first_name} {tenant.last_name}".strip()
-            for tenant in selected_lease.tenants.all()
-        ]
-        tenant_names = [name for name in tenant_names if name]
-        return ", ".join(tenant_names)
 
 
 class UnitListView(ListView):
@@ -2105,6 +1945,15 @@ class UnitUpdateView(UpdateView):
     form_class = UnitForm
     template_name = "webapp/unit_form.html"
     success_url = reverse_lazy("unit_list")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zur Einheit",
+        )
+        return context
 
 
 class UnitDeleteView(DeleteView):

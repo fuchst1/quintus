@@ -1,6 +1,7 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django import forms
+from django.core.exceptions import ValidationError
 from django.db.models import CharField, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -9,6 +10,7 @@ from .models import (
     BankTransaktion,
     BetriebskostenBeleg,
     Buchung,
+    Datei,
     LeaseAgreement,
     Manager,
     Meter,
@@ -19,6 +21,7 @@ from .models import (
     Tenant,
     Unit,
 )
+from .services.files import DateiService
 
 class PropertyForm(forms.ModelForm):
     class Meta:
@@ -329,6 +332,98 @@ class BankImportForm(forms.Form):
             }
         ),
     )
+
+
+class DateiUploadForm(forms.Form):
+    target_app_label = forms.CharField(widget=forms.HiddenInput())
+    target_model = forms.CharField(widget=forms.HiddenInput())
+    target_object_id = forms.IntegerField(widget=forms.HiddenInput())
+    file = forms.FileField(
+        label="Datei",
+        widget=forms.ClearableFileInput(
+            attrs={
+                "class": "form-control",
+                "accept": ".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png",
+            }
+        ),
+    )
+    kategorie = forms.ChoiceField(
+        label="Kategorie",
+        choices=Datei.Kategorie.choices,
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    beschreibung = forms.CharField(
+        required=False,
+        label="Beschreibung",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+    )
+    kontext = forms.CharField(
+        required=False,
+        label="Kontext",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    sichtbar_fuer_verwalter = forms.BooleanField(
+        required=False,
+        initial=True,
+        label="Sichtbar für Verwalter",
+    )
+    sichtbar_fuer_eigentuemer = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Sichtbar für Eigentümer",
+    )
+    sichtbar_fuer_mieter = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Sichtbar für Mieter",
+    )
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop("user", None)
+        self.target_object = None
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        app_label = cleaned_data.get("target_app_label")
+        model_name = cleaned_data.get("target_model")
+        object_id = cleaned_data.get("target_object_id")
+        upload = cleaned_data.get("file")
+        kategorie = cleaned_data.get("kategorie")
+
+        if app_label and model_name and object_id:
+            try:
+                self.target_object = DateiService.resolve_target_object(
+                    app_label=app_label,
+                    model_name=model_name,
+                    object_id=object_id,
+                )
+            except ValidationError as exc:
+                raise forms.ValidationError(str(exc)) from exc
+        else:
+            raise forms.ValidationError("Bitte ein gültiges Zielobjekt angeben.")
+
+        if upload and kategorie:
+            try:
+                DateiService.validate_upload(uploaded_file=upload, kategorie=kategorie)
+            except ValidationError as exc:
+                self.add_error("file", str(exc))
+
+        return cleaned_data
+
+    def save(self) -> Datei:
+        if not self.is_valid():
+            raise ValueError("DateiUploadForm kann nur mit validen Daten gespeichert werden.")
+        return DateiService.upload(
+            uploaded_file=self.cleaned_data["file"],
+            kategorie=self.cleaned_data["kategorie"],
+            target_object=self.target_object,
+            beschreibung=self.cleaned_data.get("beschreibung", ""),
+            kontext=self.cleaned_data.get("kontext", ""),
+            sichtbar_fuer_verwalter=self.cleaned_data.get("sichtbar_fuer_verwalter", True),
+            sichtbar_fuer_eigentuemer=self.cleaned_data.get("sichtbar_fuer_eigentuemer", False),
+            sichtbar_fuer_mieter=self.cleaned_data.get("sichtbar_fuer_mieter", False),
+        )
 
 
 class BuchungForm(forms.ModelForm):

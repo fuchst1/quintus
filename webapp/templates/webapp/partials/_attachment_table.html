@@ -1,0 +1,67 @@
+<div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+        <thead class="table-light">
+            <tr>
+                <th style="width: 88px;">Vorschau</th>
+                <th>Dateiname</th>
+                <th>Kategorie</th>
+                <th>Datum</th>
+                <th class="text-end">Größe</th>
+                <th>Hochgeladen von</th>
+                <th class="text-end">Aktionen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in attachments_panel.rows %}
+            <tr>
+                <td>
+                    {% if row.is_image and row.can_download %}
+                        <a href="{% url 'datei_preview' row.datei.pk %}" target="_blank" rel="noopener">
+                            <img
+                                src="{% url 'datei_preview' row.datei.pk %}"
+                                alt="{{ row.datei.original_name }}"
+                                class="rounded border"
+                                style="width: 64px; height: 64px; object-fit: cover;"
+                            >
+                        </a>
+                    {% else %}
+                        <div class="text-secondary"><i class="bi bi-file-earmark-text fs-5"></i></div>
+                    {% endif %}
+                </td>
+                <td class="fw-semibold">{{ row.datei.original_name|default:row.datei.file.name }}</td>
+                <td>{{ row.datei.get_kategorie_display }}</td>
+                <td>{{ row.datei.created_at|date:"d.m.Y H:i" }}</td>
+                <td class="text-end">{{ row.datei.size_bytes|filesizeformat }}</td>
+                <td>{{ row.datei.uploaded_by|default:"System" }}</td>
+                <td class="text-end">
+                    <div class="d-inline-flex gap-1">
+                        {% if row.can_download %}
+                            <a href="{% url 'datei_download' row.datei.pk %}" class="btn btn-sm btn-outline-primary">
+                                Download
+                            </a>
+                        {% endif %}
+                        {% if row.can_archive %}
+                            <form
+                                method="post"
+                                action="{% url 'datei_archive' row.datei.pk %}"
+                                onsubmit="return confirm('Datei wirklich archivieren?');"
+                                class="d-inline"
+                            >
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{{ attachments_panel.next_url }}">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Archivieren</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="7" class="text-center py-4 text-muted">
+                    Keine Dateien für den gewählten Filter vorhanden.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

@@ -17,6 +17,8 @@ Including another URLconf
 """
 URL configuration for core project.
 """
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 # WICHTIG: Hier muss 'include' mit importiert werden!
 from django.urls import path, include
@@ -27,3 +29,6 @@ urlpatterns = [
     # an die webapp weiter.
     path('', include('webapp.urls')),
 ]
+
+if settings.DEBUG and getattr(settings, "SERVE_MEDIA_IN_DEBUG", False):
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

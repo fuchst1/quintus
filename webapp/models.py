@@ -1,13 +1,21 @@
 from builtins import property as builtin_property
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+import hashlib
+import mimetypes
+import os
 
+from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.db.models import Prefetch
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 from simple_history.models import HistoricalRecords
+
+from .storage_paths import datei_upload_to
 
 # Validator für die Postleitzahl (4 bis 5 Ziffern)
 zip_validator = RegexValidator(
@@ -397,6 +405,354 @@ class BankTransaktion(models.Model):
 
     def __str__(self) -> str:
         return f"{self.referenz_nummer} ({self.buchungsdatum})"
+
+
+class Datei(models.Model):
+    class Kategorie(models.TextChoices):
+        BILD = "bild", _("Bild")
+        DOKUMENT = "dokument", _("Dokument")
+        BRIEF = "brief", _("Brief")
+        ZAEHLERFOTO = "zaehlerfoto", _("Zählerfoto")
+        VERTRAG = "vertrag", _("Vertrag")
+        SONSTIGES = "sonstiges", _("Sonstiges")
+
+    file = models.FileField(
+        upload_to=datei_upload_to,
+        verbose_name=_("Datei"),
+        help_text=_("Hochgeladene Binärdatei (z. B. Bild, PDF oder Dokument)."),
+    )
+    original_name = models.CharField(
+        max_length=255,
+        blank=True,
+        verbose_name=_("Originalname"),
+        help_text=_("Dateiname beim Upload."),
+    )
+    mime_type = models.CharField(
+        max_length=127,
+        blank=True,
+        verbose_name=_("MIME-Typ"),
+        help_text=_("Automatisch erkannter MIME-Typ (z. B. application/pdf)."),
+    )
+    size_bytes = models.PositiveBigIntegerField(
+        default=0,
+        verbose_name=_("Dateigröße (Bytes)"),
+        help_text=_("Automatisch ermittelte Dateigröße."),
+    )
+    checksum_sha256 = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name=_("SHA-256 Checksumme"),
+        help_text=_("Wird für Duplikatserkennung verwendet."),
+    )
+    duplicate_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="duplicates",
+        verbose_name=_("Duplikat von"),
+        help_text=_(
+            "Bei Soft-Dedup wird hier auf die zuerst gespeicherte identische Datei verwiesen."
+        ),
+    )
+    kategorie = models.CharField(
+        max_length=20,
+        choices=Kategorie.choices,
+        default=Kategorie.SONSTIGES,
+        verbose_name=_("Kategorie"),
+        help_text=_("Fachliche Einordnung der Datei."),
+    )
+    beschreibung = models.TextField(
+        blank=True,
+        verbose_name=_("Beschreibung"),
+        help_text=_("Optionale Beschreibung für den fachlichen Kontext."),
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_("Hochgeladen am"),
+    )
+    is_archived = models.BooleanField(
+        default=False,
+        verbose_name=_("Archiviert"),
+        help_text=_("Archivierte Dateien werden nicht mehr in Standardlisten angezeigt."),
+    )
+    archived_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Archiviert am"),
+    )
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="archivierte_dateien",
+        verbose_name=_("Archiviert von"),
+    )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hochgeladene_dateien",
+        verbose_name=_("Hochgeladen von"),
+        help_text=_("Benutzer, der die Datei hochgeladen hat."),
+    )
+
+    class Meta:
+        verbose_name = _("Datei")
+        verbose_name_plural = _("Dateien")
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["kategorie"], name="datei_kategorie_idx"),
+            models.Index(fields=["created_at"], name="datei_created_at_idx"),
+            models.Index(fields=["is_archived", "created_at"], name="datei_arch_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return self.original_name or os.path.basename(self.file.name or "") or f"Datei #{self.pk}"
+
+    def set_upload_context(
+        self,
+        *,
+        content_object=None,
+        entity_type: str | None = None,
+        entity_id: int | str | None = None,
+    ):
+        if content_object is not None and getattr(content_object, "pk", None) is not None:
+            self._upload_content_object = content_object
+            self._upload_entity_type = content_object._meta.model_name
+            self._upload_entity_id = content_object.pk
+            return
+        if entity_type and entity_id is not None:
+            self._upload_entity_type = str(entity_type)
+            self._upload_entity_id = str(entity_id)
+
+    def clean(self):
+        super().clean()
+        self._sync_file_metadata()
+        self._apply_dedup_policy()
+
+    def save(self, *args, **kwargs):
+        self._sync_file_metadata()
+        self._apply_dedup_policy()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_duplicate(self) -> bool:
+        return self.duplicate_of_id is not None
+
+    def _sync_file_metadata(self):
+        if not self.file:
+            return
+        current_name = os.path.basename(self.file.name or "")
+        if current_name:
+            if not self.original_name:
+                self.original_name = current_name
+            guessed_type = mimetypes.guess_type(self.original_name or current_name)[0]
+            self.mime_type = guessed_type or "application/octet-stream"
+        file_size = getattr(self.file, "size", None)
+        if file_size is not None:
+            self.size_bytes = int(file_size)
+        checksum = self._compute_sha256_checksum()
+        if checksum:
+            self.checksum_sha256 = checksum
+
+    def _compute_sha256_checksum(self) -> str:
+        if not self.file:
+            return ""
+        hasher = hashlib.sha256()
+        current_position = None
+        try:
+            if hasattr(self.file, "open"):
+                self.file.open("rb")
+            stream = getattr(self.file, "file", self.file)
+            if hasattr(stream, "tell"):
+                try:
+                    current_position = stream.tell()
+                except (OSError, ValueError):
+                    current_position = None
+            if hasattr(stream, "seek"):
+                stream.seek(0)
+            if hasattr(self.file, "chunks"):
+                for chunk in self.file.chunks():
+                    if chunk:
+                        hasher.update(chunk)
+            else:
+                while True:
+                    chunk = stream.read(8192)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+        finally:
+            if current_position is not None and hasattr(stream, "seek"):
+                stream.seek(current_position)
+        return hasher.hexdigest()
+
+    def _apply_dedup_policy(self):
+        self.duplicate_of = None
+        if not self.checksum_sha256:
+            return
+        existing = (
+            Datei.objects.filter(checksum_sha256=self.checksum_sha256)
+            .exclude(pk=self.pk)
+            .order_by("id")
+            .first()
+        )
+        if existing is None:
+            return
+        hard_dedup = bool(getattr(settings, "DATEI_HARD_DEDUP", False))
+        if hard_dedup:
+            raise ValidationError(
+                {"file": _("Diese Datei wurde bereits hochgeladen (gleiche SHA-256 Checksumme).")}
+            )
+        self.duplicate_of = existing.duplicate_of or existing
+
+
+class DateiZuordnung(models.Model):
+    datei = models.ForeignKey(
+        Datei,
+        on_delete=models.CASCADE,
+        related_name="zuordnungen",
+        verbose_name=_("Datei"),
+    )
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        verbose_name=_("Objekttyp"),
+    )
+    object_id = models.PositiveBigIntegerField(
+        verbose_name=_("Objekt-ID"),
+    )
+    content_object = GenericForeignKey("content_type", "object_id")
+    kontext = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        verbose_name=_("Kontext"),
+        help_text=_("Optionaler Kontext, z. B. 'hauptdokument' oder 'nebenbeleg'."),
+    )
+    sichtbar_fuer_verwalter = models.BooleanField(
+        default=True,
+        verbose_name=_("Sichtbar für Verwalter"),
+    )
+    sichtbar_fuer_eigentuemer = models.BooleanField(
+        default=False,
+        verbose_name=_("Sichtbar für Eigentümer"),
+    )
+    sichtbar_fuer_mieter = models.BooleanField(
+        default=False,
+        verbose_name=_("Sichtbar für Mieter"),
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_("Zugeordnet am"),
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="datei_zuordnungen",
+        verbose_name=_("Zugeordnet von"),
+    )
+
+    class Meta:
+        verbose_name = _("Datei-Zuordnung")
+        verbose_name_plural = _("Datei-Zuordnungen")
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["content_type", "object_id"], name="dateizuord_ct_oid_idx"),
+            models.Index(fields=["created_at"], name="dateizuord_created_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["datei", "content_type", "object_id", "kontext"],
+                name="uniq_dateizuord_datei_target_kontext",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.datei} -> {self.content_type}#{self.object_id}"
+
+
+class DateiOperationLog(models.Model):
+    class Operation(models.TextChoices):
+        UPLOAD = "upload", _("Upload")
+        VIEW = "view", _("Ansicht/Download")
+        DELETE = "delete", _("Löschen")
+
+    operation = models.CharField(
+        max_length=20,
+        choices=Operation.choices,
+        verbose_name=_("Operation"),
+    )
+    success = models.BooleanField(
+        default=True,
+        verbose_name=_("Erfolgreich"),
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="datei_operationen",
+        verbose_name=_("Benutzer"),
+    )
+    datei = models.ForeignKey(
+        Datei,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="operation_logs",
+        verbose_name=_("Datei"),
+    )
+    datei_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name=_("Dateiname"),
+        help_text=_("Dateiname zum Zeitpunkt der Operation."),
+    )
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_("Objekttyp"),
+    )
+    object_id = models.PositiveBigIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Objekt-ID"),
+    )
+    content_object = GenericForeignKey("content_type", "object_id")
+    detail = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        verbose_name=_("Details"),
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_("Zeitpunkt"),
+    )
+
+    class Meta:
+        verbose_name = _("Datei-Operation")
+        verbose_name_plural = _("Datei-Operationen")
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["operation", "created_at"], name="dateiop_op_created_idx"),
+            models.Index(fields=["content_type", "object_id"], name="dateiop_ct_oid_idx"),
+            models.Index(fields=["created_at"], name="dateiop_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        actor = self.actor.get_username() if self.actor else "System"
+        return f"{self.get_operation_display()} · {actor} · {self.created_at:%d.%m.%Y %H:%M}"
 
 
 class Buchung(models.Model):

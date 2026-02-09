@@ -124,3 +124,15 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Upload-Dateien (Bilder, PDFs, Briefe etc.)
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+# Direkte MEDIA-Auslieferung im Django-Debug-Server nur bei expliziter Aktivierung.
+# Sensible Dateien sollen über geschützte Views ausgeliefert werden.
+SERVE_MEDIA_IN_DEBUG = False
+
+# Dedup-Policy fuer Datei-Uploads:
+# False = Soft-Dedup (Duplikat wird gespeichert und referenziert duplicate_of)
+# True = Hard-Dedup (Duplikat wird mit Validierungsfehler abgelehnt)
+DATEI_HARD_DEDUP = False
