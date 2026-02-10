@@ -6,10 +6,9 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
 
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ValidationError
 from django.http import FileResponse, Http404
-from django.db.models import DecimalField, Prefetch, Q, Sum, Value
+from django.db.models import Count, DecimalField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect
@@ -71,8 +70,8 @@ def build_attachments_panel_context(request, target_object, *, title: str):
                 "assignment": assignment,
                 "datei": datei,
                 "is_image": is_image,
-                "can_download": DateiService.can_download(user=request.user, datei=datei),
-                "can_archive": DateiService.can_archive(user=request.user, datei=datei),
+                "can_download": DateiService.can_download(user=None, datei=datei),
+                "can_archive": DateiService.can_archive(user=None, datei=datei),
             }
         )
 
@@ -106,11 +105,81 @@ class DashboardView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['stats'] = {
-            'properties': Property.objects.count(),
-            'units': Unit.objects.count(),
-            'owners': Owner.objects.count(),
+        today = timezone.localdate()
+        active_leases = LeaseAgreement.objects.filter(status=LeaseAgreement.Status.AKTIV)
+
+        stats = {
+            "properties": Property.objects.count(),
+            "units": Unit.objects.count(),
+            "owners": Owner.objects.count(),
+            "tenants": Tenant.objects.count(),
+            "managers": Manager.objects.count(),
+            "active_leases": active_leases.count(),
+            "vacant_units": Unit.objects.exclude(
+                leases__status=LeaseAgreement.Status.AKTIV
+            ).distinct().count(),
         }
+
+        lease_balances = active_leases.annotate(
+            soll_total=Coalesce(
+                Sum(
+                    "buchungen__brutto",
+                    filter=Q(buchungen__typ=Buchung.Typ.SOLL),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00")),
+            ),
+            haben_total=Coalesce(
+                Sum(
+                    "buchungen__brutto",
+                    filter=Q(buchungen__typ=Buchung.Typ.IST),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00")),
+            ),
+        )
+
+        total_open_amount = Decimal("0.00")
+        overdue_leases = 0
+        for lease in lease_balances:
+            saldo = (Decimal(lease.haben_total) - Decimal(lease.soll_total)).quantize(
+                Decimal("0.01")
+            )
+            if saldo < Decimal("0.00"):
+                overdue_leases += 1
+                total_open_amount += -saldo
+
+        context["stats"] = stats
+        context["finance"] = {
+            "overdue_leases": overdue_leases,
+            "open_amount_total": total_open_amount.quantize(Decimal("0.01")),
+        }
+        context["recent_bookings"] = (
+            Buchung.objects.select_related("mietervertrag__unit__property", "einheit")
+            .order_by("-datum", "-id")[:6]
+        )
+        context["upcoming_exits"] = (
+            active_leases.select_related("unit", "unit__property")
+            .prefetch_related("tenants")
+            .filter(exit_date__isnull=False, exit_date__gte=today)
+            .order_by("exit_date")[:5]
+        )
+        property_cards = list(
+            Property.objects.annotate(
+            unit_count=Count("units", distinct=True),
+            rented_unit_count=Count(
+                "units",
+                filter=Q(units__leases__status=LeaseAgreement.Status.AKTIV),
+                distinct=True,
+            ),
+            ).order_by("name")[:6]
+        )
+        for property_card in property_cards:
+            property_card.vacant_unit_count = max(
+                property_card.unit_count - property_card.rented_unit_count,
+                0,
+            )
+        context["property_cards"] = property_cards
         return context
 
 
@@ -118,19 +187,33 @@ class DateiUploadView(View):
     http_method_names = ["post"]
     form_class = DateiUploadForm
 
+    @staticmethod
+    def _validation_messages(form):
+        for field_name, errors in form.errors.as_data().items():
+            field = form.fields.get(field_name)
+            label = getattr(field, "label", "") if field else ""
+            for error in errors:
+                for message in error.messages:
+                    if field_name == "__all__" or not label:
+                        yield message
+                    else:
+                        yield f"{label}: {message}"
+
     def post(self, request, *args, **kwargs):
         next_url = request.POST.get("next") or reverse_lazy("dashboard")
         form = self.form_class(request.POST, request.FILES)
         if not form.is_valid():
-            for errors in form.errors.values():
-                for error in errors:
-                    messages.error(request, error)
+            for message_text in self._validation_messages(form):
+                messages.error(request, message_text)
             return redirect(next_url)
 
         try:
             datei = form.save()
-        except (ValidationError, PermissionDenied) as exc:
-            messages.error(request, str(exc))
+        except ValidationError as exc:
+            if isinstance(exc, ValidationError) and getattr(exc, "messages", None):
+                messages.error(request, " ".join(exc.messages))
+            else:
+                messages.error(request, str(exc))
             return redirect(next_url)
 
         messages.success(request, "Datei wurde hochgeladen.")
@@ -142,15 +225,15 @@ class DateiUploadView(View):
         return redirect(next_url)
 
 
-class DateiDownloadView(LoginRequiredMixin, View):
+class DateiDownloadView(View):
     http_method_names = ["get"]
 
     def get(self, request, pk, *args, **kwargs):
         datei = get_object_or_404(
-            Datei.objects.select_related("uploaded_by").prefetch_related("zuordnungen__content_type"),
+            Datei.objects.prefetch_related("zuordnungen__content_type"),
             pk=pk,
         )
-        DateiService.prepare_download(user=request.user, datei=datei)
+        DateiService.prepare_download(user=None, datei=datei)
         if not datei.file:
             raise Http404("Datei wurde nicht gefunden.")
 
@@ -160,19 +243,20 @@ class DateiDownloadView(LoginRequiredMixin, View):
             as_attachment=True,
             filename=download_name,
         )
-        response["Content-Type"] = datei.mime_type or "application/octet-stream"
+        response["Content-Type"] = "application/octet-stream"
+        response["X-Content-Type-Options"] = "nosniff"
         return response
 
 
-class DateiPreviewView(LoginRequiredMixin, View):
+class DateiPreviewView(View):
     http_method_names = ["get"]
 
     def get(self, request, pk, *args, **kwargs):
         datei = get_object_or_404(
-            Datei.objects.select_related("uploaded_by").prefetch_related("zuordnungen__content_type"),
+            Datei.objects.prefetch_related("zuordnungen__content_type"),
             pk=pk,
         )
-        DateiService.prepare_download(user=request.user, datei=datei)
+        DateiService.prepare_download(user=None, datei=datei)
         if not datei.file:
             raise Http404("Datei wurde nicht gefunden.")
 
@@ -188,17 +272,13 @@ class DateiPreviewView(LoginRequiredMixin, View):
         return response
 
 
-class DateiArchiveView(LoginRequiredMixin, View):
+class DateiArchiveView(View):
     http_method_names = ["post"]
 
     def post(self, request, pk, *args, **kwargs):
         next_url = request.POST.get("next") or reverse_lazy("dashboard")
         datei = get_object_or_404(Datei, pk=pk)
-        try:
-            DateiService.archive(user=request.user, datei=datei)
-        except PermissionDenied as exc:
-            messages.error(request, str(exc))
-            return redirect(next_url)
+        DateiService.archive(user=None, datei=datei)
 
         messages.success(request, "Datei wurde archiviert.")
         return redirect(next_url)
@@ -393,6 +473,15 @@ class LeaseAgreementUpdateView(UpdateView):
     template_name = "webapp/lease_form.html"
     success_url = reverse_lazy("lease_list")
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zum Mietverhältnis",
+        )
+        return context
+
 
 class LeaseAgreementDeleteView(DeleteView):
     model = LeaseAgreement
@@ -432,6 +521,7 @@ class LeaseAgreementDetailView(DetailView):
             konto_rows.append(
                 {
                     "kind": "month_summary",
+                    "month_key": (year, month),
                     "month_label": f"{month:02d}.{year}",
                     "month_soll": monat_soll.quantize(cent),
                     "month_haben": monat_haben.quantize(cent),
@@ -469,6 +559,23 @@ class LeaseAgreementDetailView(DetailView):
             append_monatsabschluss(monat_key[0], monat_key[1])
 
         konto_rows.reverse()
+        if buchungen:
+            latest_month_key = (buchungen[-1].datum.year, buchungen[-1].datum.month)
+            konto_rows = [
+                row
+                for row in konto_rows
+                if (
+                    row["kind"] == "month_summary" and row.get("month_key") == latest_month_key
+                )
+                or (
+                    row["kind"] == "booking"
+                    and (
+                        row["buchung"].datum.year,
+                        row["buchung"].datum.month,
+                    )
+                    == latest_month_key
+                )
+            ]
 
         context["buchungen"] = buchungen
         context["konto_rows"] = konto_rows
@@ -581,6 +688,31 @@ class MeterReadingCreateView(CreateView):
     template_name = "webapp/meter_reading_form.html"
     success_url = reverse_lazy("meter_list")
 
+    def _selected_meter(self):
+        meter_id = self.request.GET.get("meter") or self.request.POST.get("meter")
+        if not meter_id:
+            return None
+        try:
+            meter_pk = int(meter_id)
+        except (TypeError, ValueError):
+            return None
+        return (
+            Meter.objects.select_related("unit", "property")
+            .filter(pk=meter_pk)
+            .first()
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        meter = self._selected_meter()
+        if meter:
+            context["attachments_panel"] = build_attachments_panel_context(
+                self.request,
+                meter,
+                title="Dateien zum Verbrauchszähler",
+            )
+        return context
+
     def get_initial(self):
         initial = super().get_initial()
         meter_id = self.request.GET.get("meter")
@@ -598,6 +730,15 @@ class MeterReadingUpdateView(UpdateView):
     model = MeterReading
     form_class = MeterReadingForm
     template_name = "webapp/meter_reading_form.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object.meter,
+            title="Dateien zum Verbrauchszähler",
+        )
+        return context
 
     def get_success_url(self):
         return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})

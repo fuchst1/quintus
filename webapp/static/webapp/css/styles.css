@@ -26,6 +26,24 @@ body {
     color: #fff !important;
 }
 
+/* Keep tables denser across the app */
+.table > :not(caption) > * > * {
+    padding: 0.46rem 0.58rem;
+    vertical-align: middle;
+}
+
+.table thead th {
+    padding-top: 0.52rem;
+    padding-bottom: 0.52rem;
+}
+
+.table td .form-control,
+.table td .form-select {
+    min-height: calc(1.5em + 0.5rem + 2px);
+    padding-top: 0.2rem;
+    padding-bottom: 0.2rem;
+}
+
 /* Karten-Effekte für das Dashboard */
 .card-box { 
     transition: all 0.3s ease; 
@@ -161,6 +179,28 @@ body {
     font-size: 1.9rem;
     font-weight: 800;
     line-height: 1;
+}
+
+.dashboard-hero {
+    background: linear-gradient(135deg, #ffffff 0%, #f1f7ff 75%);
+    border: 1px solid rgba(30, 58, 95, 0.1);
+}
+
+.dashboard-kpi-icon {
+    width: 2.35rem;
+    height: 2.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.65rem;
+    background: rgba(30, 58, 95, 0.07);
+    font-size: 1.1rem;
+    margin-bottom: 0.7rem;
+}
+
+.dashboard-property-card {
+    border: 1px solid rgba(30, 58, 95, 0.12);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
 @media (max-width: 768px) {

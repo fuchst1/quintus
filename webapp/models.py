@@ -467,7 +467,7 @@ class Datei(models.Model):
     beschreibung = models.TextField(
         blank=True,
         verbose_name=_("Beschreibung"),
-        help_text=_("Optionale Beschreibung für den fachlichen Kontext."),
+        help_text=_("Optionale Beschreibung zur Datei."),
     )
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -627,13 +627,6 @@ class DateiZuordnung(models.Model):
         verbose_name=_("Objekt-ID"),
     )
     content_object = GenericForeignKey("content_type", "object_id")
-    kontext = models.CharField(
-        max_length=100,
-        blank=True,
-        default="",
-        verbose_name=_("Kontext"),
-        help_text=_("Optionaler Kontext, z. B. 'hauptdokument' oder 'nebenbeleg'."),
-    )
     sichtbar_fuer_verwalter = models.BooleanField(
         default=True,
         verbose_name=_("Sichtbar für Verwalter"),
@@ -666,12 +659,6 @@ class DateiZuordnung(models.Model):
         indexes = [
             models.Index(fields=["content_type", "object_id"], name="dateizuord_ct_oid_idx"),
             models.Index(fields=["created_at"], name="dateizuord_created_idx"),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["datei", "content_type", "object_id", "kontext"],
-                name="uniq_dateizuord_datei_target_kontext",
-            )
         ]
 
     def __str__(self) -> str:

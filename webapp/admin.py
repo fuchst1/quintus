@@ -152,8 +152,6 @@ class DateiAdmin(admin.ModelAdmin):
         "is_archived",
         "mime_type",
         "size_bytes",
-        "uploaded_by",
-        "archived_by",
         "archived_at",
         "duplicate_of",
         "created_at",
@@ -178,14 +176,14 @@ class DateiAdmin(admin.ModelAdmin):
         for datei in queryset:
             if datei.is_archived:
                 continue
-            DateiService.archive(user=request.user, datei=datei)
+            DateiService.archive(user=None, datei=datei)
             updated += 1
         if updated:
             self.message_user(request, f"{updated} Datei(en) archiviert.", level=messages.SUCCESS)
         else:
             self.message_user(
                 request,
-                "Keine Dateien archiviert (bereits archiviert oder ohne Berechtigung).",
+                "Keine Dateien archiviert (bereits archiviert).",
                 level=messages.WARNING,
             )
 
@@ -195,7 +193,7 @@ class DateiAdmin(admin.ModelAdmin):
         for datei in queryset:
             if not datei.is_archived:
                 continue
-            DateiService.restore(user=request.user, datei=datei)
+            DateiService.restore(user=None, datei=datei)
             updated += 1
         if updated:
             self.message_user(
@@ -217,20 +215,13 @@ class DateiZuordnungAdmin(admin.ModelAdmin):
         "datei",
         "content_type",
         "object_id",
-        "kontext",
-        "sichtbar_fuer_verwalter",
-        "sichtbar_fuer_eigentuemer",
-        "sichtbar_fuer_mieter",
         "created_at",
     )
     list_filter = (
         "content_type",
-        "sichtbar_fuer_verwalter",
-        "sichtbar_fuer_eigentuemer",
-        "sichtbar_fuer_mieter",
         "created_at",
     )
-    search_fields = ("datei__original_name", "kontext")
+    search_fields = ("datei__original_name",)
 
 
 @admin.register(DateiOperationLog)

@@ -18,57 +18,62 @@
     </div>
 </div>
 
-<div class="card border-0 shadow-sm">
-    <div class="card-body p-0">
-        <table class="table table-hover mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th class="text-center">Aktionen</th>
-                    <th class="ps-4">Datum</th>
-                    <th>Wert</th>
-                    <th>Letzter Verbrauch</th>
-                    <th>Jahresverbrauch</th>
-                    <th>Notiz</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for reading in readings %}
-                <tr>
-                    <td class="text-center">
-                        <a href="{% url 'meter_reading_update' reading.pk %}" class="btn btn-sm btn-outline-secondary me-1">
-                            <i class="bi bi-pencil"></i>
-                        </a>
-                        <a href="{% url 'meter_reading_delete' reading.pk %}" class="btn btn-sm btn-outline-danger">
-                            <i class="bi bi-trash"></i>
-                        </a>
-                    </td>
-                    <td class="ps-4">{{ reading.date|date:"d.m.Y" }}</td>
-                    <td>{{ reading.value }} {{ reading.meter.get_unit_of_measure_display }}</td>
-                    <td>
-                        {% if reading.last_consumption is not None %}
-                            {{ reading.last_consumption }} {{ reading.meter.get_unit_of_measure_display }}
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if reading.yearly_consumption is not None %}
-                            {{ reading.yearly_consumption }} {{ reading.meter.get_unit_of_measure_display }}
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                    <td>{{ reading.note|default:"—" }}</td>
-                </tr>
-                {% empty %}
-                <tr>
-                    <td colspan="6" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+<div class="row g-4">
+    <div class="col-12 col-xl-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="text-center">Aktionen</th>
+                            <th class="ps-4">Datum</th>
+                            <th>Wert</th>
+                            <th>Letzter Verbrauch</th>
+                            <th>Jahresverbrauch</th>
+                            <th>Notiz</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for reading in readings %}
+                        <tr>
+                            <td class="text-center">
+                                <a href="{% url 'meter_reading_update' reading.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                                <a href="{% url 'meter_reading_delete' reading.pk %}" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </a>
+                            </td>
+                            <td class="ps-4">{{ reading.date|date:"d.m.Y" }}</td>
+                            <td>{{ reading.value }} {{ reading.meter.get_unit_of_measure_display }}</td>
+                            <td>
+                                {% if reading.last_consumption is not None %}
+                                    {{ reading.last_consumption }} {{ reading.meter.get_unit_of_measure_display }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if reading.yearly_consumption is not None %}
+                                    {{ reading.yearly_consumption }} {{ reading.meter.get_unit_of_measure_display }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td>{{ reading.note|default:"—" }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="6" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-4">
+        {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel attachments_panel_inline=True %}
     </div>
 </div>
-
-{% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel %}
 {% endblock %}

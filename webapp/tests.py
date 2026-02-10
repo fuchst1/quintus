@@ -6,7 +6,6 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -173,6 +172,49 @@ class MeterYearlyConsumptionTests(TestCase):
         results = Meter.calculate_yearly_consumption_all()
         self.assertEqual(len(results), 2)
         self.assertLessEqual(results[0]["meter_id"], results[1]["meter_id"])
+
+
+class MeterReadingAttachmentPanelViewTests(TestCase):
+    def setUp(self):
+        self.property = Property.objects.create(
+            name="Objekt Zähler",
+            zip_code="1050",
+            city="Wien",
+            street_address="Messgasse 5",
+        )
+        self.meter = Meter.objects.create(
+            property=self.property,
+            meter_type=Meter.MeterType.WATER_COLD,
+            meter_number="W-1050",
+            kind=Meter.CalculationKind.READING,
+        )
+
+    def test_create_view_with_meter_query_contains_attachments_panel(self):
+        response = self.client.get(
+            reverse("meter_reading_create"),
+            {"meter": self.meter.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachments_panel", response.context)
+        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Verbrauchszähler")
+        self.assertContains(response, "Dateien zum Verbrauchszähler")
+        self.assertContains(response, "col-12 col-xl-5")
+
+    def test_by_meter_list_contains_inline_attachments_panel(self):
+        MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+
+        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachments_panel", response.context)
+        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Verbrauchszähler")
+        self.assertContains(response, "Dateien zum Verbrauchszähler")
+        self.assertContains(response, "col-12 col-xl-4")
 
 
 class LeaseAgreementHistoryTests(TestCase):
@@ -465,7 +507,7 @@ class LeaseDetailViewTests(TestCase):
             heating_costs_net=Decimal("50.00"),
         )
 
-    def test_lease_detail_contains_monthly_summary_rows(self):
+    def test_lease_detail_shows_only_last_month_in_mietkonto(self):
         Buchung.objects.create(
             mietervertrag=self.lease,
             einheit=self.unit,
@@ -515,24 +557,26 @@ class LeaseDetailViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
 
         rows = response.context["konto_rows"]
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["kind"], "month_summary")
-        self.assertEqual(rows[3]["kind"], "month_summary")
+        self.assertEqual(rows[1]["kind"], "booking")
+        self.assertEqual(rows[2]["kind"], "booking")
 
         february_summary = rows[0]
-        january_summary = rows[3]
-
-        self.assertEqual(january_summary["month_label"], "01.2026")
-        self.assertEqual(january_summary["month_soll"], Decimal("110.00"))
-        self.assertEqual(january_summary["month_haben"], Decimal("55.00"))
-        self.assertEqual(january_summary["month_end_kontostand"], Decimal("-55.00"))
-        self.assertEqual(january_summary["offen"], Decimal("55.00"))
 
         self.assertEqual(february_summary["month_label"], "02.2026")
         self.assertEqual(february_summary["month_soll"], Decimal("55.00"))
         self.assertEqual(february_summary["month_haben"], Decimal("70.00"))
         self.assertEqual(february_summary["month_end_kontostand"], Decimal("-40.00"))
         self.assertEqual(february_summary["offen"], Decimal("40.00"))
+        self.assertEqual(rows[1]["buchung"].buchungstext, "Zahlung 02/2026")
+        self.assertEqual(rows[2]["buchung"].buchungstext, "SOLL 02/2026")
+
+    def test_lease_update_contains_attachments_panel(self):
+        response = self.client.get(reverse("lease_update", args=[self.lease.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachments_panel", response.context)
+        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Mietverhältnis")
 
 
 class BetriebskostenBelegModelTests(TestCase):
@@ -1804,10 +1848,6 @@ class DateiManagementModelTests(TestCase):
             datei=datei,
             content_type=ContentType.objects.get_for_model(Property),
             object_id=self.property.pk,
-            kontext="hauptdokument",
-            sichtbar_fuer_verwalter=True,
-            sichtbar_fuer_eigentuemer=False,
-            sichtbar_fuer_mieter=False,
         )
 
         self.assertEqual(zuordnung.content_object, self.property)
@@ -1855,7 +1895,6 @@ class DateiManagementModelTests(TestCase):
             datei=datei,
             content_type=ContentType.objects.get_for_model(Property),
             object_id=self.property.pk,
-            kontext="hauptdokument",
         )
 
         datei.file = SimpleUploadedFile("Neues Foto.JPG", b"img-b", content_type="image/jpeg")
@@ -1908,14 +1947,12 @@ class DateiUploadFormValidationTests(TestCase):
                 "target_object_id": self.property.pk,
                 "kategorie": kategorie,
                 "beschreibung": "Testdatei",
-                "kontext": "hauptdokument",
-                "sichtbar_fuer_verwalter": "on",
             },
             files={"file": upload},
             user=self.user,
         )
 
-    def test_rejects_double_extension_filename(self):
+    def test_rejects_disallowed_extension(self):
         form = self._build_form(
             SimpleUploadedFile(
                 "vertrag.pdf.exe",
@@ -1924,7 +1961,7 @@ class DateiUploadFormValidationTests(TestCase):
             )
         )
         self.assertFalse(form.is_valid())
-        self.assertIn("Doppelte Dateiendungen", str(form.errors))
+        self.assertIn("Dateityp nicht erlaubt", str(form.errors))
 
     def test_rejects_mime_extension_mismatch(self):
         form = self._build_form(
@@ -1936,6 +1973,16 @@ class DateiUploadFormValidationTests(TestCase):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("MIME-Typ und Dateiendung", str(form.errors))
+
+    def test_accepts_filename_with_multiple_dots(self):
+        form = self._build_form(
+            SimpleUploadedFile(
+                "abrechnung.2026.02.pdf",
+                b"%PDF",
+                content_type="application/pdf",
+            )
+        )
+        self.assertTrue(form.is_valid(), form.errors)
 
     def test_enforces_size_limit_per_category(self):
         limit = MAX_FILE_SIZE_BY_CATEGORY[Datei.Kategorie.ZAEHLERFOTO]
@@ -1993,12 +2040,8 @@ class DateiServicePermissionAndAuditTests(TestCase):
             username="other-user",
             password="pw",
         )
-        mieter_group, _ = Group.objects.get_or_create(name="mieter")
-        self.mieter_user.groups.add(mieter_group)
-        view_property_perm = Permission.objects.get(codename="view_property")
-        self.mieter_user.user_permissions.add(view_property_perm)
 
-    def _upload_visible_for_mieter(self):
+    def _upload_sample(self):
         return DateiService.upload(
             user=self.staff_user,
             uploaded_file=SimpleUploadedFile(
@@ -2008,10 +2051,6 @@ class DateiServicePermissionAndAuditTests(TestCase):
             ),
             kategorie=Datei.Kategorie.ZAEHLERFOTO,
             target_object=self.property,
-            kontext="zaehlerstand",
-            sichtbar_fuer_verwalter=False,
-            sichtbar_fuer_eigentuemer=False,
-            sichtbar_fuer_mieter=True,
         )
 
     def test_upload_is_allowed_for_any_authenticated_user(self):
@@ -2035,41 +2074,42 @@ class DateiServicePermissionAndAuditTests(TestCase):
             ).exists()
         )
 
-    def test_download_permission_uses_visibility_and_logs(self):
-        datei = self._upload_visible_for_mieter()
+    def test_download_logs_success_without_role_checks(self):
+        datei = self._upload_sample()
         prepared = DateiService.prepare_download(user=self.mieter_user, datei=datei)
         self.assertEqual(prepared.pk, datei.pk)
         self.assertTrue(
             DateiOperationLog.objects.filter(
                 operation=DateiOperationLog.Operation.VIEW,
-                actor=self.mieter_user,
+                actor__isnull=True,
                 datei=datei,
                 success=True,
             ).exists()
         )
 
-    def test_download_denied_is_audited(self):
-        datei = self._upload_visible_for_mieter()
+    def test_download_denied_for_archived_file_is_audited(self):
+        datei = self._upload_sample()
+        DateiService.archive(user=self.staff_user, datei=datei)
         with self.assertRaises(PermissionDenied):
             DateiService.prepare_download(user=self.other_user, datei=datei)
         self.assertTrue(
             DateiOperationLog.objects.filter(
                 operation=DateiOperationLog.Operation.VIEW,
-                actor=self.other_user,
+                actor__isnull=True,
                 datei=datei,
                 success=False,
             ).exists()
         )
 
     def test_delete_logs_operation(self):
-        datei = self._upload_visible_for_mieter()
+        datei = self._upload_sample()
         datei_id = datei.pk
         DateiService.delete(user=self.staff_user, datei=datei)
         self.assertFalse(Datei.objects.filter(pk=datei_id).exists())
         self.assertTrue(
             DateiOperationLog.objects.filter(
                 operation=DateiOperationLog.Operation.DELETE,
-                actor=self.staff_user,
+                actor__isnull=True,
                 success=True,
             ).exists()
         )
@@ -2083,25 +2123,8 @@ class DateiDownloadViewTests(TestCase):
             city="Wien",
             street_address="Downloadgasse 4",
         )
-        self.staff_user = get_user_model().objects.create_user(
-            username="download-staff",
-            password="pw",
-            is_staff=True,
-        )
-        self.allowed_user = get_user_model().objects.create_user(
-            username="download-mieter",
-            password="pw",
-        )
-        self.denied_user = get_user_model().objects.create_user(
-            username="download-denied",
-            password="pw",
-        )
-        mieter_group, _ = Group.objects.get_or_create(name="mieter")
-        self.allowed_user.groups.add(mieter_group)
-        self.allowed_user.user_permissions.add(Permission.objects.get(codename="view_property"))
-
         self.datei = DateiService.upload(
-            user=self.staff_user,
+            user=None,
             uploaded_file=SimpleUploadedFile(
                 "download.pdf",
                 b"%PDF",
@@ -2109,24 +2132,15 @@ class DateiDownloadViewTests(TestCase):
             ),
             kategorie=Datei.Kategorie.DOKUMENT,
             target_object=self.property,
-            sichtbar_fuer_verwalter=False,
-            sichtbar_fuer_eigentuemer=False,
-            sichtbar_fuer_mieter=True,
         )
 
-    def test_download_requires_login(self):
-        response = self.client.get(reverse("datei_download", kwargs={"pk": self.datei.pk}))
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
-
-    def test_download_returns_file_for_authorized_user(self):
-        self.client.login(username="download-mieter", password="pw")
+    def test_download_is_publicly_accessible(self):
         response = self.client.get(reverse("datei_download", kwargs={"pk": self.datei.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
 
-    def test_download_forbidden_for_user_without_permissions(self):
-        self.client.login(username="download-denied", password="pw")
+    def test_download_of_archived_file_returns_403(self):
+        DateiService.archive(user=None, datei=self.datei)
         response = self.client.get(reverse("datei_download", kwargs={"pk": self.datei.pk}))
         self.assertEqual(response.status_code, 403)
 
@@ -2150,8 +2164,6 @@ class DateiUploadViewAnonymousTests(TestCase):
                 "target_object_id": self.property.pk,
                 "kategorie": Datei.Kategorie.DOKUMENT,
                 "beschreibung": "Anonymer Upload",
-                "kontext": "test",
-                "sichtbar_fuer_verwalter": "on",
                 "file": SimpleUploadedFile(
                     "anonym.pdf",
                     b"%PDF",
@@ -2164,6 +2176,30 @@ class DateiUploadViewAnonymousTests(TestCase):
         self.assertIsNotNone(created)
         self.assertEqual(created.original_name, "anonym.pdf")
         self.assertIsNone(created.uploaded_by_id)
+
+    def test_upload_invalid_shows_readable_error_message(self):
+        response = self.client.post(
+            reverse("datei_upload"),
+            data={
+                "next": reverse("dashboard"),
+                "target_app_label": "webapp",
+                "target_model": "property",
+                "target_object_id": self.property.pk,
+                "kategorie": Datei.Kategorie.DOKUMENT,
+                "file": SimpleUploadedFile(
+                    "anhang.exe",
+                    b"MZ",
+                    content_type="application/octet-stream",
+                ),
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Datei: Dateityp nicht erlaubt. Erlaubt sind PDF, JPG, JPEG und PNG.",
+        )
+        self.assertNotContains(response, "['")
 
 
 class DateiArchiveTests(TestCase):
@@ -2183,11 +2219,8 @@ class DateiArchiveTests(TestCase):
             username="archiv-mieter",
             password="pw",
         )
-        mieter_group, _ = Group.objects.get_or_create(name="mieter")
-        self.mieter_user.groups.add(mieter_group)
-        self.mieter_user.user_permissions.add(Permission.objects.get(codename="view_property"))
 
-    def test_archive_marks_file_and_blocks_non_admin_download(self):
+    def test_archive_marks_file_and_blocks_download_for_everyone(self):
         datei = DateiService.upload(
             user=self.staff_user,
             uploaded_file=SimpleUploadedFile(
@@ -2197,17 +2230,15 @@ class DateiArchiveTests(TestCase):
             ),
             kategorie=Datei.Kategorie.BILD,
             target_object=self.property,
-            sichtbar_fuer_verwalter=False,
-            sichtbar_fuer_mieter=True,
         )
         self.assertTrue(DateiService.can_download(user=self.mieter_user, datei=datei))
 
         archived = DateiService.archive(user=self.staff_user, datei=datei)
         archived.refresh_from_db()
         self.assertTrue(archived.is_archived)
-        self.assertEqual(archived.archived_by_id, self.staff_user.pk)
+        self.assertIsNone(archived.archived_by_id)
         self.assertFalse(DateiService.can_download(user=self.mieter_user, datei=archived))
-        self.assertTrue(DateiService.can_download(user=self.staff_user, datei=archived))
+        self.assertFalse(DateiService.can_download(user=self.staff_user, datei=archived))
 
     def test_archive_view_archives_instead_of_hard_delete(self):
         datei = DateiService.upload(
@@ -2220,7 +2251,6 @@ class DateiArchiveTests(TestCase):
             kategorie=Datei.Kategorie.DOKUMENT,
             target_object=self.property,
         )
-        self.client.login(username="archiv-staff", password="pw")
         response = self.client.post(
             reverse("datei_archive", kwargs={"pk": datei.pk}),
             {"next": reverse("dashboard")},
@@ -2294,7 +2324,6 @@ class DateiManagementCommandTests(TestCase):
             datei=linked,
             content_type=ContentType.objects.get_for_model(Property),
             object_id=target_property.pk,
-            kontext="test",
         )
         target_property.delete()
 
@@ -2320,7 +2349,6 @@ class DateiManagementCommandTests(TestCase):
             datei=linked,
             content_type=ContentType.objects.get_for_model(Property),
             object_id=self.property.pk,
-            kontext="beleg",
         )
 
         out_dry = StringIO()

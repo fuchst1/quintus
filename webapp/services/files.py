@@ -29,10 +29,6 @@ MAX_FILE_SIZE_BY_CATEGORY = {
     Datei.Kategorie.SONSTIGES: 10 * 1024 * 1024,
 }
 
-ROLE_VERWALTER = "verwalter"
-ROLE_EIGENTUEMER = "eigentuemer"
-ROLE_MIETER = "mieter"
-
 ALLOWED_TARGET_MODELS = {
     "property",
     "unit",
@@ -103,7 +99,7 @@ class DateiService:
                 content_type=content_type,
                 object_id=target_object.pk,
             )
-            .select_related("datei", "datei__uploaded_by")
+            .select_related("datei")
             .order_by("-datei__created_at", "-id")
         )
         if not include_archived:
@@ -190,100 +186,44 @@ class DateiService:
 
     @classmethod
     def can_download(cls, *, user, datei: Datei) -> bool:
-        if not cls._is_authenticated(user):
-            return False
-        if cls._is_admin(user):
-            return True
-        if datei.is_archived:
-            return False
-        if datei.uploaded_by_id == getattr(user, "pk", None) and user.has_perm("webapp.view_datei"):
-            return True
-
-        role_names = cls._role_names_for_user(user)
-        zuordnungen = list(
-            datei.zuordnungen.select_related("content_type").order_by("id")
-        )
-        if not zuordnungen:
-            return False
-
-        for zuordnung in zuordnungen:
-            target = zuordnung.content_object
-            if target is None:
-                continue
-            object_view_perm = f"{target._meta.app_label}.view_{target._meta.model_name}"
-            if not (user.has_perm(object_view_perm, target) or user.has_perm(object_view_perm)):
-                continue
-            if zuordnung.sichtbar_fuer_verwalter and ROLE_VERWALTER in role_names:
-                return True
-            if zuordnung.sichtbar_fuer_eigentuemer and ROLE_EIGENTUEMER in role_names:
-                return True
-            if zuordnung.sichtbar_fuer_mieter and ROLE_MIETER in role_names:
-                return True
-        return False
+        return not bool(datei.is_archived)
 
     @classmethod
     def can_delete(cls, *, user, datei: Datei) -> bool:
-        if not cls._is_authenticated(user):
-            return False
-        if cls._is_admin(user):
-            return True
-        if datei.uploaded_by_id != getattr(user, "pk", None):
-            return False
-        if not user.has_perm("webapp.delete_datei"):
-            return False
-
-        zuordnungen = list(datei.zuordnungen.order_by("id"))
-        if not zuordnungen:
-            return True
-
-        for zuordnung in zuordnungen:
-            target = zuordnung.content_object
-            if target is None:
-                continue
-            required_perm = f"{target._meta.app_label}.change_{target._meta.model_name}"
-            if user.has_perm(required_perm, target) or user.has_perm(required_perm):
-                return True
-        return False
+        return True
 
     @classmethod
     def can_archive(cls, *, user, datei: Datei) -> bool:
-        return cls.can_delete(user=user, datei=datei)
+        return True
 
     @classmethod
     def can_restore(cls, *, user, datei: Datei) -> bool:
-        if not cls._is_authenticated(user):
-            return False
-        if cls._is_admin(user):
-            return True
-        return bool(
-            datei.uploaded_by_id == getattr(user, "pk", None)
-            and user.has_perm("webapp.change_datei")
-        )
+        return True
 
     @classmethod
     def assert_can_upload(cls, *, target_object: Any, user=None):
         if not cls.can_upload(target_object=target_object, user=user):
-            raise PermissionDenied("Sie haben keine Berechtigung für diesen Datei-Upload.")
+            raise PermissionDenied("Datei-Upload ist derzeit nicht verfügbar.")
 
     @classmethod
     def assert_can_download(cls, *, user, datei: Datei):
         if not cls.can_download(user=user, datei=datei):
-            raise PermissionDenied("Sie haben keine Berechtigung für diesen Dateizugriff.")
+            raise PermissionDenied("Archivierte Dateien können nicht geöffnet werden.")
 
     @classmethod
     def assert_can_delete(cls, *, user, datei: Datei):
         if not cls.can_delete(user=user, datei=datei):
-            raise PermissionDenied("Sie haben keine Berechtigung zum Löschen dieser Datei.")
+            raise PermissionDenied("Datei kann derzeit nicht gelöscht werden.")
 
     @classmethod
     def assert_can_archive(cls, *, user, datei: Datei):
         if not cls.can_archive(user=user, datei=datei):
-            raise PermissionDenied("Sie haben keine Berechtigung zum Archivieren dieser Datei.")
+            raise PermissionDenied("Datei kann derzeit nicht archiviert werden.")
 
     @classmethod
     def assert_can_restore(cls, *, user, datei: Datei):
         if not cls.can_restore(user=user, datei=datei):
-            raise PermissionDenied("Sie haben keine Berechtigung zum Wiederherstellen dieser Datei.")
+            raise PermissionDenied("Datei kann derzeit nicht wiederhergestellt werden.")
 
     @classmethod
     def upload(
@@ -294,10 +234,6 @@ class DateiService:
         kategorie: str,
         target_object: Any,
         beschreibung: str = "",
-        kontext: str = "",
-        sichtbar_fuer_verwalter: bool = True,
-        sichtbar_fuer_eigentuemer: bool = False,
-        sichtbar_fuer_mieter: bool = False,
     ) -> Datei:
         try:
             cls.assert_can_upload(target_object=target_object, user=user)
@@ -327,10 +263,6 @@ class DateiService:
                 datei=datei,
                 content_type=ContentType.objects.get_for_model(target_object),
                 object_id=target_object.pk,
-                kontext=(kontext or "").strip(),
-                sichtbar_fuer_verwalter=bool(sichtbar_fuer_verwalter),
-                sichtbar_fuer_eigentuemer=bool(sichtbar_fuer_eigentuemer),
-                sichtbar_fuer_mieter=bool(sichtbar_fuer_mieter),
                 created_by=None,
             )
 
@@ -391,7 +323,7 @@ class DateiService:
 
         datei.is_archived = True
         datei.archived_at = timezone.now()
-        datei.archived_by = user if cls._is_authenticated(user) else None
+        datei.archived_by = None
         datei.save(update_fields=["is_archived", "archived_at", "archived_by"])
 
         file_name = datei.original_name or os.path.basename(datei.file.name or "")
@@ -494,34 +426,13 @@ class DateiService:
         return DateiOperationLog.objects.create(
             operation=operation,
             success=bool(success),
-            actor=actor if cls._is_authenticated(actor) else None,
+            actor=None,
             datei=datei,
             datei_name=file_name,
             content_type=content_type,
             object_id=object_id,
             detail=(detail or "")[:500],
         )
-
-    @staticmethod
-    def _is_authenticated(user) -> bool:
-        return bool(user and getattr(user, "is_authenticated", False))
-
-    @staticmethod
-    def _is_admin(user) -> bool:
-        return bool(
-            user
-            and getattr(user, "is_authenticated", False)
-            and (getattr(user, "is_superuser", False) or getattr(user, "is_staff", False))
-        )
-
-    @staticmethod
-    def _role_names_for_user(user) -> set[str]:
-        if not user or not getattr(user, "is_authenticated", False):
-            return set()
-        role_names = {group.name.strip().lower() for group in user.groups.all()}
-        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
-            role_names.add(ROLE_VERWALTER)
-        return role_names
 
     @staticmethod
     def _validate_filename(filename: str):
@@ -536,10 +447,6 @@ class DateiService:
 
         if filename.startswith(".") or filename.endswith("."):
             raise ValidationError("Dateiname ist nicht zulässig.")
-
-        parts = filename.split(".")
-        if len(parts) > 2:
-            raise ValidationError("Doppelte Dateiendungen sind nicht erlaubt.")
 
     @staticmethod
     def _primary_content_object(datei: Datei):

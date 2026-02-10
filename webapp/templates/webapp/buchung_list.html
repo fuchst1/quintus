@@ -1,4 +1,5 @@
 {% extends "webapp/base.html" %}
+{% load l10n %}
 {% block page_title %}Buchungen{% endblock %}
 
 {% block content %}
@@ -9,49 +10,320 @@
     </a>
 </div>
 
-<div class="card border-0 shadow-sm">
-    <div class="card-body p-0">
-        <table class="table table-hover mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th class="text-center">Aktion</th>
-                    <th class="ps-4">Datum</th>
-                    <th>Mietvertrag</th>
-                    <th>Kategorie</th>
-                    <th>Typ</th>
-                    <th>Buchungstext</th>
-                    <th class="text-end pe-4">Brutto</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for buchung in buchungen %}
-                <tr>
-                    <td class="text-center">
-                        <a href="{% url 'buchung_update' buchung.pk %}" class="btn btn-sm btn-outline-secondary me-1">
-                            <i class="bi bi-pencil"></i>
-                        </a>
-                        <a href="{% url 'buchung_delete' buchung.pk %}" class="btn btn-sm btn-outline-danger">
-                            <i class="bi bi-trash"></i>
-                        </a>
-                    </td>
-                    <td class="ps-4">{{ buchung.datum|date:"d.m.Y" }}</td>
-                    <td>{{ buchung.mietervertrag }}</td>
-                    <td>{{ buchung.get_kategorie_display }}</td>
-                    <td>{{ buchung.get_typ_display }}</td>
-                    <td>{{ buchung.buchungstext }}</td>
-                    <td class="text-end pe-4">
-                        <span class="fw-semibold {% if buchung.brutto < 0 %}text-danger{% elif buchung.brutto > 0 %}text-success{% else %}text-muted{% endif %}">
-                            {{ buchung.brutto }}
-                        </span>
-                    </td>
-                </tr>
-                {% empty %}
-                <tr>
-                    <td colspan="7" class="text-center py-5 text-muted">Keine Buchungen gefunden.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-6 col-lg-5">
+                <label for="buchungSearch" class="form-label mb-1">Suchen</label>
+                <input
+                    id="buchungSearch"
+                    type="search"
+                    class="form-control"
+                    placeholder="Text, Vertrag, Kategorie, Typ"
+                    autocomplete="off"
+                >
+            </div>
+            <div class="col-sm-6 col-md-3 col-lg-3">
+                <label for="buchungKategorieFilter" class="form-label mb-1">Kategorie</label>
+                <select id="buchungKategorieFilter" class="form-select">
+                    <option value="">Alle Kategorien</option>
+                </select>
+            </div>
+            <div class="col-sm-6 col-md-3 col-lg-2">
+                <label for="buchungTypFilter" class="form-label mb-1">Typ</label>
+                <select id="buchungTypFilter" class="form-select">
+                    <option value="">Alle Typen</option>
+                </select>
+            </div>
+            <div class="col-md-12 col-lg-2 text-lg-end">
+                <div id="buchungCount" class="small text-muted"></div>
+            </div>
+        </div>
     </div>
 </div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="text-center">Aktion</th>
+                        <th class="ps-4">
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="datum">
+                                Datum <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="mietvertrag">
+                                Mietvertrag <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="kategorie">
+                                Kategorie <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="typ">
+                                Typ <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="buchungstext">
+                                Buchungstext <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th class="text-end pe-4">
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="brutto">
+                                Brutto <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="buchungTableBody">
+                    {% for buchung in buchungen %}
+                    <tr
+                        data-row="1"
+                        data-search="{{ buchung.datum|date:'d.m.Y' }} {{ buchung.mietervertrag }} {{ buchung.get_kategorie_display }} {{ buchung.get_typ_display }} {{ buchung.buchungstext }}"
+                        data-kategorie="{{ buchung.kategorie }}"
+                        data-kategorie-label="{{ buchung.get_kategorie_display }}"
+                        data-typ="{{ buchung.typ }}"
+                        data-typ-label="{{ buchung.get_typ_display }}"
+                        data-datum="{{ buchung.datum|date:'Y-m-d' }}"
+                        data-brutto="{{ buchung.brutto|unlocalize }}"
+                        data-mietvertrag="{% if buchung.mietervertrag %}{{ buchung.mietervertrag }}{% endif %}"
+                        data-buchungstext="{{ buchung.buchungstext }}"
+                    >
+                        <td class="text-center">
+                            <a href="{% url 'buchung_update' buchung.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <a href="{% url 'buchung_delete' buchung.pk %}" class="btn btn-sm btn-outline-danger">
+                                <i class="bi bi-trash"></i>
+                            </a>
+                        </td>
+                        <td class="ps-4">{{ buchung.datum|date:"d.m.Y" }}</td>
+                        <td>{{ buchung.mietervertrag }}</td>
+                        <td>{{ buchung.get_kategorie_display }}</td>
+                        <td>{{ buchung.get_typ_display }}</td>
+                        <td>{{ buchung.buchungstext }}</td>
+                        <td class="text-end pe-4">
+                            <span class="fw-semibold {% if buchung.brutto < 0 %}text-danger{% elif buchung.brutto > 0 %}text-success{% else %}text-muted{% endif %}">
+                                {{ buchung.brutto }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center py-5 text-muted">Keine Buchungen gefunden.</td>
+                    </tr>
+                    {% endfor %}
+                    <tr id="buchungNoResults" class="d-none">
+                        <td colspan="7" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+    const tableBody = document.getElementById("buchungTableBody");
+    if (!tableBody) {
+        return;
+    }
+
+    const rows = Array.from(tableBody.querySelectorAll("tr[data-row='1']"));
+    if (!rows.length) {
+        return;
+    }
+
+    const searchInput = document.getElementById("buchungSearch");
+    const categoryFilter = document.getElementById("buchungKategorieFilter");
+    const typFilter = document.getElementById("buchungTypFilter");
+    const countElement = document.getElementById("buchungCount");
+    const noResultsRow = document.getElementById("buchungNoResults");
+    const sortButtons = Array.from(document.querySelectorAll(".table-sort"));
+
+    const state = {
+        sortKey: "datum",
+        sortDirection: "desc",
+    };
+
+    function normalize(value) {
+        return String(value || "").toLowerCase().trim();
+    }
+
+    function parseNumeric(value) {
+        const raw = String(value || "").trim();
+        if (!raw) {
+            return 0;
+        }
+        let normalized = raw;
+        if (normalized.includes(",") && normalized.includes(".")) {
+            normalized = normalized.replace(/\./g, "").replace(",", ".");
+        } else if (normalized.includes(",")) {
+            normalized = normalized.replace(",", ".");
+        }
+        const number = Number.parseFloat(normalized);
+        return Number.isFinite(number) ? number : 0;
+    }
+
+    function compareRows(a, b) {
+        const directionFactor = state.sortDirection === "asc" ? 1 : -1;
+        const key = state.sortKey;
+
+        let left;
+        let right;
+
+        if (key === "brutto") {
+            left = parseNumeric(a.dataset.brutto);
+            right = parseNumeric(b.dataset.brutto);
+            return (left - right) * directionFactor;
+        }
+
+        if (key === "datum") {
+            left = a.dataset.datum || "";
+            right = b.dataset.datum || "";
+            return left.localeCompare(right, "de") * directionFactor;
+        }
+
+        if (key === "mietvertrag") {
+            left = normalize(a.dataset.mietvertrag);
+            right = normalize(b.dataset.mietvertrag);
+            return left.localeCompare(right, "de", { sensitivity: "base" }) * directionFactor;
+        }
+
+        if (key === "kategorie") {
+            left = normalize(a.dataset.kategorieLabel);
+            right = normalize(b.dataset.kategorieLabel);
+            return left.localeCompare(right, "de", { sensitivity: "base" }) * directionFactor;
+        }
+
+        if (key === "typ") {
+            left = normalize(a.dataset.typLabel);
+            right = normalize(b.dataset.typLabel);
+            return left.localeCompare(right, "de", { sensitivity: "base" }) * directionFactor;
+        }
+
+        left = normalize(a.dataset.buchungstext);
+        right = normalize(b.dataset.buchungstext);
+        return left.localeCompare(right, "de", { sensitivity: "base" }) * directionFactor;
+    }
+
+    function fillSelect(selectElement, valuesWithLabel) {
+        const keys = Array.from(valuesWithLabel.keys()).sort((a, b) => {
+            const left = normalize(valuesWithLabel.get(a));
+            const right = normalize(valuesWithLabel.get(b));
+            return left.localeCompare(right, "de", { sensitivity: "base" });
+        });
+        for (const key of keys) {
+            const option = document.createElement("option");
+            option.value = key;
+            option.textContent = valuesWithLabel.get(key);
+            selectElement.appendChild(option);
+        }
+    }
+
+    const categoryValues = new Map();
+    const typValues = new Map();
+    for (const row of rows) {
+        if (row.dataset.kategorie) {
+            categoryValues.set(row.dataset.kategorie, row.dataset.kategorieLabel || row.dataset.kategorie);
+        }
+        if (row.dataset.typ) {
+            typValues.set(row.dataset.typ, row.dataset.typLabel || row.dataset.typ);
+        }
+    }
+    fillSelect(categoryFilter, categoryValues);
+    fillSelect(typFilter, typValues);
+
+    function updateSortIndicators() {
+        for (const button of sortButtons) {
+            const indicator = button.querySelector(".sort-indicator");
+            if (!indicator) {
+                continue;
+            }
+            if (button.dataset.sortKey !== state.sortKey) {
+                indicator.textContent = "";
+                indicator.className = "sort-indicator text-muted";
+                continue;
+            }
+            indicator.textContent = state.sortDirection === "asc" ? "▲" : "▼";
+            indicator.className = "sort-indicator text-primary";
+        }
+    }
+
+    function applyFiltersAndSorting() {
+        const searchTerm = normalize(searchInput.value);
+        const categoryValue = categoryFilter.value;
+        const typValue = typFilter.value;
+
+        const visibleRows = [];
+        for (const row of rows) {
+            const matchesSearch = !searchTerm || normalize(row.dataset.search).includes(searchTerm);
+            const matchesCategory = !categoryValue || row.dataset.kategorie === categoryValue;
+            const matchesTyp = !typValue || row.dataset.typ === typValue;
+            const isVisible = matchesSearch && matchesCategory && matchesTyp;
+            row.classList.toggle("d-none", !isVisible);
+            if (isVisible) {
+                visibleRows.push(row);
+            }
+        }
+
+        visibleRows.sort(compareRows);
+        for (const row of visibleRows) {
+            tableBody.appendChild(row);
+        }
+        if (noResultsRow) {
+            tableBody.appendChild(noResultsRow);
+            noResultsRow.classList.toggle("d-none", visibleRows.length > 0);
+        }
+
+        if (countElement) {
+            countElement.textContent = `${visibleRows.length} von ${rows.length} Buchungen`;
+        }
+
+        updateSortIndicators();
+    }
+
+    let frameRequested = false;
+    function scheduleApply() {
+        if (frameRequested) {
+            return;
+        }
+        frameRequested = true;
+        window.requestAnimationFrame(() => {
+            frameRequested = false;
+            applyFiltersAndSorting();
+        });
+    }
+
+    searchInput.addEventListener("input", scheduleApply);
+    categoryFilter.addEventListener("change", scheduleApply);
+    typFilter.addEventListener("change", scheduleApply);
+
+    for (const button of sortButtons) {
+        button.addEventListener("click", () => {
+            const nextKey = button.dataset.sortKey;
+            if (!nextKey) {
+                return;
+            }
+            if (state.sortKey === nextKey) {
+                state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+            } else {
+                state.sortKey = nextKey;
+                state.sortDirection = nextKey === "datum" ? "desc" : "asc";
+            }
+            scheduleApply();
+        });
+    }
+
+    applyFiltersAndSorting();
+})();
+</script>
 {% endblock %}

@@ -357,26 +357,6 @@ class DateiUploadForm(forms.Form):
         label="Beschreibung",
         widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}),
     )
-    kontext = forms.CharField(
-        required=False,
-        label="Kontext",
-        widget=forms.TextInput(attrs={"class": "form-control"}),
-    )
-    sichtbar_fuer_verwalter = forms.BooleanField(
-        required=False,
-        initial=True,
-        label="Sichtbar für Verwalter",
-    )
-    sichtbar_fuer_eigentuemer = forms.BooleanField(
-        required=False,
-        initial=False,
-        label="Sichtbar für Eigentümer",
-    )
-    sichtbar_fuer_mieter = forms.BooleanField(
-        required=False,
-        initial=False,
-        label="Sichtbar für Mieter",
-    )
 
     def __init__(self, *args, **kwargs):
         kwargs.pop("user", None)
@@ -399,7 +379,7 @@ class DateiUploadForm(forms.Form):
                     object_id=object_id,
                 )
             except ValidationError as exc:
-                raise forms.ValidationError(str(exc)) from exc
+                raise forms.ValidationError(exc.messages) from exc
         else:
             raise forms.ValidationError("Bitte ein gültiges Zielobjekt angeben.")
 
@@ -407,7 +387,7 @@ class DateiUploadForm(forms.Form):
             try:
                 DateiService.validate_upload(uploaded_file=upload, kategorie=kategorie)
             except ValidationError as exc:
-                self.add_error("file", str(exc))
+                self.add_error("file", exc)
 
         return cleaned_data
 
@@ -419,10 +399,6 @@ class DateiUploadForm(forms.Form):
             kategorie=self.cleaned_data["kategorie"],
             target_object=self.target_object,
             beschreibung=self.cleaned_data.get("beschreibung", ""),
-            kontext=self.cleaned_data.get("kontext", ""),
-            sichtbar_fuer_verwalter=self.cleaned_data.get("sichtbar_fuer_verwalter", True),
-            sichtbar_fuer_eigentuemer=self.cleaned_data.get("sichtbar_fuer_eigentuemer", False),
-            sichtbar_fuer_mieter=self.cleaned_data.get("sichtbar_fuer_mieter", False),
         )
 
 

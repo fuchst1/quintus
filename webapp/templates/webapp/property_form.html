@@ -3,8 +3,8 @@
 {% block page_title %}{% if object %}Liegenschaft bearbeiten{% else %}Neue Liegenschaft{% endif %}{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-8">
+<div class="row g-4 {% if not object %}justify-content-center{% endif %}">
+    <div class="{% if object %}col-12 col-xl-7{% else %}col-12 col-xl-8{% endif %}">
         <div class="card border-0 shadow-sm">
             <div class="card-body p-4">
                 <form method="post">
@@ -19,7 +19,7 @@
                         </div>
                     {% endif %}
                     <div class="table-responsive">
-                        <table class="table align-middle">
+                        <table class="table table-sm align-middle">
                             <thead>
                                 <tr>
                                     <th>Eigentümer</th>
@@ -64,10 +64,12 @@
                 </form>
             </div>
         </div>
-        {% if object %}
-            {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel %}
-        {% endif %}
     </div>
+    {% if object %}
+        <div class="col-12 col-xl-5">
+            {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel attachments_panel_inline=True %}
+        </div>
+    {% endif %}
 </div>
 {% endblock %} 
 
