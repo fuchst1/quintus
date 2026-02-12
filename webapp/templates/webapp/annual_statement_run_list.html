@@ -1,0 +1,75 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}BK-Briefe{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold mb-0">BK-Briefläufe</h3>
+    <a href="{% url 'betriebskostenabrechnung' %}" class="btn btn-light">Zur BK-Abrechnung</a>
+</div>
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <h5 class="mb-3">Lauf öffnen oder erstellen</h5>
+        <form method="get" action="{% url 'annual_statement_run_ensure' %}" class="row g-3 align-items-end">
+            <div class="col-md-6">
+                <label for="id_liegenschaft" class="form-label">Liegenschaft</label>
+                <select id="id_liegenschaft" name="liegenschaft" class="form-select" required>
+                    <option value="">Bitte wählen</option>
+                    {% for property in properties %}
+                    <option value="{{ property.pk }}" {% if property.pk|stringformat:"s" == selected_property_id %}selected{% endif %}>
+                        {{ property.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label for="id_jahr" class="form-label">Jahr</label>
+                <input id="id_jahr" type="number" name="jahr" min="2000" max="2100" value="{{ selected_year|default:'' }}" class="form-control" required>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-envelope-paper me-1"></i>
+                    Lauf öffnen
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <h5 class="mb-3">Bestehende Läufe</h5>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Liegenschaft</th>
+                        <th>Jahr</th>
+                        <th class="text-end">Schreiben</th>
+                        <th>Erstellt</th>
+                        <th class="text-end">Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for run in runs %}
+                    <tr>
+                        <td>{{ run.liegenschaft.name }}</td>
+                        <td>{{ run.jahr }}</td>
+                        <td class="text-end">{{ run.letter_count }}</td>
+                        <td>{{ run.created_at|date:"d.m.Y H:i" }}</td>
+                        <td class="text-end">
+                            <a href="{% url 'annual_statement_run_detail' run.pk %}" class="btn btn-sm btn-outline-primary">Öffnen</a>
+                            <a href="{% url 'annual_statement_run_delete' run.pk %}" class="btn btn-sm btn-outline-danger">Löschen</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center text-muted py-3">Noch keine Briefläufe vorhanden.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

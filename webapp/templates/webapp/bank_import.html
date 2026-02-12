@@ -132,6 +132,25 @@
                                     {% else %}
                                     <div class="text-muted small mt-1">Für Miete sind nur positive Beträge erlaubt.</div>
                                     {% endif %}
+                                    <div class="form-check mt-2">
+                                        <input type="hidden" name="settlement_adjustment_{{ forloop.counter0 }}" value="0">
+                                        <input
+                                            type="checkbox"
+                                            class="form-check-input"
+                                            id="settlement-adjustment-{{ forloop.counter0 }}"
+                                            name="settlement_adjustment_{{ forloop.counter0 }}"
+                                            value="1"
+                                            {% if row.is_settlement_adjustment %}checked{% endif %}
+                                        >
+                                        <label class="form-check-label small" for="settlement-adjustment-{{ forloop.counter0 }}">
+                                            Ausgleich Vorjahresabrechnung (nicht in BK-Abrechnung)
+                                        </label>
+                                    </div>
+                                    {% if row.settlement_match_reason %}
+                                    <div class="small text-muted mt-1">
+                                        Vorschlag: {{ row.settlement_match_reason }}
+                                    </div>
+                                    {% endif %}
                                 </div>
 
                                 <div id="booking-bk-{{ forloop.counter0 }}" class="booking-panel {% if row.booking_type != 'bk' %}d-none{% endif %}">

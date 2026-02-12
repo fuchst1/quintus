@@ -181,6 +181,70 @@ body {
     line-height: 1;
 }
 
+.bk-water-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.75rem;
+}
+
+.bk-water-kpi-card {
+    border: 1px solid rgba(30, 58, 95, 0.14);
+    border-radius: 0.6rem;
+    background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+    padding: 0.85rem 0.9rem;
+    box-shadow: 0 4px 10px rgba(30, 58, 95, 0.05);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.bk-water-kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 7px 16px rgba(30, 58, 95, 0.1);
+}
+
+.bk-water-kpi-card__icon {
+    width: 1.95rem;
+    height: 1.95rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.5rem;
+    background: rgba(30, 58, 95, 0.08);
+    font-size: 0.98rem;
+    margin-bottom: 0.35rem;
+}
+
+.bk-water-kpi-card__label {
+    font-size: 0.82rem;
+    color: #5e6d81;
+    margin-bottom: 0.12rem;
+}
+
+.bk-water-kpi-card__value {
+    font-size: 1.8rem;
+    line-height: 1.05;
+    font-weight: 800;
+    color: var(--quintus-navy);
+    letter-spacing: -0.02em;
+}
+
+.bk-water-kpi-card__hint {
+    margin-top: 0.14rem;
+    font-size: 0.76rem;
+    color: #6c7a8d;
+}
+
+.bk-meter-type-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 500;
+}
+
+.bk-meter-type-icon {
+    font-size: 0.9rem;
+    line-height: 1;
+}
+
 .dashboard-hero {
     background: linear-gradient(135deg, #ffffff 0%, #f1f7ff 75%);
     border: 1px solid rgba(30, 58, 95, 0.1);
@@ -205,6 +269,10 @@ body {
 
 @media (max-width: 768px) {
     .bk-finance-result__value {
+        font-size: 1.45rem;
+    }
+
+    .bk-water-kpi-card__value {
         font-size: 1.45rem;
     }
 }

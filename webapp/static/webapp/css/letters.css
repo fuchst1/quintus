@@ -1,0 +1,226 @@
+@page {
+    size: A4 portrait;
+    margin: 16mm;
+}
+
+.bk-letter-preview-container {
+    display: flex;
+    justify-content: center;
+}
+
+.bk-letter-sheet {
+    width: 100%;
+    max-width: 190mm;
+    background: #ffffff;
+    color: #1d2330;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 0.81rem;
+    line-height: 1.45;
+}
+
+.bk-letter-letterhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1.2rem;
+    border-bottom: 1px solid #111827;
+    padding-bottom: 0.35rem;
+    margin-bottom: 1.25rem;
+}
+
+.bk-letter-sender-name {
+    font-size: 0.91rem;
+    font-weight: 700;
+    margin-bottom: 0.1rem;
+}
+
+.bk-letter-letterhead-left,
+.bk-letter-letterhead-right,
+.bk-letter-recipient {
+    font-size: 0.76rem;
+}
+
+.bk-letter-letterhead-right {
+    text-align: right;
+}
+
+.bk-letter-letterhead-left > div,
+.bk-letter-letterhead-right > div {
+    margin-bottom: 0.08rem;
+}
+
+.bk-letter-meta-inline span,
+.bk-letter-muted {
+    color: #64748b;
+}
+
+.bk-letter-recipient {
+    margin: 0 0 1.2rem;
+}
+
+.bk-letter-recipient-title {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+    margin-bottom: 0.15rem;
+}
+
+.bk-letter-meta-inline {
+    margin: 0.3rem 0 0.95rem auto;
+    width: fit-content;
+    max-width: 52%;
+    text-align: right;
+    font-size: 0.7rem;
+}
+
+.bk-letter-meta-inline > div {
+    margin-bottom: 0.02rem;
+    white-space: nowrap;
+}
+
+.bk-letter-meta-inline span {
+    text-align: right;
+}
+
+.bk-letter-meta-inline strong {
+    text-align: right;
+}
+
+.bk-letter-recipient-name {
+    font-weight: 700;
+}
+
+.bk-letter-subject {
+    font-size: 1.03rem;
+    font-weight: 700;
+    margin: 0 0 0.85rem;
+}
+
+.bk-letter-textblock p {
+    margin: 0 0 0.55rem;
+}
+
+.bk-letter-text-small {
+    font-size: 0.72rem;
+    color: #475569;
+}
+
+.bk-letter-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.9rem 0 1rem;
+    font-size: 0.74rem;
+}
+
+.bk-letter-table th,
+.bk-letter-table td {
+    border: 1px solid #c6cfdd;
+    padding: 0.4rem 0.45rem;
+    vertical-align: top;
+}
+
+.bk-letter-table-compact {
+    font-size: 0.56rem;
+}
+
+.bk-letter-table-compact th,
+.bk-letter-table-compact td {
+    padding: 0.16rem 0.22rem;
+    line-height: 1.14;
+}
+
+.bk-letter-table th {
+    background: #eef2f8;
+    font-weight: 700;
+}
+
+.bk-letter-table-total td {
+    background: #f5f7fb;
+    font-weight: 700;
+}
+
+.bk-letter-signature {
+    margin-top: 0.9rem;
+}
+
+.bk-letter-signature p {
+    margin: 0.1rem 0;
+}
+
+.bk-letter-signature-name {
+    font-weight: 700;
+}
+
+.bk-letter-page-break {
+    page-break-before: always;
+    break-before: page;
+    margin-top: 1rem;
+}
+
+.bk-letter-appendix-title {
+    font-size: 0.96rem;
+    margin: 0 0 0.65rem;
+}
+
+.bk-letter-section-title {
+    font-size: 0.85rem;
+    margin: 0.75rem 0 0.3rem;
+}
+
+.bk-letter-global-footer {
+    margin-top: 1.2rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid #c6cfdd;
+    text-align: center;
+    font-size: 0.61rem;
+    color: #64748b;
+}
+
+.text-end {
+    text-align: right;
+}
+
+.text-danger {
+    color: #c73b41;
+}
+
+.text-success {
+    color: #2a8759;
+}
+
+.text-muted {
+    color: #64748b;
+}
+
+@media (max-width: 992px) {
+    .bk-letter-letterhead {
+        flex-direction: column;
+    }
+
+    .bk-letter-letterhead-right {
+        text-align: left;
+    }
+
+    .bk-letter-meta-inline {
+        margin-left: 0;
+        width: auto;
+        max-width: 100%;
+    }
+}
+
+@media print {
+    .bk-letter-sheet {
+        padding-bottom: 12mm;
+    }
+
+    .bk-letter-global-footer {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 6mm;
+        margin: 0;
+        padding: 0;
+        border-top: none;
+    }
+}

@@ -1,0 +1,122 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}BK-Brieflauf{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <div>
+        <h3 class="fw-bold mb-1">BK-Briefe {{ run.liegenschaft.name }} · {{ run.jahr }}</h3>
+        <div class="text-muted small">Vorschau prüfen und danach ZIP erstellen. Die Einzelbriefe werden zusätzlich am Mietvertrag abgelegt.</div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{% url 'annual_statement_run_list' %}" class="btn btn-light">Zur Lauf-Liste</a>
+        <a href="{% url 'betriebskostenabrechnung' %}?liegenschaft={{ run.liegenschaft_id }}&jahr={{ run.jahr }}&reiter=zusammenfassung" class="btn btn-outline-secondary">Zur Abrechnung</a>
+        <a href="{{ delete_url }}" class="btn btn-outline-danger">Lauf löschen</a>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body d-flex justify-content-between align-items-center flex-wrap gap-3">
+        <div>
+            <div class="text-muted small">Anzahl Schreiben</div>
+            <div class="fs-4 fw-bold">{{ letter_rows|length }}</div>
+        </div>
+        <form method="post" action="{{ create_zip_url }}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-download me-1"></i>
+                Briefe erstellen (Download + Ablage)
+            </button>
+        </form>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <form method="post" action="{{ note_update_url }}">
+            {% csrf_token %}
+            <label for="brief_nummer_start" class="form-label fw-semibold mb-2">Startnummer für diesen Brieflauf</label>
+            <input
+                id="brief_nummer_start"
+                name="brief_nummer_start"
+                type="number"
+                min="1"
+                step="1"
+                class="form-control mb-2"
+                value="{% if run.brief_nummer_start %}{{ run.brief_nummer_start }}{% else %}{{ next_number_suggestion }}{% endif %}"
+                required
+            >
+            <div class="text-muted small mb-3">
+                Vorschlag aus letzter verwendeter Nummer: {{ next_number_suggestion }}. Bitte prüfen und speichern.
+            </div>
+            <label for="brief_freitext" class="form-label fw-semibold mb-2">Freitext für alle Briefe dieses Laufs</label>
+            <textarea
+                id="brief_freitext"
+                name="brief_freitext"
+                class="form-control mb-2"
+                rows="4"
+                placeholder="Optionaler Erklärungstext für die Mieter..."
+            >{{ run.brief_freitext }}</textarea>
+            <div class="text-muted small mb-3">Der Text wird in der Briefvorschau und in den PDF-Briefen angezeigt.</div>
+            <button type="submit" class="btn btn-outline-primary">Freitext speichern</button>
+        </form>
+    </div>
+</div>
+
+{% if not weasyprint_available %}
+<div class="alert alert-warning">
+    WeasyPrint ist in dieser Umgebung nicht verfügbar oder fehlerhaft. Die PDF-Erstellung wird mit einer Fehlermeldung abgebrochen.
+</div>
+{% endif %}
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Nr.</th>
+                        <th>Einheit</th>
+                        <th>Mieter</th>
+                        <th class="text-end">Brutto gesamt</th>
+                        <th class="text-end">Akonto brutto</th>
+                        <th class="text-end">Saldo brutto</th>
+                        <th>PDF</th>
+                        <th class="text-end">Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in letter_rows %}
+                    <tr>
+                        <td>{{ row.payload.document_number_display }}</td>
+                        <td>{{ row.payload.unit_label }}</td>
+                        <td>{{ row.payload.tenant_names }}</td>
+                        <td class="text-end">€ {{ row.payload.gross_total }}</td>
+                        <td class="text-end">€ {{ row.payload.akonto_total_brutto }}</td>
+                        <td class="text-end {% if row.payload.saldo_brutto < 0 %}text-danger{% else %}text-success{% endif %}">
+                            € {{ row.payload.saldo_brutto }}
+                        </td>
+                        <td>
+                            {% if row.letter.pdf_datei_id %}
+                            <a href="{% url 'datei_download' row.letter.pdf_datei_id %}" class="btn btn-sm btn-outline-success">Download</a>
+                            <div class="small text-muted mt-1">{{ row.letter.generated_at|date:"d.m.Y H:i" }}</div>
+                            {% else %}
+                            <span class="text-muted small">Noch nicht erzeugt</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <a href="{{ row.preview_url }}" class="btn btn-sm btn-outline-primary">Vorschau</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-4">
+                            Für diesen Lauf sind keine abrechenbaren Einheiten vorhanden.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -13,7 +13,7 @@
 <div class="card border-0 shadow-sm mb-3">
     <div class="card-body">
         <div class="row g-3 align-items-end">
-            <div class="col-md-6 col-lg-4">
+            <div class="col-md-6 col-lg-3">
                 <label for="belegSearch" class="form-label mb-1">Suchen</label>
                 <input
                     id="belegSearch"
@@ -29,11 +29,23 @@
                     <option value="">Alle Liegenschaften</option>
                 </select>
             </div>
-            <div class="col-sm-6 col-md-3 col-lg-3">
+            <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="belegArtFilter" class="form-label mb-1">Art</label>
                 <select id="belegArtFilter" class="form-select">
                     <option value="">Alle Arten</option>
                 </select>
+            </div>
+            <div class="col-sm-6 col-md-3 col-lg-2">
+                <form method="get">
+                    <label for="belegYearFilter" class="form-label mb-1">Jahr</label>
+                    <select id="belegYearFilter" name="jahr" class="form-select" onchange="this.form.submit()">
+                        {% for year in year_choices %}
+                        <option value="{{ year }}" {% if year == selected_year %}selected{% endif %}>{{ year }}</option>
+                        {% empty %}
+                        <option value="{{ selected_year }}">{{ selected_year }}</option>
+                        {% endfor %}
+                    </select>
+                </form>
             </div>
             <div class="col-md-12 col-lg-2 text-lg-end">
                 <div id="belegCount" class="small text-muted"></div>
@@ -107,7 +119,11 @@
                         data-referenz="{{ beleg.import_referenz|default:'' }}"
                     >
                         <td class="text-center">
-                            <a href="{% url 'betriebskostenbeleg_update' beleg.pk %}" class="btn btn-sm btn-outline-secondary me-1">
+                            <a
+                                href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
+                                data-base-href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
+                                class="btn btn-sm btn-outline-secondary me-1 beleg-edit-link"
+                            >
                                 <i class="bi bi-pencil"></i>
                             </a>
                             <a href="{% url 'betriebskostenbeleg_delete' beleg.pk %}" class="btn btn-sm btn-outline-danger">
@@ -157,10 +173,31 @@
     const countElement = document.getElementById("belegCount");
     const noResultsRow = document.getElementById("belegNoResults");
     const sortButtons = Array.from(document.querySelectorAll(".beleg-sort"));
+    const editLinks = Array.from(document.querySelectorAll(".beleg-edit-link"));
+
+    const DEFAULT_SORT_KEY = "datum";
+    const DEFAULT_SORT_DIRECTION = "desc";
+    const QUERY_KEYS = {
+        search: "suche",
+        property: "liegenschaft",
+        art: "art",
+        sort: "sort",
+        direction: "richtung",
+    };
+    const VALID_SORT_KEYS = new Set([
+        "datum",
+        "liegenschaft",
+        "art",
+        "netto",
+        "ust",
+        "brutto",
+        "text",
+        "referenz",
+    ]);
 
     const state = {
-        sortKey: "datum",
-        sortDirection: "desc",
+        sortKey: DEFAULT_SORT_KEY,
+        sortDirection: DEFAULT_SORT_DIRECTION,
     };
 
     function normalize(value) {
@@ -255,6 +292,84 @@
     fillSelect(propertyFilter, propertyValues);
     fillSelect(artFilter, artValues);
 
+    function applyStateFromQueryParams() {
+        const params = new URLSearchParams(window.location.search);
+        const searchValue = params.get(QUERY_KEYS.search);
+        const propertyValue = params.get(QUERY_KEYS.property);
+        const artValue = params.get(QUERY_KEYS.art);
+        const sortKey = params.get(QUERY_KEYS.sort);
+        const sortDirection = params.get(QUERY_KEYS.direction);
+
+        if (searchValue) {
+            searchInput.value = searchValue;
+        }
+        if (propertyValue && propertyValues.has(propertyValue)) {
+            propertyFilter.value = propertyValue;
+        }
+        if (artValue && artValues.has(artValue)) {
+            artFilter.value = artValue;
+        }
+        if (sortKey && VALID_SORT_KEYS.has(sortKey)) {
+            state.sortKey = sortKey;
+        }
+        if (sortDirection === "asc" || sortDirection === "desc") {
+            state.sortDirection = sortDirection;
+        }
+    }
+
+    function syncStateToQueryParams() {
+        const params = new URLSearchParams(window.location.search);
+        const searchValue = searchInput.value.trim();
+        if (searchValue) {
+            params.set(QUERY_KEYS.search, searchValue);
+        } else {
+            params.delete(QUERY_KEYS.search);
+        }
+        if (propertyFilter.value) {
+            params.set(QUERY_KEYS.property, propertyFilter.value);
+        } else {
+            params.delete(QUERY_KEYS.property);
+        }
+        if (artFilter.value) {
+            params.set(QUERY_KEYS.art, artFilter.value);
+        } else {
+            params.delete(QUERY_KEYS.art);
+        }
+        if (state.sortKey !== DEFAULT_SORT_KEY) {
+            params.set(QUERY_KEYS.sort, state.sortKey);
+        } else {
+            params.delete(QUERY_KEYS.sort);
+        }
+        if (state.sortDirection !== DEFAULT_SORT_DIRECTION) {
+            params.set(QUERY_KEYS.direction, state.sortDirection);
+        } else {
+            params.delete(QUERY_KEYS.direction);
+        }
+
+        const queryString = params.toString();
+        const targetUrl = queryString ? `${window.location.pathname}?${queryString}` : window.location.pathname;
+        const currentUrl = `${window.location.pathname}${window.location.search}`;
+        if (targetUrl !== currentUrl) {
+            window.history.replaceState(null, "", targetUrl);
+        }
+    }
+
+    function updateEditLinksWithNext() {
+        if (!editLinks.length) {
+            return;
+        }
+        const nextUrl = `${window.location.pathname}${window.location.search}`;
+        for (const link of editLinks) {
+            const baseHref = link.dataset.baseHref || link.getAttribute("href");
+            if (!baseHref) {
+                continue;
+            }
+            const editUrl = new URL(baseHref, window.location.origin);
+            editUrl.searchParams.set("next", nextUrl);
+            link.href = `${editUrl.pathname}?${editUrl.searchParams.toString()}`;
+        }
+    }
+
     function updateSortIndicators() {
         for (const button of sortButtons) {
             const indicator = button.querySelector(".sort-indicator");
@@ -302,6 +417,8 @@
         }
 
         updateSortIndicators();
+        syncStateToQueryParams();
+        updateEditLinksWithNext();
     }
 
     let frameRequested = false;
@@ -336,6 +453,7 @@
         });
     }
 
+    applyStateFromQueryParams();
     applyFiltersAndSorting();
 })();
 </script>

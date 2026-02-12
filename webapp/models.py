@@ -44,6 +44,11 @@ class Manager(models.Model):
         verbose_name=_("Telefon"),
     )
     website = models.URLField(blank=True, verbose_name=_("Webseite"))
+    account_number = models.CharField(
+        max_length=100,
+        blank=True,
+        verbose_name=_("Kontonummer"),
+    )
 
     tax_mode = models.CharField(
         max_length=10,
@@ -372,6 +377,98 @@ class LeaseAgreement(models.Model):
 
     def __str__(self) -> str:
         return f"{self.unit} · {self.entry_date}"
+
+
+class Abrechnungslauf(models.Model):
+    liegenschaft = models.ForeignKey(
+        "Property",
+        on_delete=models.PROTECT,
+        related_name="abrechnungslaeufe",
+        verbose_name=_("Liegenschaft"),
+    )
+    jahr = models.PositiveIntegerField(verbose_name=_("Jahr"))
+    brief_nummer_start = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Startnummer Brief"),
+        help_text=_("Fortlaufende Startnummer für diesen Brieflauf (muss bestätigt werden)."),
+    )
+    brief_freitext = models.TextField(
+        blank=True,
+        verbose_name=_("Brief-Freitext"),
+        help_text=_("Optionaler Freitext, der in allen Schreiben dieses Laufs angezeigt wird."),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
+
+    class Meta:
+        verbose_name = _("Abrechnungslauf")
+        verbose_name_plural = _("Abrechnungsläufe")
+        ordering = ["-jahr", "liegenschaft__name", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["liegenschaft", "jahr"],
+                name="uniq_abrechnungslauf_liegenschaft_jahr",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.liegenschaft} · {self.jahr}"
+
+
+class Abrechnungsschreiben(models.Model):
+    lauf = models.ForeignKey(
+        "Abrechnungslauf",
+        on_delete=models.CASCADE,
+        related_name="schreiben",
+        verbose_name=_("Abrechnungslauf"),
+    )
+    mietervertrag = models.ForeignKey(
+        "LeaseAgreement",
+        on_delete=models.PROTECT,
+        related_name="abrechnungsschreiben",
+        verbose_name=_("Mietvertrag"),
+    )
+    einheit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="abrechnungsschreiben",
+        verbose_name=_("Einheit"),
+    )
+    pdf_datei = models.ForeignKey(
+        "Datei",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="abrechnungsschreiben",
+        verbose_name=_("Brief-PDF"),
+    )
+    generated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("PDF erzeugt am"),
+    )
+    laufende_nummer = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Laufende Nummer"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
+
+    class Meta:
+        verbose_name = _("Abrechnungsschreiben")
+        verbose_name_plural = _("Abrechnungsschreiben")
+        ordering = ["einheit__name", "mietervertrag_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["lauf", "mietervertrag"],
+                name="uniq_abrechnungsschreiben_lauf_mietervertrag",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.lauf} · {self.mietervertrag}"
 
 
 class BankTransaktion(models.Model):
@@ -799,6 +896,10 @@ class Buchung(models.Model):
         verbose_name=_("USt (%)"),
     )
     brutto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Brutto"))
+    is_settlement_adjustment = models.BooleanField(
+        default=False,
+        verbose_name=_("Ausgleich Vorjahresabrechnung"),
+    )
     storniert_von = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,

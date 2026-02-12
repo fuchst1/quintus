@@ -73,6 +73,12 @@
                 BK-Abrechnung
             </a>
         </li>
+        <li>
+            <a href="{% url 'annual_statement_run_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_letter_preview' %}active-quintus{% endif %}">
+                <i class="bi bi-envelope-paper me-2"></i>
+                BK-Briefe
+            </a>
+        </li>
         <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
             Personen
         </div>

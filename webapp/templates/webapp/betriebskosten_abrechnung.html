@@ -32,6 +32,17 @@
                     {% endfor %}
                 </select>
             </div>
+            <div class="col-md-12 col-lg-3">
+                {% if selected_property_id %}
+                <a
+                    href="{% url 'annual_statement_run_ensure' %}?liegenschaft={{ selected_property_id }}&jahr={{ selected_year }}"
+                    class="btn btn-outline-primary w-100"
+                >
+                    <i class="bi bi-envelope-paper me-1"></i>
+                    BK-Briefe
+                </a>
+                {% endif %}
+            </div>
         </form>
     </div>
 </div>
@@ -112,6 +123,90 @@
                         {% endif %}
                     </div>
                 </div>
+                <div class="mt-3">
+                    <div class="small text-muted mb-2">Berechnungsgrundlagen je Kategorie</div>
+                    {% for category in overview_finance_details %}
+                    <details class="border rounded p-3 mb-2">
+                        <summary class="fw-semibold">
+                            {{ category.label }} anzeigen
+                            <span class="small text-muted ms-2">
+                                (Ausgaben: € {{ category.expenses_sum }} · Einnahmen: € {{ category.income_sum }})
+                            </span>
+                        </summary>
+                        <div class="pt-3">
+                            <div class="small fw-semibold mb-2">Ausgaben-Positionen</div>
+                            {% if category.expenses_rows %}
+                            <div class="table-responsive mb-3">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Datum</th>
+                                            <th>Bezeichnung</th>
+                                            <th>Quelle</th>
+                                            <th class="text-end">Netto</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for row in category.expenses_rows %}
+                                        <tr>
+                                            <td>{{ row.date|date:"d.m.Y" }}</td>
+                                            <td>{{ row.description }}</td>
+                                            <td>{{ row.source }}</td>
+                                            <td class="text-end">€ {{ row.amount }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                        <tr class="table-light fw-semibold">
+                                            <td colspan="3">Summe Ausgaben</td>
+                                            <td class="text-end">€ {{ category.expenses_sum }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            {% else %}
+                            <div class="small text-muted mb-3">
+                                Keine Ausgaben-Positionen vorhanden.
+                            </div>
+                            {% endif %}
+
+                            <div class="small fw-semibold mb-2">Einnahmen-Positionen</div>
+                            {% if category.income_rows %}
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Datum</th>
+                                            <th>Bezeichnung</th>
+                                            <th>Quelle</th>
+                                            <th>Einheit</th>
+                                            <th class="text-end">Netto</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for row in category.income_rows %}
+                                        <tr>
+                                            <td>{{ row.date|date:"d.m.Y" }}</td>
+                                            <td>{{ row.description }}</td>
+                                            <td>{{ row.source }}</td>
+                                            <td>{{ row.reference|default:"—" }}</td>
+                                            <td class="text-end">€ {{ row.amount }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                        <tr class="table-light fw-semibold">
+                                            <td colspan="4">Summe Einnahmen</td>
+                                            <td class="text-end">€ {{ category.income_sum }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            {% else %}
+                            <div class="small text-muted">
+                                Keine Einnahmen-Positionen vorhanden.
+                            </div>
+                            {% endif %}
+                        </div>
+                    </details>
+                    {% endfor %}
+                </div>
             </div>
             <div class="col-12 col-xl-6">
                 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -125,28 +220,65 @@
                                 <th>Typ</th>
                                 <th class="text-end">Verbrauch</th>
                                 <th>Einheit</th>
+                                <th class="text-end">Startstand</th>
+                                <th class="text-end">Endstand</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for group in meter_consumption_groups %}
                             <tr class="table-light fw-semibold">
-                                <td colspan="3">{{ group.label }}</td>
+                                <td colspan="5">{{ group.label }}</td>
                             </tr>
                                 {% for row in group.rows %}
                                 <tr>
                                     <td>
-                                        {{ row.meter_type }}
+                                        <div class="bk-meter-type-cell">
+                                            {% if row.meter_type_key == "WP_electricity" %}
+                                            <i class="bi bi-lightning-charge-fill bk-meter-type-icon text-warning"></i>
+                                            {% elif row.meter_type_key == "WP_heat" %}
+                                            <i class="bi bi-fire bk-meter-type-icon text-danger"></i>
+                                            {% elif row.meter_type_key == "WP_warmwater" %}
+                                            <i class="bi bi-droplet-fill bk-meter-type-icon text-danger"></i>
+                                            {% elif row.meter_type_key == "electricity" %}
+                                            <i class="bi bi-lightning-charge-fill bk-meter-type-icon text-warning"></i>
+                                            {% elif row.meter_type_key == "electricity_PV" %}
+                                            <i class="bi bi-sun-fill bk-meter-type-icon text-warning"></i>
+                                            {% elif row.meter_type_key == "water_cold" %}
+                                            <i class="bi bi-droplet-fill bk-meter-type-icon text-primary"></i>
+                                            {% elif row.meter_type_key == "water_hot" %}
+                                            <i class="bi bi-droplet-fill bk-meter-type-icon text-danger"></i>
+                                            {% elif row.meter_type_key == "cool_energy" %}
+                                            <i class="bi bi-snow2 bk-meter-type-icon text-info"></i>
+                                            {% elif row.meter_type_key == "heat_energy" %}
+                                            <i class="bi bi-fire bk-meter-type-icon text-danger"></i>
+                                            {% else %}
+                                            <i class="bi bi-speedometer2 bk-meter-type-icon text-secondary"></i>
+                                            {% endif %}
+                                            <span>{{ row.meter_type }}</span>
+                                        </div>
                                         {% if row.meter_number %}
                                         <div class="small text-muted">Nr. {{ row.meter_number }}</div>
                                         {% endif %}
                                     </td>
-                                    <td class="text-end">{{ row.consumption_display }}</td>
+                                    <td class="text-end fw-semibold">{{ row.consumption_display }}</td>
                                     <td>{{ row.unit_label }}</td>
+                                    <td class="text-end">
+                                        <div class="small">{{ row.start_value_display }}</div>
+                                        {% if row.start_date %}
+                                        <div class="small text-muted">{{ row.start_date|date:"d.m.Y" }}</div>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">
+                                        <div class="small">{{ row.end_value_display }}</div>
+                                        {% if row.end_date %}
+                                        <div class="small text-muted">{{ row.end_date|date:"d.m.Y" }}</div>
+                                        {% endif %}
+                                    </td>
                                 </tr>
                                 {% endfor %}
                             {% empty %}
                             <tr>
-                                <td colspan="3" class="text-center py-3 text-muted">
+                                <td colspan="5" class="text-center py-3 text-muted">
                                     Keine Zähler für diese Liegenschaft vorhanden.
                                 </td>
                             </tr>
@@ -170,6 +302,32 @@
             Es sind keine Einheiten mit BK-Anteil für die Verteilung hinterlegt.
         </div>
         {% else %}
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-success"><i class="bi bi-receipt"></i></div>
+                <div class="bk-water-kpi-card__label">Original Rechnungssumme</div>
+                <div class="bk-water-kpi-card__value">€ {{ bk_allg.original_sum }}</div>
+                <div class="bk-water-kpi-card__hint">Basis für die Verteilung</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-diagram-3"></i></div>
+                <div class="bk-water-kpi-card__label">Verteilte Summe</div>
+                <div class="bk-water-kpi-card__value">€ {{ bk_allg.distributed_sum }}</div>
+                <div class="bk-water-kpi-card__hint">Summe aller Einheiten</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-warning"><i class="bi bi-arrow-left-right"></i></div>
+                <div class="bk-water-kpi-card__label">Rundungsdifferenz</div>
+                <div class="bk-water-kpi-card__value">€ {{ bk_allg.rounding_diff }}</div>
+                <div class="bk-water-kpi-card__hint">Abweichung nach Rundung</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-info"><i class="bi bi-house-check"></i></div>
+                <div class="bk-water-kpi-card__label">Einheiten in Verteilung</div>
+                <div class="bk-water-kpi-card__value">{{ bk_allg.rows|length }}</div>
+                <div class="bk-water-kpi-card__hint">Aktive BK-Anteile</div>
+            </div>
+        </div>
         <div class="table-responsive">
             <table class="table align-middle mb-0">
                 <thead class="table-light">
@@ -210,13 +368,38 @@
             <h5 class="mb-0">Wasserabrechnung {{ selected_property.name }} · {{ period_label }}</h5>
             <div class="small text-muted">Hauszähler minus Wohnungszähler (Schwund-Verteilung)</div>
         </div>
-        <div class="row g-3 mb-3">
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Kostenpool (Netto)</div><div class="fw-semibold">€ {{ water_allocation.cost_pool }}</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Hausverbrauch</div><div class="fw-semibold">{{ water_allocation.house_consumption_m3 }} m³</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Gemessen (Einheiten)</div><div class="fw-semibold">{{ water_allocation.measured_units_m3 }} m³</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Schwund</div><div class="fw-semibold">{{ water_allocation.schwund_m3 }} m³</div></div></div>
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-success"><i class="bi bi-cash-coin"></i></div>
+                <div class="bk-water-kpi-card__label">Kostenpool (Netto)</div>
+                <div class="bk-water-kpi-card__value">€ {{ water_allocation.cost_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Gesamtkosten Wasser</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-speedometer2"></i></div>
+                <div class="bk-water-kpi-card__label">Hausverbrauch (Kalt+Warm)</div>
+                <div class="bk-water-kpi-card__value">{{ water_allocation.house_consumption_m3 }} m³</div>
+                <div class="bk-water-kpi-card__hint">Hauptzähler gesamt</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-info"><i class="bi bi-house-door"></i></div>
+                <div class="bk-water-kpi-card__label">Gemessen (Einheiten)</div>
+                <div class="bk-water-kpi-card__value">{{ water_allocation.measured_units_m3 }} m³</div>
+                <div class="bk-water-kpi-card__hint">Summe Wohnungen (Kalt+Warm)</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-warning"><i class="bi bi-droplet-half"></i></div>
+                <div class="bk-water-kpi-card__label">Differenz / Schwund</div>
+                <div class="bk-water-kpi-card__value">{{ water_allocation.schwund_m3 }} m³</div>
+                <div class="bk-water-kpi-card__hint">Hauszähler minus Wohnungen</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-secondary"><i class="bi bi-tag"></i></div>
+                <div class="bk-water-kpi-card__label">Preis pro m³</div>
+                <div class="bk-water-kpi-card__value">€ {{ water_allocation.price_per_m3 }}</div>
+                <div class="bk-water-kpi-card__hint">Kosten / Hausverbrauch</div>
+            </div>
         </div>
-        <div class="small text-muted mb-2">Preis pro m³: € {{ water_allocation.price_per_m3 }}</div>
         <div class="table-responsive">
             <table class="table align-middle mb-0">
                 <thead class="table-light">
@@ -258,14 +441,43 @@
             <h5 class="mb-0">Allgemeinstrom {{ selected_property.name }} · {{ period_label }}</h5>
             <div class="small text-muted">Hausstrom minus WP-Strom, Verteilung nach BK-Anteil</div>
         </div>
-        <div class="row g-3 mb-3">
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Stromkosten gesamt</div><div class="fw-semibold">€ {{ electricity_common_allocation.stromkosten_total }}</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Hausstrom</div><div class="fw-semibold">{{ electricity_common_allocation.hausstrom_kwh }} kWh</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP-Strom</div><div class="fw-semibold">{{ electricity_common_allocation.wp_strom_kwh }} kWh</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Allgemeinstrom</div><div class="fw-semibold">{{ electricity_common_allocation.allgemeinstrom_kwh }} kWh</div></div></div>
-        </div>
-        <div class="small text-muted mb-2">
-            Preis pro kWh: € {{ electricity_common_allocation.price_per_kwh }} · Kostenpool: € {{ electricity_common_allocation.cost_pool }}
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-success"><i class="bi bi-lightning-charge"></i></div>
+                <div class="bk-water-kpi-card__label">Stromkosten gesamt</div>
+                <div class="bk-water-kpi-card__value">€ {{ electricity_common_allocation.stromkosten_total }}</div>
+                <div class="bk-water-kpi-card__hint">Gesamtkosten Strom</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-house-gear"></i></div>
+                <div class="bk-water-kpi-card__label">Hausstrom</div>
+                <div class="bk-water-kpi-card__value">{{ electricity_common_allocation.hausstrom_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Gesamtverbrauch Haus</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-info"><i class="bi bi-fan"></i></div>
+                <div class="bk-water-kpi-card__label">WP-Strom</div>
+                <div class="bk-water-kpi-card__value">{{ electricity_common_allocation.wp_strom_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Verbrauch Wärmepumpe</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-warning"><i class="bi bi-lightning"></i></div>
+                <div class="bk-water-kpi-card__label">Allgemeinstrom</div>
+                <div class="bk-water-kpi-card__value">{{ electricity_common_allocation.allgemeinstrom_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Hausstrom minus WP-Strom</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-secondary"><i class="bi bi-tag"></i></div>
+                <div class="bk-water-kpi-card__label">Preis pro kWh</div>
+                <div class="bk-water-kpi-card__value">€ {{ electricity_common_allocation.price_per_kwh }}</div>
+                <div class="bk-water-kpi-card__hint">Kosten je kWh</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-dark"><i class="bi bi-calculator"></i></div>
+                <div class="bk-water-kpi-card__label">Kostenpool</div>
+                <div class="bk-water-kpi-card__value">€ {{ electricity_common_allocation.cost_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Zu verteilender Anteil</div>
+            </div>
         </div>
         <div class="table-responsive">
             <table class="table align-middle mb-0">
@@ -302,14 +514,43 @@
             <h5 class="mb-0">Warmwasser {{ selected_property.name }} · {{ period_label }}</h5>
             <div class="small text-muted">WP-Aufteilung über Verhältnis Wärme/Warmwasser</div>
         </div>
-        <div class="row g-3 mb-3">
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Input</div><div class="fw-semibold">{{ wp_metrics.input_kwh }} kWh</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Output Wärme</div><div class="fw-semibold">{{ wp_metrics.output_heat_kwh }} kWh</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">WP Output Warmwasser</div><div class="fw-semibold">{{ wp_metrics.output_ww_kwh }} kWh</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Ratio WW</div><div class="fw-semibold">{{ wp_metrics.ratio_ww }}</div></div></div>
-        </div>
-        <div class="small text-muted mb-2">
-            Kostenpool: € {{ hot_water_allocation.cost_pool }} · Hausverbrauch WW: {{ hot_water_allocation.house_consumption_m3 }} m³ · Preis/m³: € {{ hot_water_allocation.price_per_m3 }}
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-lightning-charge"></i></div>
+                <div class="bk-water-kpi-card__label">WP Input</div>
+                <div class="bk-water-kpi-card__value">{{ wp_metrics.input_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Stromverbrauch Wärmepumpe</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-info"><i class="bi bi-droplet"></i></div>
+                <div class="bk-water-kpi-card__label">WP Output Warmwasser</div>
+                <div class="bk-water-kpi-card__value">{{ wp_metrics.output_ww_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Erzeugte WW-Energie</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-warning"><i class="bi bi-percent"></i></div>
+                <div class="bk-water-kpi-card__label">Ratio WW</div>
+                <div class="bk-water-kpi-card__value">{{ wp_metrics.ratio_ww }}</div>
+                <div class="bk-water-kpi-card__hint">Anteil WW an WP-Output</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-success"><i class="bi bi-cash-coin"></i></div>
+                <div class="bk-water-kpi-card__label">Kostenpool WW</div>
+                <div class="bk-water-kpi-card__value">€ {{ hot_water_allocation.cost_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Zu verteilende WW-Kosten</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-secondary"><i class="bi bi-speedometer2"></i></div>
+                <div class="bk-water-kpi-card__label">Gesamtverbrauch WW</div>
+                <div class="bk-water-kpi-card__value">{{ hot_water_allocation.house_consumption_m3 }} m³</div>
+                <div class="bk-water-kpi-card__hint">Summe Einheiten</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-dark"><i class="bi bi-tag"></i></div>
+                <div class="bk-water-kpi-card__label">Preis pro m³</div>
+                <div class="bk-water-kpi-card__value">€ {{ hot_water_allocation.price_per_m3 }}</div>
+                <div class="bk-water-kpi-card__hint">Kosten je m³ Warmwasser</div>
+            </div>
         </div>
         <div class="table-responsive">
             <table class="table align-middle mb-0">
@@ -346,11 +587,43 @@
             <h5 class="mb-0">Heizung {{ selected_property.name }} · {{ period_label }}</h5>
             <div class="small text-muted">Fix/variabel gemäß Heizkostenanteil der Liegenschaft</div>
         </div>
-        <div class="row g-3 mb-3">
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Heizkostenpool</div><div class="fw-semibold">€ {{ heating_allocation.cost_pool }}</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Fixpool ({{ heating_allocation.fixed_percent }}%)</div><div class="fw-semibold">€ {{ heating_allocation.fixed_pool }}</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Variabler Pool</div><div class="fw-semibold">€ {{ heating_allocation.variable_pool }}</div></div></div>
-            <div class="col-md-6 col-xl-3"><div class="border rounded p-3"><div class="small text-muted">Gesamtverbrauch</div><div class="fw-semibold">{{ heating_allocation.total_consumption_kwh }} kWh</div></div></div>
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-danger"><i class="bi bi-thermometer-half"></i></div>
+                <div class="bk-water-kpi-card__label">Heizkostenpool</div>
+                <div class="bk-water-kpi-card__value">€ {{ heating_allocation.cost_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Gesamtkosten Heizung</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-lock"></i></div>
+                <div class="bk-water-kpi-card__label">Fixpool</div>
+                <div class="bk-water-kpi-card__value">€ {{ heating_allocation.fixed_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Fixanteil ({{ heating_allocation.fixed_percent }}%)</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-warning"><i class="bi bi-activity"></i></div>
+                <div class="bk-water-kpi-card__label">Variabler Pool</div>
+                <div class="bk-water-kpi-card__value">€ {{ heating_allocation.variable_pool }}</div>
+                <div class="bk-water-kpi-card__hint">Verbrauchsabhängiger Anteil</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-info"><i class="bi bi-speedometer2"></i></div>
+                <div class="bk-water-kpi-card__label">Gesamtverbrauch</div>
+                <div class="bk-water-kpi-card__value">{{ heating_allocation.total_consumption_kwh }} kWh</div>
+                <div class="bk-water-kpi-card__hint">Summe gemessener Verbrauch</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-secondary"><i class="bi bi-calculator"></i></div>
+                <div class="bk-water-kpi-card__label">Verteilte Summe</div>
+                <div class="bk-water-kpi-card__value">€ {{ heating_allocation.distributed_sum }}</div>
+                <div class="bk-water-kpi-card__hint">Summe aller Einheiten</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-dark"><i class="bi bi-arrow-left-right"></i></div>
+                <div class="bk-water-kpi-card__label">Differenz</div>
+                <div class="bk-water-kpi-card__value">€ {{ heating_allocation.rounding_diff }}</div>
+                <div class="bk-water-kpi-card__hint">Abweichung zum Kostenpool</div>
+            </div>
         </div>
         <div class="table-responsive">
             <table class="table align-middle mb-0">
@@ -393,43 +666,163 @@
             <h5 class="mb-0">Gesamtabrechnung je Einheit {{ selected_property.name }} · {{ period_label }}</h5>
             <div class="small text-muted">USt-Topf 10% (BK/Wasser/Strom/WW) + USt-Topf 20% (Heizung)</div>
         </div>
+        <div class="bk-water-kpis mb-3">
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-primary"><i class="bi bi-calculator"></i></div>
+                <div class="bk-water-kpi-card__label">Netto gesamt</div>
+                <div class="bk-water-kpi-card__value">€ {{ annual_statement_trace.totals.netto_total }}</div>
+                <div class="bk-water-kpi-card__hint">Netto 10% + Netto 20%</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-success"><i class="bi bi-wallet2"></i></div>
+                <div class="bk-water-kpi-card__label">Akonto gesamt</div>
+                <div class="bk-water-kpi-card__value">€ {{ annual_statement_trace.totals.akonto_total }}</div>
+                <div class="bk-water-kpi-card__hint">BK + HK Vorauszahlungen</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon {% if annual_statement_trace.totals.saldo_netto < 0 %}text-danger{% else %}text-success{% endif %}"><i class="bi bi-arrow-left-right"></i></div>
+                <div class="bk-water-kpi-card__label">Saldo Netto</div>
+                <div class="bk-water-kpi-card__value">€ {{ annual_statement_trace.totals.saldo_netto }}</div>
+                <div class="bk-water-kpi-card__hint">Akonto gesamt - Netto gesamt</div>
+            </div>
+            <div class="bk-water-kpi-card">
+                <div class="bk-water-kpi-card__icon text-dark"><i class="bi bi-house-check"></i></div>
+                <div class="bk-water-kpi-card__label">Einheiten</div>
+                <div class="bk-water-kpi-card__value">{{ annual_statement_trace.rows|length }}</div>
+                <div class="bk-water-kpi-card__hint">In der Abrechnung enthalten</div>
+            </div>
+        </div>
+        <div class="small text-muted mb-2">
+            Nachvollziehbarkeit: Die folgenden Spalten verwenden die bereits berechneten Werte aus BK allg., Wasser, Allgemeinstrom, Warmwasser und Heizung.
+        </div>
         <div class="table-responsive mb-3">
             <table class="table align-middle mb-0">
                 <thead class="table-light">
                     <tr>
                         <th>Einheit</th>
+                        <th class="text-end">BK allg.</th>
+                        <th class="text-end">Wasser</th>
+                        <th class="text-end">Allg. Strom</th>
+                        <th class="text-end">Warmwasser</th>
                         <th class="text-end">Netto 10%</th>
+                        <th class="text-end">Heizung fix</th>
+                        <th class="text-end">Heizung var.</th>
                         <th class="text-end">Netto 20%</th>
-                        <th class="text-end">Brutto gesamt</th>
+                        <th class="text-end">Netto gesamt</th>
                         <th class="text-end">Akonto BK</th>
                         <th class="text-end">Akonto HK</th>
-                        <th class="text-end">Saldo</th>
+                        <th class="text-end">Akonto gesamt</th>
+                        <th class="text-end">Saldo Netto</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for row in annual_statement.rows %}
+                    {% for row in annual_statement_trace.rows %}
                     <tr>
                         <td>{{ row.label }}</td>
-                        <td class="text-end">€ {{ row.costs_net_10 }}</td>
-                        <td class="text-end">€ {{ row.costs_net_20 }}</td>
-                        <td class="text-end">€ {{ row.gross_total }}</td>
+                        <td class="text-end">€ {{ row.bk_allg }}</td>
+                        <td class="text-end">€ {{ row.wasser }}</td>
+                        <td class="text-end">€ {{ row.allgemeinstrom }}</td>
+                        <td class="text-end">€ {{ row.warmwasser }}</td>
+                        <td class="text-end fw-semibold">€ {{ row.netto_10 }}</td>
+                        <td class="text-end">€ {{ row.heizung_fix }}</td>
+                        <td class="text-end">€ {{ row.heizung_variabel }}</td>
+                        <td class="text-end fw-semibold">€ {{ row.netto_20 }}</td>
+                        <td class="text-end fw-semibold">€ {{ row.netto_total }}</td>
                         <td class="text-end">€ {{ row.akonto_bk }}</td>
                         <td class="text-end">€ {{ row.akonto_hk }}</td>
-                        <td class="text-end {% if row.saldo|first == '-' %}text-danger{% else %}text-success{% endif %}">€ {{ row.saldo }}</td>
+                        <td class="text-end fw-semibold">€ {{ row.akonto_total }}</td>
+                        <td class="text-end fw-semibold {% if row.saldo_netto < 0 %}text-danger{% else %}text-success{% endif %}">€ {{ row.saldo_netto }}</td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="7" class="text-center text-muted py-3">Keine Einheitsdaten vorhanden.</td></tr>
+                    <tr><td colspan="14" class="text-center text-muted py-3">Keine Einheitsdaten vorhanden.</td></tr>
                     {% endfor %}
                     <tr class="table-light fw-semibold">
                         <td>Summe</td>
-                        <td class="text-end">€ {{ annual_statement.totals.net_10 }}</td>
-                        <td class="text-end">€ {{ annual_statement.totals.net_20 }}</td>
-                        <td class="text-end">€ {{ annual_statement.totals.gross_total }}</td>
-                        <td class="text-end" colspan="2">€ {{ annual_statement.totals.akonto_total }}</td>
-                        <td class="text-end">€ {{ annual_statement.totals.saldo_total }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.component_totals.bk_allg }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.component_totals.wasser }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.component_totals.allgemeinstrom }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.component_totals.warmwasser }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.totals.netto_10 }}</td>
+                        <td class="text-end">—</td>
+                        <td class="text-end">—</td>
+                        <td class="text-end">€ {{ annual_statement_trace.component_totals.heizung }}</td>
+                        <td class="text-end">€ {{ annual_statement_trace.totals.netto_total }}</td>
+                        <td class="text-end">—</td>
+                        <td class="text-end">—</td>
+                        <td class="text-end">€ {{ annual_statement_trace.totals.akonto_total }}</td>
+                        <td class="text-end {% if annual_statement_trace.totals.saldo_netto < 0 %}text-danger{% else %}text-success{% endif %}">€ {{ annual_statement_trace.totals.saldo_netto }}</td>
                     </tr>
                 </tbody>
             </table>
+        </div>
+        <div class="border rounded p-3 mb-3">
+            <h6 class="mb-2">Brutto-Abgleich je Einheit</h6>
+            <div class="small text-muted mb-3">
+                Darstellung nach Positionen: Betriebskosten (10%), Heizung (20%) und Gesamt.
+            </div>
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Einheit</th>
+                            <th>Position</th>
+                            <th class="text-end">Netto</th>
+                            <th class="text-end">USt</th>
+                            <th class="text-end">Brutto</th>
+                            <th class="text-end">Gezahlt (Akonto)</th>
+                            <th class="text-end">Saldo</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in annual_statement_trace.rows %}
+                        <tr>
+                            <td rowspan="3" class="fw-semibold align-middle">{{ row.label }}</td>
+                            <td class="fw-semibold">Betriebskosten (10%)</td>
+                            <td class="text-end">€ {{ row.netto_10 }}</td>
+                            <td class="text-end">€ {{ row.ust_10 }}</td>
+                            <td class="text-end">€ {{ row.gross_10 }}</td>
+                            <td class="text-end">€ {{ row.akonto_bk_brutto }}</td>
+                            <td class="text-end {% if row.saldo_brutto_10 < 0 %}text-danger{% else %}text-success{% endif %}">
+                                € {{ row.saldo_brutto_10 }}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>Heizung (20%)</td>
+                            <td class="text-end">€ {{ row.netto_20 }}</td>
+                            <td class="text-end">€ {{ row.ust_20 }}</td>
+                            <td class="text-end">€ {{ row.gross_20 }}</td>
+                            <td class="text-end">€ {{ row.akonto_hk_brutto }}</td>
+                            <td class="text-end {% if row.saldo_brutto_20 < 0 %}text-danger{% else %}text-success{% endif %}">
+                                € {{ row.saldo_brutto_20 }}
+                            </td>
+                        </tr>
+                        <tr class="table-light fw-semibold">
+                            <td>Gesamt</td>
+                            <td class="text-end">€ {{ row.netto_total }}</td>
+                            <td class="text-end">€ {{ row.ust_total }}</td>
+                            <td class="text-end">€ {{ row.gross_total }}</td>
+                            <td class="text-end">€ {{ row.akonto_total_brutto }}</td>
+                            <td class="text-end {% if row.saldo_brutto < 0 %}text-danger{% else %}text-success{% endif %}">
+                                € {{ row.saldo_brutto }}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="7" class="text-center text-muted py-3">Keine Einheitsdaten vorhanden.</td></tr>
+                        {% endfor %}
+                        <tr class="table-light fw-semibold">
+                            <td>Gesamt-Liegenschaft</td>
+                            <td>Gesamt</td>
+                            <td class="text-end">€ {{ annual_statement_trace.totals.netto_total }}</td>
+                            <td class="text-end">€ {{ annual_statement_trace.totals.ust_total }}</td>
+                            <td class="text-end">€ {{ annual_statement_trace.totals.gross_total }}</td>
+                            <td class="text-end">€ {{ annual_statement_trace.totals.akonto_total_brutto }}</td>
+                            <td class="text-end {% if annual_statement_trace.totals.saldo_brutto < 0 %}text-danger{% else %}text-success{% endif %}">
+                                € {{ annual_statement_trace.totals.saldo_brutto }}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <div class="row g-3">
             <div class="col-md-6">

@@ -65,6 +65,7 @@ class ManagerForm(forms.ModelForm):
             "email",
             "phone",
             "website",
+            "account_number",
             "tax_mode",
         ]
         widgets = {
@@ -73,6 +74,7 @@ class ManagerForm(forms.ModelForm):
             "email": forms.EmailInput(attrs={"class": "form-control"}),
             "phone": forms.TextInput(attrs={"class": "form-control"}),
             "website": forms.URLInput(attrs={"class": "form-control"}),
+            "account_number": forms.TextInput(attrs={"class": "form-control"}),
             "tax_mode": forms.Select(attrs={"class": "form-select"}),
         }
 
@@ -426,6 +428,7 @@ class BuchungForm(forms.ModelForm):
             "netto",
             "ust_prozent",
             "brutto",
+            "is_settlement_adjustment",
             "storniert_von",
         ]
         widgets = {
@@ -435,6 +438,7 @@ class BuchungForm(forms.ModelForm):
             "netto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "ust_prozent": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "brutto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+            "is_settlement_adjustment": forms.CheckboxInput(attrs={"class": "form-check-input"}),
             "storniert_von": forms.Select(attrs={"class": "form-select"}),
         }
 
@@ -520,6 +524,14 @@ class BetriebskostenBelegForm(forms.ModelForm):
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
         input_formats=["%Y-%m-%d", "%d.%m.%Y"],
     )
+    ust_betrag = forms.DecimalField(
+        required=False,
+        disabled=True,
+        decimal_places=2,
+        max_digits=12,
+        label="USt-Betrag",
+        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+    )
 
     class Meta:
         model = BetriebskostenBeleg
@@ -529,10 +541,9 @@ class BetriebskostenBelegForm(forms.ModelForm):
             "datum",
             "netto",
             "ust_prozent",
+            "ust_betrag",
             "brutto",
             "buchungstext",
-            "lieferant_name",
-            "iban",
         ]
         widgets = {
             "liegenschaft": forms.Select(attrs={"class": "form-select"}),
@@ -541,8 +552,6 @@ class BetriebskostenBelegForm(forms.ModelForm):
             "ust_prozent": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "brutto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "buchungstext": forms.TextInput(attrs={"class": "form-control"}),
-            "lieferant_name": forms.TextInput(attrs={"class": "form-control"}),
-            "iban": forms.TextInput(attrs={"class": "form-control"}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -550,17 +559,18 @@ class BetriebskostenBelegForm(forms.ModelForm):
         if not self.is_bound and not self.instance.pk:
             self.fields["datum"].initial = timezone.now().date()
             self.fields["ust_prozent"].initial = Decimal("20.00")
-        self.fields["brutto"].widget.attrs["readonly"] = "readonly"
+        if self.instance.pk and self.instance.netto is not None and self.instance.ust_prozent is not None:
+            self.fields["ust_betrag"].initial = self._calculate_ust_betrag(
+                self.instance.netto,
+                self.instance.ust_prozent,
+            )
+
+    @staticmethod
+    def _calculate_ust_betrag(netto: Decimal, ust_prozent: Decimal) -> Decimal:
+        return (netto * ust_prozent / Decimal("100")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
 
     def clean(self):
-        cleaned_data = super().clean()
-        netto = cleaned_data.get("netto")
-        ust_prozent = cleaned_data.get("ust_prozent")
-        if netto is None or ust_prozent is None:
-            return cleaned_data
-        brutto = (
-            netto + (netto * ust_prozent / Decimal("100"))
-        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        cleaned_data["brutto"] = brutto
-        self.instance.brutto = brutto
-        return cleaned_data
+        return super().clean()

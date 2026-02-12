@@ -13,7 +13,7 @@
 <div class="card border-0 shadow-sm mb-3">
     <div class="card-body">
         <div class="row g-3 align-items-end">
-            <div class="col-md-6 col-lg-5">
+            <div class="col-md-6 col-lg-4">
                 <label for="buchungSearch" class="form-label mb-1">Suchen</label>
                 <input
                     id="buchungSearch"
@@ -23,19 +23,46 @@
                     autocomplete="off"
                 >
             </div>
-            <div class="col-sm-6 col-md-3 col-lg-3">
+            <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="buchungKategorieFilter" class="form-label mb-1">Kategorie</label>
                 <select id="buchungKategorieFilter" class="form-select">
                     <option value="">Alle Kategorien</option>
                 </select>
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
-                <label for="buchungTypFilter" class="form-label mb-1">Typ</label>
-                <select id="buchungTypFilter" class="form-select">
-                    <option value="">Alle Typen</option>
-                </select>
+                <form method="get" class="mb-0">
+                    {% if bank_transaktion_id %}
+                    <input type="hidden" name="bank_transaktion" value="{{ bank_transaktion_id }}">
+                    {% endif %}
+                    <input type="hidden" name="jahr" value="{{ selected_year }}">
+                    <label for="buchungPropertyFilter" class="form-label mb-1">Liegenschaft</label>
+                    <select id="buchungPropertyFilter" name="liegenschaft" class="form-select" onchange="this.form.submit()">
+                        <option value="all" {% if selected_property_filter_value == "all" %}selected{% endif %}>Alle Liegenschaften</option>
+                        {% for property in properties %}
+                        <option value="{{ property.pk }}" {% if property.pk|stringformat:"s" == selected_property_filter_value %}selected{% endif %}>{{ property.name }}</option>
+                        {% endfor %}
+                    </select>
+                </form>
             </div>
-            <div class="col-md-12 col-lg-2 text-lg-end">
+            <div class="col-sm-6 col-md-3 col-lg-2">
+                <form method="get" class="mb-0">
+                    {% if bank_transaktion_id %}
+                    <input type="hidden" name="bank_transaktion" value="{{ bank_transaktion_id }}">
+                    {% endif %}
+                    {% if selected_property_filter_value %}
+                    <input type="hidden" name="liegenschaft" value="{{ selected_property_filter_value }}">
+                    {% endif %}
+                    <label for="buchungYearFilter" class="form-label mb-1">Jahr</label>
+                    <select id="buchungYearFilter" name="jahr" class="form-select" onchange="this.form.submit()">
+                        {% for year in year_choices %}
+                        <option value="{{ year }}" {% if year == selected_year %}selected{% endif %}>{{ year }}</option>
+                        {% empty %}
+                        <option value="{{ selected_year }}">{{ selected_year }}</option>
+                        {% endfor %}
+                    </select>
+                </form>
+            </div>
+            <div class="col-md-3 col-lg-2 text-lg-end">
                 <div id="buchungCount" class="small text-muted"></div>
             </div>
         </div>
@@ -59,24 +86,24 @@
                                 Mietvertrag <span class="sort-indicator" aria-hidden="true"></span>
                             </button>
                         </th>
+                        <th class="text-end pe-4">
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="netto">
+                                Netto <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
+                        <th class="text-end pe-4">
+                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="brutto">
+                                Brutto <span class="sort-indicator" aria-hidden="true"></span>
+                            </button>
+                        </th>
                         <th>
                             <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="kategorie">
                                 Kategorie <span class="sort-indicator" aria-hidden="true"></span>
                             </button>
                         </th>
                         <th>
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="typ">
-                                Typ <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th>
                             <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="buchungstext">
                                 Buchungstext <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th class="text-end pe-4">
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark table-sort fw-semibold" data-sort-key="brutto">
-                                Brutto <span class="sort-indicator" aria-hidden="true"></span>
                             </button>
                         </th>
                     </tr>
@@ -91,6 +118,7 @@
                         data-typ="{{ buchung.typ }}"
                         data-typ-label="{{ buchung.get_typ_display }}"
                         data-datum="{{ buchung.datum|date:'Y-m-d' }}"
+                        data-netto="{{ buchung.netto|unlocalize }}"
                         data-brutto="{{ buchung.brutto|unlocalize }}"
                         data-mietvertrag="{% if buchung.mietervertrag %}{{ buchung.mietervertrag }}{% endif %}"
                         data-buchungstext="{{ buchung.buchungstext }}"
@@ -105,14 +133,18 @@
                         </td>
                         <td class="ps-4">{{ buchung.datum|date:"d.m.Y" }}</td>
                         <td>{{ buchung.mietervertrag }}</td>
-                        <td>{{ buchung.get_kategorie_display }}</td>
-                        <td>{{ buchung.get_typ_display }}</td>
-                        <td>{{ buchung.buchungstext }}</td>
+                        <td class="text-end pe-4">
+                            <span class="fw-semibold {% if buchung.netto < 0 %}text-danger{% elif buchung.netto > 0 %}text-success{% else %}text-muted{% endif %}">
+                                {{ buchung.netto }}
+                            </span>
+                        </td>
                         <td class="text-end pe-4">
                             <span class="fw-semibold {% if buchung.brutto < 0 %}text-danger{% elif buchung.brutto > 0 %}text-success{% else %}text-muted{% endif %}">
                                 {{ buchung.brutto }}
                             </span>
                         </td>
+                        <td>{{ buchung.get_kategorie_display }}</td>
+                        <td>{{ buchung.buchungstext }}</td>
                     </tr>
                     {% empty %}
                     <tr>
@@ -144,7 +176,6 @@
 
     const searchInput = document.getElementById("buchungSearch");
     const categoryFilter = document.getElementById("buchungKategorieFilter");
-    const typFilter = document.getElementById("buchungTypFilter");
     const countElement = document.getElementById("buchungCount");
     const noResultsRow = document.getElementById("buchungNoResults");
     const sortButtons = Array.from(document.querySelectorAll(".table-sort"));
@@ -183,6 +214,11 @@
         if (key === "brutto") {
             left = parseNumeric(a.dataset.brutto);
             right = parseNumeric(b.dataset.brutto);
+            return (left - right) * directionFactor;
+        }
+        if (key === "netto") {
+            left = parseNumeric(a.dataset.netto);
+            right = parseNumeric(b.dataset.netto);
             return (left - right) * directionFactor;
         }
 
@@ -230,17 +266,12 @@
     }
 
     const categoryValues = new Map();
-    const typValues = new Map();
     for (const row of rows) {
         if (row.dataset.kategorie) {
             categoryValues.set(row.dataset.kategorie, row.dataset.kategorieLabel || row.dataset.kategorie);
         }
-        if (row.dataset.typ) {
-            typValues.set(row.dataset.typ, row.dataset.typLabel || row.dataset.typ);
-        }
     }
     fillSelect(categoryFilter, categoryValues);
-    fillSelect(typFilter, typValues);
 
     function updateSortIndicators() {
         for (const button of sortButtons) {
@@ -261,14 +292,12 @@
     function applyFiltersAndSorting() {
         const searchTerm = normalize(searchInput.value);
         const categoryValue = categoryFilter.value;
-        const typValue = typFilter.value;
 
         const visibleRows = [];
         for (const row of rows) {
             const matchesSearch = !searchTerm || normalize(row.dataset.search).includes(searchTerm);
             const matchesCategory = !categoryValue || row.dataset.kategorie === categoryValue;
-            const matchesTyp = !typValue || row.dataset.typ === typValue;
-            const isVisible = matchesSearch && matchesCategory && matchesTyp;
+            const isVisible = matchesSearch && matchesCategory;
             row.classList.toggle("d-none", !isVisible);
             if (isVisible) {
                 visibleRows.push(row);
@@ -305,7 +334,6 @@
 
     searchInput.addEventListener("input", scheduleApply);
     categoryFilter.addEventListener("change", scheduleApply);
-    typFilter.addEventListener("change", scheduleApply);
 
     for (const button of sortButtons) {
         button.addEventListener("click", () => {

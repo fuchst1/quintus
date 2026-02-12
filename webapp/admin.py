@@ -5,6 +5,8 @@ from django.contrib import admin, messages
 from simple_history.admin import SimpleHistoryAdmin
 
 from .models import (
+    Abrechnungslauf,
+    Abrechnungsschreiben,
     BankTransaktion,
     BetriebskostenBeleg,
     Buchung,
@@ -38,8 +40,8 @@ class PropertyAdmin(admin.ModelAdmin):
 
 @admin.register(Manager)
 class ManagerAdmin(admin.ModelAdmin):
-    list_display = ("company_name", "contact_person", "email", "phone", "tax_mode")
-    search_fields = ("company_name", "contact_person", "email", "phone", "website")
+    list_display = ("company_name", "contact_person", "email", "phone", "account_number", "tax_mode")
+    search_fields = ("company_name", "contact_person", "email", "phone", "website", "account_number")
     list_filter = ("tax_mode",)
 
 
@@ -133,8 +135,15 @@ class BuchungAdmin(SimpleHistoryAdmin):
             return cleaned_data
 
     form = BuchungAdminForm
-    list_display = ("datum", "mietervertrag", "kategorie", "typ", "brutto")
-    list_filter = ("typ", "kategorie", "datum")
+    list_display = (
+        "datum",
+        "mietervertrag",
+        "kategorie",
+        "typ",
+        "is_settlement_adjustment",
+        "brutto",
+    )
+    list_filter = ("typ", "kategorie", "is_settlement_adjustment", "datum")
 
 
 @admin.register(BetriebskostenBeleg)
@@ -247,4 +256,22 @@ class DateiOperationLogAdmin(admin.ModelAdmin):
         "content_type",
         "object_id",
         "detail",
+    )
+
+
+@admin.register(Abrechnungslauf)
+class AbrechnungslaufAdmin(admin.ModelAdmin):
+    list_display = ("liegenschaft", "jahr", "brief_nummer_start", "brief_freitext", "created_at", "updated_at")
+    list_filter = ("jahr", "liegenschaft")
+    search_fields = ("liegenschaft__name",)
+
+
+@admin.register(Abrechnungsschreiben)
+class AbrechnungsschreibenAdmin(admin.ModelAdmin):
+    list_display = ("lauf", "laufende_nummer", "mietervertrag", "einheit", "pdf_datei", "generated_at")
+    list_filter = ("lauf__jahr", "lauf__liegenschaft")
+    search_fields = (
+        "mietervertrag__unit__name",
+        "mietervertrag__tenants__first_name",
+        "mietervertrag__tenants__last_name",
     )

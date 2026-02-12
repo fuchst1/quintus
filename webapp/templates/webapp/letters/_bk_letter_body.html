@@ -1,0 +1,144 @@
+<div class="bk-letter-sheet">
+    <div class="bk-letter-letterhead">
+        <div class="bk-letter-letterhead-left">
+            <div class="bk-letter-sender-name">{{ payload.sender_name }}</div>
+            {% if payload.sender_street %}<div>{{ payload.sender_street }}</div>{% endif %}
+            {% if payload.sender_zip_city %}<div>{{ payload.sender_zip_city }}</div>{% endif %}
+            <div>ATU78726489</div>
+        </div>
+        <div class="bk-letter-letterhead-right">
+            {% if payload.sender_phone %}<div>Mobile: {{ payload.sender_phone }}</div>{% endif %}
+            {% if payload.sender_email %}<div>e-mail: {{ payload.sender_email }}</div>{% endif %}
+            {% if payload.sender_website %}<div>homepage: {{ payload.sender_website }}</div>{% endif %}
+        </div>
+    </div>
+
+    <div class="bk-letter-recipient">
+        <div class="bk-letter-recipient-title">Empfänger</div>
+        <div class="bk-letter-recipient-name">{{ payload.recipient_name }}</div>
+        {% if payload.recipient_street %}<div>{{ payload.recipient_street }}</div>{% endif %}
+        {% if payload.recipient_zip_city %}<div>{{ payload.recipient_zip_city }}</div>{% endif %}
+    </div>
+
+    <div class="bk-letter-meta-inline">
+        <div><span>Ausstellungsdatum:</span> <strong>{{ payload.issue_date }}</strong></div>
+        <div><span>Zeitraum:</span> <strong>{{ payload.period_text }}</strong></div>
+        <div><span>Einheit:</span> <strong>{{ payload.unit_label }}</strong></div>
+        <div><span>Rechnungsnummer:</span> <strong>{{ payload.document_number_display }}</strong></div>
+    </div>
+    <h1 class="bk-letter-subject">{{ payload.subject }}</h1>
+
+    <div class="bk-letter-textblock">
+        <p>{{ payload.greeting_text }}</p>
+        <p>{{ payload.intro_text }}</p>
+    </div>
+
+    <table class="bk-letter-table bk-letter-table-compact" role="table" aria-label="Abrechnungsübersicht">
+        <thead>
+            <tr>
+                <th>Position</th>
+                <th class="text-end">Netto</th>
+                <th class="text-end">USt</th>
+                <th class="text-end">Brutto</th>
+                <th class="text-end">Gezahlt (Akonto brutto)</th>
+                <th class="text-end">Saldo brutto</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in payload.statement_rows %}
+            <tr{% if row.is_total %} class="bk-letter-table-total"{% endif %}>
+                <td>{{ row.position }}</td>
+                <td class="text-end">€ {{ row.netto_display }}</td>
+                <td class="text-end">€ {{ row.ust_display }}</td>
+                <td class="text-end">€ {{ row.brutto_display }}</td>
+                <td class="text-end">{% if row.is_total %}€ {{ row.akonto_brutto_display }}{% else %}—{% endif %}</td>
+                <td class="text-end {% if row.is_total and row.saldo_brutto < 0 %}text-danger{% elif row.is_total and row.saldo_brutto > 0 %}text-success{% else %}text-muted{% endif %}">
+                    {% if row.is_total %}€ {{ row.saldo_brutto_display }}{% else %}—{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="bk-letter-textblock">
+        {% if payload.payment_type == "nachzahlung" %}
+        <p><strong>Nachzahlungsbetrag:</strong> € {{ payload.payment_amount_display }} (fällig bis {{ payload.payment_due_date }}).</p>
+        {% elif payload.payment_type == "guthaben" %}
+        <p><strong>Guthaben:</strong> € {{ payload.payment_amount_display }}.</p>
+        {% else %}
+        <p><strong>Ergebnis:</strong> Die Abrechnung ist ausgeglichen.</p>
+        {% endif %}
+        <p>{{ payload.payment_hint }}</p>
+        {% if payload.free_text %}
+        <p><strong>Hinweis:</strong> {{ payload.free_text|linebreaksbr }}</p>
+        {% endif %}
+    </div>
+
+    <div class="bk-letter-signature">
+        <p>{{ payload.closing_text }}</p>
+        <p class="bk-letter-signature-name">{{ payload.sender_name }}</p>
+    </div>
+
+    <div class="bk-letter-page-break"></div>
+
+    <h2 class="bk-letter-appendix-title">Anhang: Zählerstände</h2>
+    <p class="bk-letter-text-small mb-2">Berücksichtigte Zählerstände für die Einheit und Allgemeinzähler.</p>
+    <table class="bk-letter-table bk-letter-table-compact" role="table" aria-label="Zählerstände">
+        <thead>
+            <tr>
+                <th>Bereich</th>
+                <th>Zählertyp</th>
+                <th>Zähler-Nr.</th>
+                <th class="text-end">Verbrauch</th>
+                <th class="text-end">Startstand</th>
+                <th class="text-end">Endstand</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in payload.meter_summary_rows %}
+            <tr>
+                <td>{{ row.group_label }}</td>
+                <td>{{ row.meter_type }}</td>
+                <td>{{ row.meter_number }}</td>
+                <td class="text-end"><strong>{{ row.consumption }}</strong>{% if row.unit_label %} {{ row.unit_label }}{% endif %}</td>
+                <td class="text-end">{{ row.start_value }}</td>
+                <td class="text-end">{{ row.end_value }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" class="text-center bk-letter-muted">Keine Zählerstände mit Verbrauch im Abrechnungsjahr vorhanden.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2 class="bk-letter-appendix-title">Anhang: Kostenzusammenfassung</h2>
+    <p class="bk-letter-text-small mb-2">Ausgabenübersicht für die Liegenschaft {{ payload.property_name }} im Jahr {{ payload.year }} (netto).</p>
+    <table class="bk-letter-table" role="table" aria-label="Kostenzusammenfassung">
+        <thead>
+            <tr>
+                <th>Kategorie</th>
+                <th class="text-end">Kosten (Netto)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in payload.expense_summary_rows %}
+            <tr>
+                <td>{{ row.label }}</td>
+                <td class="text-end">€ {{ row.amount_display }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="2" class="text-center bk-letter-muted">Keine Kosten im Abrechnungsjahr vorhanden.</td>
+            </tr>
+            {% endfor %}
+            <tr class="bk-letter-table-total">
+                <td>Summe der Kosten</td>
+                <td class="text-end">€ {{ payload.expense_summary_total_display }}</td>
+            </tr>
+        </tbody>
+    </table>
+    <p class="bk-letter-text-small">Auf Wunsch kann jederzeit Einsicht in die Originalbelege genommen werden.</p>
+
+    <div class="bk-letter-global-footer">Immo-Fuchs KG – IBAN: AT82 2011 1847 2203 9000 – UID: ATU78726489 – FB: FN 592404 h</div>
+</div>

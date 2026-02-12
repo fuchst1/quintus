@@ -104,6 +104,22 @@
                     {% endif %}
                 </div>
                 <div class="col-md-6">
+                    <div class="form-check mt-4">
+                        {{ form.is_settlement_adjustment }}
+                        <label class="form-check-label" for="{{ form.is_settlement_adjustment.id_for_label }}">
+                            Ausgleich Vorjahresabrechnung
+                        </label>
+                    </div>
+                    <div class="form-text">
+                        Nicht in laufender BK-Abrechnung berücksichtigen.
+                    </div>
+                    {% if form.is_settlement_adjustment.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.is_settlement_adjustment.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-6">
                     <label class="form-label">Storniert von</label>
                     {{ form.storniert_von }}
                     {% if form.storniert_von.errors %}

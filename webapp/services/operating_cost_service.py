@@ -456,6 +456,7 @@ class OperatingCostService:
 
         query = Buchung.objects.filter(
             typ=Buchung.Typ.IST,
+            is_settlement_adjustment=False,
             datum__gte=self.period_start,
             datum__lte=self.period_end,
         )
@@ -480,6 +481,8 @@ class OperatingCostService:
                 continue
             if booking.kategorie == Buchung.Kategorie.HK:
                 income_hk += netto
+                continue
+            if booking.kategorie != Buchung.Kategorie.ZAHLUNG:
                 continue
 
             lease = booking.mietervertrag
@@ -613,18 +616,6 @@ class OperatingCostService:
         groups: list[dict[str, object]] = []
         group_map: dict[int, dict[str, object]] = {}
         for meter in meters:
-            scope_key = meter.unit_id or 0
-            if scope_key not in group_map:
-                if meter.unit is None:
-                    label = f"{self.property.name} (Allgemein)"
-                else:
-                    label = meter.unit.name
-                    if meter.unit.door_number:
-                        label = f"{label} · {meter.unit.door_number}"
-                group = {"label": label, "rows": []}
-                group_map[scope_key] = group
-                groups.append(group)
-
             yearly_rows = Meter._calculate_yearly_consumption_for_meter(
                 meter,
                 list(meter.readings.all()),
@@ -636,14 +627,52 @@ class OperatingCostService:
             consumption = None
             if year_row is not None and year_row.get("consumption") is not None:
                 consumption = quantize_cent3(year_row["consumption"])
+            if consumption is None:
+                continue
+
+            scope_key = meter.unit_id or 0
+            if scope_key not in group_map:
+                if meter.unit is None:
+                    label = f"{self.property.name} (Allgemein)"
+                else:
+                    label = meter.unit.name
+                    if meter.unit.door_number:
+                        label = f"{label} · {meter.unit.door_number}"
+                group = {
+                    "label": label,
+                    "unit_id": meter.unit_id or 0,
+                    "is_general": meter.unit is None,
+                    "rows": [],
+                }
+                group_map[scope_key] = group
+                groups.append(group)
+
+            start_value = None
+            end_value = None
+            start_date = None
+            end_date = None
+            if year_row is not None:
+                start_date = year_row.get("start_date")
+                end_date = year_row.get("end_date")
+                if year_row.get("start_value") is not None:
+                    start_value = quantize_cent3(year_row["start_value"])
+                if year_row.get("end_value") is not None:
+                    end_value = quantize_cent3(year_row["end_value"])
 
             group_map[scope_key]["rows"].append(
                 {
+                    "meter_type_key": meter.meter_type,
                     "meter_type": meter.get_meter_type_display(),
                     "meter_number": meter.meter_number or "",
                     "unit_label": meter.get_unit_of_measure_display(),
                     "consumption": None if consumption is None else str(consumption),
                     "consumption_display": "—" if consumption is None else str(consumption),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "start_value": None if start_value is None else str(start_value),
+                    "end_value": None if end_value is None else str(end_value),
+                    "start_value_display": "—" if start_value is None else str(start_value),
+                    "end_value_display": "—" if end_value is None else str(end_value),
                 }
             )
 
@@ -818,13 +847,30 @@ class OperatingCostService:
         water_cost_pool: Decimal,
     ) -> dict[str, object]:
         distribution_rows = list(bk_distribution.get("rows", []))
-        house_consumption = self._meter_consumption_total(
+        house_consumption = (
+            self._meter_consumption_total(
+                meter_type=Meter.MeterType.WATER_COLD,
+                unit_id=None,
+            )
+            + self._meter_consumption_total(
+                meter_type=Meter.MeterType.WATER_HOT,
+                unit_id=None,
+            )
+        ).quantize(CENT3, rounding=ROUND_HALF_UP)
+        cold_unit_consumption = self._meter_consumption_map(
             meter_type=Meter.MeterType.WATER_COLD,
-            unit_id=None,
         )
-        unit_consumption = self._meter_consumption_map(
-            meter_type=Meter.MeterType.WATER_COLD,
+        hot_unit_consumption = self._meter_consumption_map(
+            meter_type=Meter.MeterType.WATER_HOT,
         )
+        unit_ids = set(cold_unit_consumption.keys()).union(hot_unit_consumption.keys())
+        unit_consumption = {
+            unit_id: (
+                quantize_cent3(cold_unit_consumption.get(unit_id, Decimal("0.000")))
+                + quantize_cent3(hot_unit_consumption.get(unit_id, Decimal("0.000")))
+            ).quantize(CENT3, rounding=ROUND_HALF_UP)
+            for unit_id in unit_ids
+        }
         measured_units = sum((value for value in unit_consumption.values()), Decimal("0.000"))
         measured_units = quantize_cent3(measured_units)
         schwund = (house_consumption - measured_units).quantize(CENT3, rounding=ROUND_HALF_UP)
@@ -993,13 +1039,14 @@ class OperatingCostService:
             * Decimal(wp_metrics.get("ratio_ww") or Decimal("0.000000"))
         ).quantize(CENT, rounding=ROUND_HALF_UP)
 
-        house_consumption = self._meter_consumption_total(
-            meter_type=Meter.MeterType.WATER_HOT,
-            unit_id=None,
-        )
         unit_consumption = self._meter_consumption_map(
             meter_type=Meter.MeterType.WATER_HOT,
         )
+        # Legacy-Formel: Gesamtverbrauch Warmwasser ist die Summe der Wohnungszaehler.
+        house_consumption = sum(
+            (quantize_cent3(value) for value in unit_consumption.values()),
+            Decimal("0.000"),
+        ).quantize(CENT3, rounding=ROUND_HALF_UP)
         price_per_m3 = Decimal("0.000000")
         if house_consumption > Decimal("0.000") and cost_pool > ZERO:
             price_per_m3 = (
@@ -1251,6 +1298,7 @@ class OperatingCostService:
             Buchung.objects.filter(
                 Q(mietervertrag__unit__property=self.property) | Q(einheit__property=self.property),
                 typ=Buchung.Typ.IST,
+                is_settlement_adjustment=False,
                 datum__gte=self.period_start,
                 datum__lte=self.period_end,
             )
@@ -1277,6 +1325,8 @@ class OperatingCostService:
                 continue
             if booking.kategorie == Buchung.Kategorie.HK:
                 prepayments[unit_id]["hk"] = (prepayments[unit_id]["hk"] + netto).quantize(CENT)
+                continue
+            if booking.kategorie != Buchung.Kategorie.ZAHLUNG:
                 continue
 
             lease = booking.mietervertrag

@@ -4,13 +4,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Betriebskostenbeleg</h3>
-    <a href="{% url 'betriebskostenbeleg_list' %}" class="btn btn-light">Zurück</a>
+    <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}" class="btn btn-light">Zurück</a>
 </div>
 
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
         <form method="post">
             {% csrf_token %}
+            <input type="hidden" name="next" value="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}">
             {% if form.errors %}
                 <div class="alert alert-danger">
                     Bitte korrigiere die markierten Felder.
@@ -40,7 +41,7 @@
                         </div>
                     {% endif %}
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">Datum</label>
                     {{ form.datum }}
                     {% if form.datum.errors %}
@@ -49,7 +50,7 @@
                         </div>
                     {% endif %}
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">Netto</label>
                     {{ form.netto }}
                     {% if form.netto.errors %}
@@ -58,7 +59,7 @@
                         </div>
                     {% endif %}
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">USt (%)</label>
                     {{ form.ust_prozent }}
                     {% if form.ust_prozent.errors %}
@@ -67,8 +68,17 @@
                         </div>
                     {% endif %}
                 </div>
+                <div class="col-md-3">
+                    <label class="form-label">USt-Betrag (berechnet)</label>
+                    {{ form.ust_betrag }}
+                    {% if form.ust_betrag.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.ust_betrag.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
                 <div class="col-md-4">
-                    <label class="form-label">Brutto (berechnet)</label>
+                    <label class="form-label">Brutto</label>
                     {{ form.brutto }}
                     {% if form.brutto.errors %}
                         <div class="invalid-feedback d-block">
@@ -85,28 +95,10 @@
                         </div>
                     {% endif %}
                 </div>
-                <div class="col-md-6">
-                    <label class="form-label">Lieferant</label>
-                    {{ form.lieferant_name }}
-                    {% if form.lieferant_name.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.lieferant_name.errors|striptags }}
-                        </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">IBAN</label>
-                    {{ form.iban }}
-                    {% if form.iban.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.iban.errors|striptags }}
-                        </div>
-                    {% endif %}
-                </div>
             </div>
             <div class="mt-4 d-flex gap-2">
                 <button type="submit" class="btn btn-primary">Speichern</button>
-                <a href="{% url 'betriebskostenbeleg_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+                <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}" class="btn btn-outline-secondary">Abbrechen</a>
             </div>
         </form>
     </div>
@@ -118,26 +110,26 @@
     document.addEventListener("DOMContentLoaded", () => {
         const nettoInput = document.getElementById("id_netto");
         const ustInput = document.getElementById("id_ust_prozent");
-        const bruttoInput = document.getElementById("id_brutto");
+        const ustBetragInput = document.getElementById("id_ust_betrag");
 
-        const updateBrutto = () => {
-            if (!nettoInput || !ustInput || !bruttoInput) {
+        const updateUstBetrag = () => {
+            if (!nettoInput || !ustInput || !ustBetragInput) {
                 return;
             }
             const netto = parseFloat(nettoInput.value.replace(",", "."));
             const ust = parseFloat(ustInput.value.replace(",", "."));
             if (Number.isNaN(netto) || Number.isNaN(ust)) {
-                bruttoInput.value = "";
+                ustBetragInput.value = "";
                 return;
             }
-            const brutto = netto + (netto * ust / 100);
-            bruttoInput.value = brutto.toFixed(2);
+            const ustBetrag = netto * ust / 100;
+            ustBetragInput.value = ustBetrag.toFixed(2);
         };
 
         if (nettoInput && ustInput) {
-            nettoInput.addEventListener("input", updateBrutto);
-            ustInput.addEventListener("input", updateBrutto);
-            updateBrutto();
+            nettoInput.addEventListener("input", updateUstBetrag);
+            ustInput.addEventListener("input", updateUstBetrag);
+            updateUstBetrag();
         }
     });
 </script>

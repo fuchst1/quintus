@@ -7,16 +7,19 @@ from itertools import combinations
 
 from django.contrib import messages
 from django.core.exceptions import ValidationError
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.db.models import Count, DecimalField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
-from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse_lazy
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse, reverse_lazy
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils import timezone
 from django.views.generic import TemplateView, ListView, CreateView, UpdateView, DeleteView
 from django.views.generic import DetailView, View
 from .models import (
+    Abrechnungslauf,
+    Abrechnungsschreiben,
     BetriebskostenBeleg,
     Buchung,
     Datei,
@@ -45,7 +48,10 @@ from .forms import (
     TenantForm,
 )
 from .services.files import DateiService
+from .services.annual_statement_pdf_service import AnnualStatementPdfService
+from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.operating_cost_service import OperatingCostService
+from .services.settlement_adjustments import match_settlement_adjustment_text
 
 
 def build_attachments_panel_context(request, target_object, *, title: str):
@@ -927,6 +933,11 @@ class BankImportView(TemplateView):
                     "bk_art": row_defaults["bk_art"],
                     "bk_ust_prozent": row_defaults["bk_ust_prozent"],
                     "dismiss": row_defaults["dismiss"],
+                    "is_settlement_adjustment": row_defaults["is_settlement_adjustment"],
+                    "suggested_settlement_adjustment": row_defaults[
+                        "suggested_settlement_adjustment"
+                    ],
+                    "settlement_match_reason": row_defaults["settlement_match_reason"],
                     "auto_matched": bool(selected_lease or split_allocations),
                     "auto_split": bool(split_allocations),
                     "auto_split_allocations": [
@@ -1014,6 +1025,15 @@ class BankImportView(TemplateView):
                 request.POST.get(f"bk_ust_{index}") or row.get("bk_ust_prozent") or "20.00"
             ).strip()
             row["bk_ust_prozent"] = selected_ust_raw
+            selected_settlement_adjustment = (
+                request.POST.get(f"settlement_adjustment_{index}", "0") or "0"
+            ).strip().lower() in {
+                "1",
+                "true",
+                "on",
+                "yes",
+            }
+            row["is_settlement_adjustment"] = selected_settlement_adjustment
 
             reference_number = row["reference_number"]
 
@@ -1067,6 +1087,7 @@ class BankImportView(TemplateView):
                                 booking_date=booking_date,
                                 reference_number=reference_number,
                                 purpose=row.get("purpose", ""),
+                                is_settlement_adjustment=selected_settlement_adjustment,
                             )
                         )
                     if split_invalid or not split_entries:
@@ -1094,6 +1115,7 @@ class BankImportView(TemplateView):
                         booking_date=booking_date,
                         reference_number=reference_number,
                         purpose=row.get("purpose", ""),
+                        is_settlement_adjustment=selected_settlement_adjustment,
                     )
                 )
                 continue
@@ -1476,12 +1498,19 @@ def infer_bank_import_row_defaults(partner_name, purpose, amount, property_name_
     haystack = f"{partner_name or ''} {purpose or ''}".casefold()
     haystack_compact = "".join(haystack.split())
     haystack_alnum = "".join(char for char in haystack if char.isalnum())
+    is_settlement_adjustment, settlement_match_reason = match_settlement_adjustment_text(
+        partner_name,
+        purpose,
+    )
     defaults = {
         "booking_type": "miete" if Decimal(amount) > Decimal("0.00") else "bk",
         "bk_art": infer_bk_art_from_bank_text(partner_name, purpose),
         "bk_ust_prozent": "20.00",
         "bk_property_id": "",
         "dismiss": False,
+        "is_settlement_adjustment": is_settlement_adjustment,
+        "suggested_settlement_adjustment": is_settlement_adjustment,
+        "settlement_match_reason": settlement_match_reason,
     }
     bhg14_property_id = property_name_map.get("bhg14", "")
     mhs69_property_id = property_name_map.get("mhs69", "")
@@ -1521,6 +1550,8 @@ def build_import_payment_entries_for_lease(
     booking_date,
     reference_number,
     purpose,
+    *,
+    is_settlement_adjustment=False,
 ):
     allocations = split_payment_gross_by_tax_rate(lease, gross_amount)
     text = import_booking_text(reference_number, purpose)
@@ -1539,6 +1570,7 @@ def build_import_payment_entries_for_lease(
                 netto=netto_from_brutto_and_tax(allocation_gross, tax_percent),
                 ust_prozent=tax_percent,
                 brutto=allocation_gross,
+                is_settlement_adjustment=bool(is_settlement_adjustment),
             )
         )
     return entries
@@ -1797,11 +1829,92 @@ class BuchungListView(ListView):
     ).order_by("-datum", "-id")
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        bank_transaktion_id = self.request.GET.get("bank_transaktion")
-        if bank_transaktion_id:
-            queryset = queryset.filter(bank_transaktion_id=bank_transaktion_id)
-        return queryset
+        queryset = super().get_queryset().filter(typ=Buchung.Typ.IST)
+        self.bank_transaktion_id = (self.request.GET.get("bank_transaktion") or "").strip()
+        if self.bank_transaktion_id:
+            queryset = queryset.filter(bank_transaktion_id=self.bank_transaktion_id)
+
+        self.properties = list(Property.objects.order_by("name"))
+        self.selected_property = self._selected_property(self.properties)
+        self.selected_property_id = str(self.selected_property.pk) if self.selected_property else ""
+        if self.selected_property is not None:
+            queryset = queryset.filter(
+                Q(mietervertrag__unit__property=self.selected_property)
+                | Q(einheit__property=self.selected_property)
+            )
+
+        self.year_choices = self._year_choices_for_queryset(queryset)
+        self.selected_year = self._selected_year(self.year_choices)
+        return queryset.filter(datum__year=self.selected_year)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["year_choices"] = getattr(self, "year_choices", [])
+        context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
+        context["bank_transaktion_id"] = getattr(self, "bank_transaktion_id", "")
+        context["properties"] = getattr(self, "properties", [])
+        context["selected_property_id"] = getattr(self, "selected_property_id", "")
+        context["selected_property_filter_value"] = getattr(self, "selected_property_filter_value", "")
+        return context
+
+    def _selected_property(self, properties):
+        raw_property_filter = self.request.GET.get("liegenschaft")
+        if raw_property_filter is not None:
+            requested_property_id = raw_property_filter.strip()
+            if requested_property_id in {"", "all"}:
+                self.selected_property_filter_value = "all"
+                return None
+            for property_obj in properties:
+                if str(property_obj.pk) == requested_property_id:
+                    self.selected_property_filter_value = str(property_obj.pk)
+                    return property_obj
+            self.selected_property_filter_value = "all"
+            return None
+
+        if self.bank_transaktion_id:
+            self.selected_property_filter_value = ""
+            return None
+
+        preferred_bhg14 = next(
+            (
+                property_obj
+                for property_obj in properties
+                if (property_obj.name or "").strip().casefold() == "bhg14"
+            ),
+            None,
+        )
+        if preferred_bhg14 is not None:
+            self.selected_property_filter_value = str(preferred_bhg14.pk)
+        else:
+            self.selected_property_filter_value = ""
+        return preferred_bhg14
+
+    def _year_choices_for_queryset(self, queryset):
+        years = sorted(
+            {
+                int(year_value)
+                for year_value in queryset.values_list("datum__year", flat=True)
+                if year_value is not None
+            }
+        )
+        return years
+
+    def _selected_year(self, year_choices):
+        current_year = timezone.localdate().year
+        raw_year = (self.request.GET.get("jahr") or "").strip()
+        requested_year = None
+        if raw_year.isdigit():
+            requested_year = int(raw_year)
+            if not (2000 <= requested_year <= 2100):
+                requested_year = None
+
+        if requested_year is not None and requested_year in year_choices:
+            return requested_year
+        if current_year in year_choices:
+            return current_year
+        if year_choices:
+            return year_choices[-1]
+        return current_year
 
 
 class BuchungCreateView(CreateView):
@@ -1858,6 +1971,45 @@ class BetriebskostenBelegListView(ListView):
     context_object_name = "belege"
     queryset = BetriebskostenBeleg.objects.select_related("liegenschaft").order_by("-datum", "-id")
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        self.year_choices = self._year_choices_for_queryset(queryset)
+        self.selected_year = self._selected_year(self.year_choices)
+        return queryset.filter(datum__year=self.selected_year)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["year_choices"] = getattr(self, "year_choices", [])
+        context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
+        return context
+
+    def _year_choices_for_queryset(self, queryset):
+        years = sorted(
+            {
+                int(year_value)
+                for year_value in queryset.values_list("datum__year", flat=True)
+                if year_value is not None
+            }
+        )
+        return years
+
+    def _selected_year(self, year_choices):
+        current_year = timezone.localdate().year
+        raw_year = (self.request.GET.get("jahr") or "").strip()
+        requested_year = None
+        if raw_year.isdigit():
+            requested_year = int(raw_year)
+            if not (2000 <= requested_year <= 2100):
+                requested_year = None
+
+        if requested_year is not None and requested_year in year_choices:
+            return requested_year
+        if current_year in year_choices:
+            return current_year
+        if year_choices:
+            return year_choices[-1]
+        return current_year
+
 
 class BetriebskostenBelegCreateView(CreateView):
     model = BetriebskostenBeleg
@@ -1865,12 +2017,49 @@ class BetriebskostenBelegCreateView(CreateView):
     template_name = "webapp/betriebskostenbeleg_form.html"
     success_url = reverse_lazy("betriebskostenbeleg_list")
 
+    def get_initial(self):
+        initial = super().get_initial()
+        initial["bk_art"] = BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN
+
+        requested_property_id = (self.request.GET.get("liegenschaft") or "").strip()
+        if requested_property_id and Property.objects.filter(pk=requested_property_id).exists():
+            initial["liegenschaft"] = requested_property_id
+            return initial
+
+        bhg14_property = (
+            Property.objects.filter(name__iexact="BHG14")
+            .order_by("id")
+            .first()
+        )
+        if bhg14_property is not None:
+            initial["liegenschaft"] = bhg14_property.pk
+        return initial
+
 
 class BetriebskostenBelegUpdateView(UpdateView):
     model = BetriebskostenBeleg
     form_class = BetriebskostenBelegForm
     template_name = "webapp/betriebskostenbeleg_form.html"
-    success_url = reverse_lazy("betriebskostenbeleg_list")
+
+    def _get_valid_next_url(self):
+        next_url = self.request.POST.get("next") or self.request.GET.get("next")
+        if not next_url:
+            return None
+        if url_has_allowed_host_and_scheme(
+            url=next_url,
+            allowed_hosts={self.request.get_host()},
+            require_https=self.request.is_secure(),
+        ):
+            return next_url
+        return None
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["next_url"] = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
+        return context
+
+    def get_success_url(self):
+        return self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
 
 
 class BetriebskostenBelegDeleteView(DeleteView):
@@ -1903,10 +2092,11 @@ class BetriebskostenAbrechnungView(TemplateView):
         if selected_tab not in valid_tabs:
             selected_tab = "uebersicht"
 
-        report = OperatingCostService(
+        operating_cost_service = OperatingCostService(
             property=selected_property,
             year=selected_year,
-        ).get_report_data()
+        )
+        report = operating_cost_service.get_report_data()
 
         financials = report["financials"]
         expenses = financials["expenses"]
@@ -1946,6 +2136,9 @@ class BetriebskostenAbrechnungView(TemplateView):
         context["heating_allocation"] = allocations.get("heating", {})
         context["annual_statement"] = allocations.get("annual_statement", {})
         context["allocation_checks"] = allocations.get("checks", {})
+        context["annual_statement_trace"] = self._build_annual_statement_trace(
+            allocations=allocations
+        )
 
         context["ausgaben_strom"] = ausgaben_strom
         context["ausgaben_wasser"] = ausgaben_wasser
@@ -1957,7 +2150,412 @@ class BetriebskostenAbrechnungView(TemplateView):
         context["saldo"] = saldo
         context["meter_consumption_groups"] = meter_consumption_groups
         context["bk_allg"] = bk_allg
+        context["overview_finance_details"] = self._build_overview_finance_details(
+            selected_property=selected_property,
+            operating_cost_service=operating_cost_service,
+        )
         return context
+
+    def _build_overview_finance_details(self, *, selected_property, operating_cost_service):
+        categories = [
+            {"key": "betriebskosten", "label": "Betriebskosten"},
+            {"key": "strom", "label": "Strom"},
+            {"key": "wasser", "label": "Wasser"},
+            {"key": "heizung", "label": "Heizung"},
+        ]
+        details_by_key = {
+            item["key"]: {
+                "key": item["key"],
+                "label": item["label"],
+                "expenses_rows": [],
+                "expenses_sum": Decimal("0.00"),
+                "income_rows": [],
+                "income_sum": Decimal("0.00"),
+            }
+            for item in categories
+        }
+
+        if selected_property is None:
+            return [details_by_key[item["key"]] for item in categories]
+
+        expense_key_by_bk_art = {
+            BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN: "betriebskosten",
+            BetriebskostenBeleg.BKArt.SONSTIG: "betriebskosten",
+            BetriebskostenBeleg.BKArt.STROM: "strom",
+            BetriebskostenBeleg.BKArt.WASSER: "wasser",
+        }
+        expense_belege = (
+            BetriebskostenBeleg.objects.filter(
+                liegenschaft=selected_property,
+                datum__gte=operating_cost_service.period_start,
+                datum__lte=operating_cost_service.period_end,
+            )
+            .order_by("datum", "id")
+        )
+        for beleg in expense_belege:
+            category_key = expense_key_by_bk_art.get(beleg.bk_art)
+            if category_key is None:
+                continue
+            description = (beleg.buchungstext or "").strip() or (beleg.lieferant_name or "").strip() or "Ohne Buchungstext"
+            details_by_key[category_key]["expenses_rows"].append(
+                {
+                    "date": beleg.datum,
+                    "description": description,
+                    "source": f"BK-Beleg · {beleg.get_bk_art_display()}",
+                    "amount": self._to_money_decimal(beleg.netto),
+                }
+            )
+
+        income_bookings = (
+            Buchung.objects.filter(
+                typ=Buchung.Typ.IST,
+                is_settlement_adjustment=False,
+                datum__gte=operating_cost_service.period_start,
+                datum__lte=operating_cost_service.period_end,
+            )
+            .filter(
+                Q(mietervertrag__unit__property=selected_property)
+                | Q(einheit__property=selected_property)
+            )
+            .select_related("mietervertrag", "mietervertrag__unit", "einheit")
+            .order_by("datum", "id")
+        )
+        for booking in income_bookings:
+            netto = self._to_money_decimal(booking.netto)
+            if netto <= Decimal("0.00"):
+                continue
+
+            reference = self._booking_reference_label(booking)
+            description = (booking.buchungstext or "").strip() or "Ohne Buchungstext"
+
+            if booking.kategorie == Buchung.Kategorie.BK:
+                details_by_key["betriebskosten"]["income_rows"].append(
+                    {
+                        "date": booking.datum,
+                        "description": description,
+                        "source": "IST-Buchung · Betriebskosten",
+                        "reference": reference,
+                        "amount": netto,
+                    }
+                )
+                continue
+            if booking.kategorie == Buchung.Kategorie.HK:
+                details_by_key["heizung"]["income_rows"].append(
+                    {
+                        "date": booking.datum,
+                        "description": description,
+                        "source": "IST-Buchung · Heizkosten",
+                        "reference": reference,
+                        "amount": netto,
+                    }
+                )
+                continue
+            if booking.kategorie != Buchung.Kategorie.ZAHLUNG:
+                continue
+
+            lease = booking.mietervertrag
+            if lease is None:
+                continue
+
+            profile = operating_cost_service._soll_profile_for_month(
+                lease=lease,
+                booking_date=booking.datum,
+            )
+            bucket_key = operating_cost_service._rate_bucket_key(booking.ust_prozent)
+            bucket_data = profile.get(bucket_key)
+            if not bucket_data:
+                continue
+
+            bucket_total = self._to_money_decimal(bucket_data.get("total"))
+            if bucket_total <= Decimal("0.00"):
+                continue
+
+            bucket_bk = self._to_money_decimal(bucket_data.get("bk"))
+            bucket_hk = self._to_money_decimal(bucket_data.get("hk"))
+            income_bk_share = (netto * bucket_bk / bucket_total).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            income_hk_share = (netto * bucket_hk / bucket_total).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+            if income_bk_share > Decimal("0.00"):
+                details_by_key["betriebskosten"]["income_rows"].append(
+                    {
+                        "date": booking.datum,
+                        "description": description,
+                        "source": "Anteil aus Zahlung",
+                        "reference": reference,
+                        "amount": income_bk_share,
+                    }
+                )
+            if income_hk_share > Decimal("0.00"):
+                details_by_key["heizung"]["income_rows"].append(
+                    {
+                        "date": booking.datum,
+                        "description": description,
+                        "source": "Anteil aus Zahlung",
+                        "reference": reference,
+                        "amount": income_hk_share,
+                    }
+                )
+
+        for key in details_by_key:
+            details_by_key[key]["expenses_sum"] = self._sum_detail_rows(
+                details_by_key[key]["expenses_rows"]
+            )
+            details_by_key[key]["income_sum"] = self._sum_detail_rows(
+                details_by_key[key]["income_rows"]
+            )
+
+        return [details_by_key[item["key"]] for item in categories]
+
+    def _build_annual_statement_trace(self, *, allocations):
+        annual_statement = allocations.get("annual_statement", {})
+        annual_rows = annual_statement.get("rows", [])
+        annual_totals = annual_statement.get("totals", {})
+
+        bk_lookup = {
+            row.get("unit_id"): self._to_money_decimal(row.get("anteil_euro"))
+            for row in allocations.get("bk_distribution", {}).get("rows", [])
+        }
+        water_lookup = {
+            row.get("unit_id"): self._to_money_decimal(row.get("cost_share"))
+            for row in allocations.get("water", {}).get("rows", [])
+        }
+        electricity_lookup = {
+            row.get("unit_id"): self._to_money_decimal(row.get("cost_share"))
+            for row in allocations.get("electricity_common", {}).get("rows", [])
+        }
+        hot_water_lookup = {
+            row.get("unit_id"): self._to_money_decimal(row.get("cost_share"))
+            for row in allocations.get("hot_water", {}).get("rows", [])
+        }
+        heating_lookup = {
+            row.get("unit_id"): {
+                "fixed": self._to_money_decimal(row.get("fixed_cost_share")),
+                "variable": self._to_money_decimal(row.get("variable_cost_share")),
+                "total": self._to_money_decimal(row.get("cost_share")),
+            }
+            for row in allocations.get("heating", {}).get("rows", [])
+        }
+
+        trace_rows = []
+        totals_brutto = {
+            "gross_10": Decimal("0.00"),
+            "gross_20": Decimal("0.00"),
+            "ust_10": Decimal("0.00"),
+            "ust_20": Decimal("0.00"),
+            "akonto_bk_brutto": Decimal("0.00"),
+            "akonto_hk_brutto": Decimal("0.00"),
+        }
+        for row in annual_rows:
+            unit_id = row.get("unit_id")
+            netto_10 = self._to_money_decimal(row.get("costs_net_10"))
+            netto_20 = self._to_money_decimal(row.get("costs_net_20"))
+            gross_10 = self._to_money_decimal(row.get("gross_10"))
+            gross_20 = self._to_money_decimal(row.get("gross_20"))
+            ust_10 = (gross_10 - netto_10).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            ust_20 = (gross_20 - netto_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            ust_total = (ust_10 + ust_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            netto_total = (netto_10 + netto_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            akonto_bk = self._to_money_decimal(row.get("akonto_bk"))
+            akonto_hk = self._to_money_decimal(row.get("akonto_hk"))
+            akonto_total = self._to_money_decimal(row.get("akonto_total"))
+            akonto_bk_brutto = (akonto_bk * Decimal("1.10")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            akonto_hk_brutto = (akonto_hk * Decimal("1.20")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            akonto_total_brutto = (akonto_bk_brutto + akonto_hk_brutto).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            gross_total = self._to_money_decimal(row.get("gross_total"))
+            saldo_brutto_10 = (akonto_bk_brutto - gross_10).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            saldo_brutto_20 = (akonto_hk_brutto - gross_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            saldo_brutto_total = (akonto_total_brutto - gross_total).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            saldo_netto = (akonto_total - netto_total).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["gross_10"] = (totals_brutto["gross_10"] + gross_10).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["gross_20"] = (totals_brutto["gross_20"] + gross_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["ust_10"] = (totals_brutto["ust_10"] + ust_10).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["ust_20"] = (totals_brutto["ust_20"] + ust_20).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["akonto_bk_brutto"] = (
+                totals_brutto["akonto_bk_brutto"] + akonto_bk_brutto
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            totals_brutto["akonto_hk_brutto"] = (
+                totals_brutto["akonto_hk_brutto"] + akonto_hk_brutto
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            trace_rows.append(
+                {
+                    "unit_id": unit_id,
+                    "label": row.get("label", ""),
+                    "bk_allg": bk_lookup.get(unit_id, Decimal("0.00")),
+                    "wasser": water_lookup.get(unit_id, Decimal("0.00")),
+                    "allgemeinstrom": electricity_lookup.get(unit_id, Decimal("0.00")),
+                    "warmwasser": hot_water_lookup.get(unit_id, Decimal("0.00")),
+                    "heizung_fix": heating_lookup.get(unit_id, {}).get("fixed", Decimal("0.00")),
+                    "heizung_variabel": heating_lookup.get(unit_id, {}).get(
+                        "variable", Decimal("0.00")
+                    ),
+                    "heizung_total": heating_lookup.get(unit_id, {}).get("total", Decimal("0.00")),
+                    "netto_10": netto_10,
+                    "netto_20": netto_20,
+                    "netto_total": netto_total,
+                    "ust_10": ust_10,
+                    "ust_20": ust_20,
+                    "ust_total": ust_total,
+                    "gross_10": gross_10,
+                    "gross_20": gross_20,
+                    "akonto_bk": akonto_bk,
+                    "akonto_hk": akonto_hk,
+                    "akonto_total": akonto_total,
+                    "akonto_bk_brutto": akonto_bk_brutto,
+                    "akonto_hk_brutto": akonto_hk_brutto,
+                    "akonto_total_brutto": akonto_total_brutto,
+                    "saldo_netto": saldo_netto,
+                    "gross_total": gross_total,
+                    "saldo_brutto_10": saldo_brutto_10,
+                    "saldo_brutto_20": saldo_brutto_20,
+                    "saldo_brutto": saldo_brutto_total,
+                }
+            )
+
+        totals = {
+            "netto_10": self._to_money_decimal(annual_totals.get("net_10")),
+            "netto_20": self._to_money_decimal(annual_totals.get("net_20")),
+            "gross_total": self._to_money_decimal(annual_totals.get("gross_total")),
+            "akonto_total": self._to_money_decimal(annual_totals.get("akonto_total")),
+        }
+        totals["netto_total"] = (totals["netto_10"] + totals["netto_20"]).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["ust_10"] = totals_brutto["ust_10"]
+        totals["ust_20"] = totals_brutto["ust_20"]
+        totals["ust_total"] = (totals["ust_10"] + totals["ust_20"]).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["gross_10"] = totals_brutto["gross_10"]
+        totals["gross_20"] = totals_brutto["gross_20"]
+        totals["akonto_bk_brutto"] = totals_brutto["akonto_bk_brutto"]
+        totals["akonto_hk_brutto"] = totals_brutto["akonto_hk_brutto"]
+        totals["akonto_total_brutto"] = (
+            totals["akonto_bk_brutto"] + totals["akonto_hk_brutto"]
+        ).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["saldo_brutto_10"] = (
+            totals["akonto_bk_brutto"] - totals["gross_10"]
+        ).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["saldo_brutto_20"] = (
+            totals["akonto_hk_brutto"] - totals["gross_20"]
+        ).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["saldo_brutto"] = (totals["akonto_total_brutto"] - totals["gross_total"]).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        totals["saldo_netto"] = (totals["akonto_total"] - totals["netto_total"]).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+
+        component_totals = {
+            "bk_allg": self._to_money_decimal(
+                allocations.get("bk_distribution", {}).get("distributed_sum")
+            ),
+            "wasser": self._to_money_decimal(allocations.get("water", {}).get("distributed_sum")),
+            "allgemeinstrom": self._to_money_decimal(
+                allocations.get("electricity_common", {}).get("distributed_sum")
+            ),
+            "warmwasser": self._to_money_decimal(
+                allocations.get("hot_water", {}).get("distributed_sum")
+            ),
+            "heizung": self._to_money_decimal(allocations.get("heating", {}).get("distributed_sum")),
+        }
+
+        return {
+            "rows": trace_rows,
+            "totals": totals,
+            "component_totals": component_totals,
+        }
+
+    @staticmethod
+    def _sum_detail_rows(rows):
+        total = Decimal("0.00")
+        for row in rows:
+            total += Decimal(str(row.get("amount") or "0.00"))
+        return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _booking_reference_label(booking):
+        unit = None
+        if booking.mietervertrag_id and booking.mietervertrag and booking.mietervertrag.unit_id:
+            unit = booking.mietervertrag.unit
+        elif booking.einheit_id and booking.einheit:
+            unit = booking.einheit
+        if unit is None:
+            return ""
+        unit_name = (unit.name or "").strip()
+        door_number = (unit.door_number or "").strip()
+        if unit_name and door_number:
+            return f"{unit_name} · {door_number}"
+        return unit_name or door_number
 
     def _selected_property(self, properties):
         requested_property_id = (self.request.GET.get("liegenschaft") or "").strip()
@@ -2065,6 +2663,252 @@ class BetriebskostenAbrechnungView(TemplateView):
             "strategy": data.get("strategy", "operating_cost_share"),
             "strategy_label": data.get("strategy_label", "BK-Anteil"),
         }
+
+
+class AnnualStatementRunListView(TemplateView):
+    template_name = "webapp/annual_statement_run_list.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        properties = list(Property.objects.order_by("name"))
+        runs = (
+            Abrechnungslauf.objects.select_related("liegenschaft")
+            .annotate(letter_count=Count("schreiben"))
+            .order_by("-jahr", "liegenschaft__name")
+        )
+
+        selected_property = None
+        selected_property_id = (self.request.GET.get("liegenschaft") or "").strip()
+        if selected_property_id.isdigit():
+            selected_property = next(
+                (item for item in properties if str(item.pk) == selected_property_id),
+                None,
+            )
+        selected_year_raw = (self.request.GET.get("jahr") or "").strip()
+        selected_year = int(selected_year_raw) if selected_year_raw.isdigit() else None
+
+        if selected_property is not None:
+            runs = runs.filter(liegenschaft=selected_property)
+        if selected_year is not None:
+            runs = runs.filter(jahr=selected_year)
+
+        context["properties"] = properties
+        context["runs"] = list(runs)
+        context["selected_property_id"] = selected_property_id
+        context["selected_year"] = selected_year_raw
+        return context
+
+
+class AnnualStatementRunEnsureView(View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        property_id = (request.GET.get("liegenschaft") or "").strip()
+        year_raw = (request.GET.get("jahr") or "").strip()
+
+        if not property_id.isdigit() or not year_raw.isdigit():
+            messages.error(request, "Bitte Liegenschaft und Jahr auswählen.")
+            return redirect("annual_statement_run_list")
+
+        property_obj = get_object_or_404(Property, pk=int(property_id))
+        year = int(year_raw)
+        if year < 2000 or year > 2100:
+            messages.error(request, "Ungültiges Jahr.")
+            return redirect("annual_statement_run_list")
+
+        run = AnnualStatementRunService.ensure_run(property_obj=property_obj, year=year)
+        AnnualStatementRunService(run=run).ensure_letters()
+        return redirect("annual_statement_run_detail", pk=run.pk)
+
+
+class AnnualStatementRunDetailView(DetailView):
+    model = Abrechnungslauf
+    template_name = "webapp/annual_statement_run_detail.html"
+    context_object_name = "run"
+
+    def get_queryset(self):
+        return Abrechnungslauf.objects.select_related("liegenschaft")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        service = AnnualStatementRunService(run=self.object)
+        service.ensure_letters()
+
+        letters = list(
+            self.object.schreiben.select_related("mietervertrag", "einheit", "pdf_datei")
+            .prefetch_related("mietervertrag__tenants")
+            .order_by("einheit__door_number", "einheit__name", "mietervertrag_id")
+        )
+        sequence_numbers = service._sequence_numbers_for_letters(letters=letters)
+        rows = []
+        for letter in letters:
+            payload = service.payload_for_letter(
+                letter=letter,
+                sequence_number=sequence_numbers.get(letter.id),
+            )
+            rows.append(
+                {
+                    "letter": letter,
+                    "payload": payload,
+                    "preview_url": reverse(
+                        "annual_statement_letter_preview",
+                        kwargs={"run_pk": self.object.pk, "pk": letter.pk},
+                    ),
+                }
+            )
+
+        context["letter_rows"] = rows
+        context["create_zip_url"] = reverse(
+            "annual_statement_run_generate_letters",
+            kwargs={"pk": self.object.pk},
+        )
+        context["delete_url"] = reverse(
+            "annual_statement_run_delete",
+            kwargs={"pk": self.object.pk},
+        )
+        context["note_update_url"] = reverse(
+            "annual_statement_run_update_note",
+            kwargs={"pk": self.object.pk},
+        )
+        context["next_number_suggestion"] = AnnualStatementRunService.next_letter_number_suggestion()
+        context["weasyprint_available"] = AnnualStatementPdfService.weasyprint_available()
+        return context
+
+
+class AnnualStatementRunNoteUpdateView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(Abrechnungslauf, pk=kwargs["pk"])
+        raw_number = (request.POST.get("brief_nummer_start") or "").strip()
+        parsed_number = None
+        if raw_number:
+            if not raw_number.isdigit() or int(raw_number) <= 0:
+                messages.error(request, "Startnummer muss eine positive Zahl sein.")
+                return redirect("annual_statement_run_detail", pk=run.pk)
+            parsed_number = int(raw_number)
+        run.brief_freitext = (request.POST.get("brief_freitext") or "").strip()
+        run.brief_nummer_start = parsed_number
+        run.save(update_fields=["brief_freitext", "brief_nummer_start", "updated_at"])
+        if parsed_number:
+            messages.success(request, f"Freitext und Startnummer {parsed_number} gespeichert.")
+        else:
+            messages.success(request, "Freitext gespeichert. Startnummer bitte noch bestätigen.")
+        return redirect("annual_statement_run_detail", pk=run.pk)
+
+
+class AnnualStatementRunDeleteView(View):
+    http_method_names = ["get", "post"]
+    template_name = "webapp/annual_statement_run_confirm_delete.html"
+    valid_file_actions = {"keep", "archive", "delete"}
+
+    @staticmethod
+    def _pdf_files_for_run(*, run: Abrechnungslauf):
+        letters = list(run.schreiben.select_related("pdf_datei"))
+        pdf_by_id = {}
+        for letter in letters:
+            if letter.pdf_datei_id and letter.pdf_datei is not None:
+                pdf_by_id[letter.pdf_datei_id] = letter.pdf_datei
+        return letters, list(pdf_by_id.values())
+
+    def get(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=kwargs["pk"],
+        )
+        letters, pdf_files = self._pdf_files_for_run(run=run)
+        return render(
+            request,
+            self.template_name,
+            {
+                "run": run,
+                "letters_count": len(letters),
+                "pdf_count": len(pdf_files),
+                "default_file_action": "archive",
+            },
+        )
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=kwargs["pk"],
+        )
+        file_action = (request.POST.get("file_action") or "archive").strip().lower()
+        if file_action not in self.valid_file_actions:
+            messages.error(request, "Ungültige Auswahl für die PDF-Behandlung.")
+            return redirect("annual_statement_run_delete", pk=run.pk)
+
+        _letters, pdf_files = self._pdf_files_for_run(run=run)
+        if file_action == "archive":
+            for pdf in pdf_files:
+                DateiService.archive(user=None, datei=pdf)
+        elif file_action == "delete":
+            for pdf in pdf_files:
+                DateiService.delete(user=None, datei=pdf)
+
+        run_label = f"{run.liegenschaft.name} · {run.jahr}"
+        run.delete()
+        if file_action == "keep":
+            messages.success(request, f"Brieflauf {run_label} wurde gelöscht. PDF-Dateien wurden beibehalten.")
+        elif file_action == "archive":
+            messages.success(request, f"Brieflauf {run_label} wurde gelöscht. {len(pdf_files)} PDF-Datei(en) wurden archiviert.")
+        else:
+            messages.success(request, f"Brieflauf {run_label} wurde gelöscht. {len(pdf_files)} PDF-Datei(en) wurden gelöscht.")
+        return redirect("annual_statement_run_list")
+
+
+class AnnualStatementLetterPreviewView(TemplateView):
+    template_name = "webapp/annual_statement_letter_preview.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=self.kwargs["run_pk"],
+        )
+        service = AnnualStatementRunService(run=run)
+        service.ensure_letters()
+        letter = get_object_or_404(
+            run.schreiben.select_related("mietervertrag", "einheit", "pdf_datei").prefetch_related(
+                "mietervertrag__tenants"
+            ),
+            pk=self.kwargs["pk"],
+        )
+        ordered_letters = list(
+            run.schreiben.select_related("mietervertrag", "einheit", "pdf_datei")
+            .prefetch_related("mietervertrag__tenants")
+            .order_by("einheit__door_number", "einheit__name", "mietervertrag_id")
+        )
+        sequence_numbers = service._sequence_numbers_for_letters(letters=ordered_letters)
+        payload = service.payload_for_letter(
+            letter=letter,
+            sequence_number=sequence_numbers.get(letter.id),
+        )
+        context["run"] = run
+        context["letter"] = letter
+        context["payload"] = payload
+        return context
+
+
+class AnnualStatementRunGenerateLettersView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=kwargs["pk"],
+        )
+        service = AnnualStatementRunService(run=run)
+        try:
+            zip_bytes, generated_count = service.generate_letters_zip()
+        except RuntimeError as exc:
+            messages.error(request, str(exc))
+            return redirect("annual_statement_run_detail", pk=run.pk)
+        response = HttpResponse(zip_bytes, content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="{service.build_zip_filename()}"'
+        response["Content-Length"] = str(len(zip_bytes))
+        response["X-Generated-Letters"] = str(generated_count)
+        return response
 
 
 class UnitListView(ListView):

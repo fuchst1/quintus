@@ -20,6 +20,7 @@
                     <th>E-Mail</th>
                     <th>Telefon</th>
                     <th>Webseite</th>
+                    <th>Kontonummer</th>
                     <th>Steuer-Modus</th>
                 </tr>
             </thead>
@@ -39,11 +40,12 @@
                     <td>{{ manager.email }}</td>
                     <td>{{ manager.phone|default:"—" }}</td>
                     <td>{{ manager.website|default:"—" }}</td>
+                    <td>{{ manager.account_number|default:"—" }}</td>
                     <td>{{ manager.get_tax_mode_display }}</td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="7" class="text-center py-5 text-muted">Keine Verwalter gefunden.</td>
+                    <td colspan="8" class="text-center py-5 text-muted">Keine Verwalter gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>
