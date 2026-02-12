@@ -4,11 +4,12 @@ import os
 import re
 import zipfile
 from io import StringIO
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -29,8 +30,13 @@ from .models import (
     Meter,
     MeterReading,
     Property,
+    ReminderEmailLog,
+    ReminderRuleConfig,
     Tenant,
     Unit,
+    VpiAdjustmentLetter,
+    VpiAdjustmentRun,
+    VpiIndexValue,
 )
 from .storage_paths import build_derived_upload_path, build_deterministic_derived_upload_path
 from .services.annual_statement_pdf_service import (
@@ -40,6 +46,8 @@ from .services.annual_statement_pdf_service import (
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.files import MAX_FILE_SIZE_BY_CATEGORY, DateiService
 from .services.operating_cost_service import OperatingCostService
+from .services.reminders import ReminderService, add_months
+from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
 
 
 class MeterYearlyConsumptionTests(TestCase):
@@ -3592,3 +3600,811 @@ class DateiManagementCommandTests(TestCase):
         call_command("files_generate_thumbnails", "--json", stdout=out_second)
         second_payload = json.loads(out_second.getvalue())
         self.assertGreaterEqual(second_payload["skipped_existing"], 1)
+
+class ReminderServiceTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Verwaltung Test",
+            contact_person="Anna Admin",
+            email="verwaltung@example.at",
+        )
+        self.manager_without_email = Manager.objects.create(
+            company_name="Verwaltung Ohne Mail",
+            contact_person="Otto Ohne",
+            email="",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Erinnerung",
+            zip_code="1010",
+            city="Wien",
+            street_address="Erinnerungsgasse 1",
+            manager=self.manager,
+        )
+        self.unit_one = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="1",
+            name="Top 1",
+            usable_area=Decimal("50.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.unit_two = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="2",
+            name="Top 2",
+            usable_area=Decimal("45.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Max",
+            last_name="Muster",
+        )
+
+        self.vpi_lease = LeaseAgreement.objects.create(
+            unit=self.unit_one,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            exit_date=date(2028, 12, 31),
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.vpi_lease.tenants.add(self.tenant)
+
+        self.overdue_vpi_lease = LeaseAgreement.objects.create(
+            unit=self.unit_two,
+            manager=self.manager_without_email,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2024, 1, 1),
+            exit_date=date(2028, 12, 31),
+            net_rent=Decimal("450.00"),
+            operating_costs_net=Decimal("90.00"),
+            heating_costs_net=Decimal("40.00"),
+        )
+        self.overdue_vpi_lease.tenants.add(self.tenant)
+
+        ReminderRuleConfig.objects.update_or_create(
+            code="vpi_indexation",
+            defaults={
+                "title": "VPI-Indexierung",
+                "lead_months": 2,
+                "is_active": True,
+                "sort_order": 10,
+            },
+        )
+        ReminderRuleConfig.objects.update_or_create(
+            code="lease_exit",
+            defaults={
+                "title": "Vertragsende",
+                "lead_months": 3,
+                "is_active": True,
+                "sort_order": 20,
+            },
+        )
+
+    def test_add_months_handles_end_of_month(self):
+        self.assertEqual(add_months(date(2025, 1, 31), 1), date(2025, 2, 28))
+        self.assertEqual(add_months(date(2024, 1, 31), 1), date(2024, 2, 29))
+
+    def test_collect_items_uses_db_lead_months_and_includes_overdue(self):
+        ReminderRuleConfig.objects.filter(code="vpi_indexation").update(lead_months=2)
+
+        service = ReminderService(today=date(2026, 2, 12))
+        items = service.collect_items()
+
+        due_lease_ids = {item.lease_id for item in items if item.rule_code == "vpi_indexation"}
+        self.assertIn(self.vpi_lease.pk, due_lease_ids)
+        self.assertIn(self.overdue_vpi_lease.pk, due_lease_ids)
+        self.assertTrue(any(item.is_overdue for item in items if item.lease_id == self.overdue_vpi_lease.pk))
+
+    def test_collect_items_reads_recipient_from_manager_email(self):
+        service = ReminderService(today=date(2026, 2, 12))
+        items = service.collect_items()
+
+        vpi_item = next(item for item in items if item.lease_id == self.vpi_lease.pk)
+        overdue_item = next(item for item in items if item.lease_id == self.overdue_vpi_lease.pk)
+        self.assertEqual(vpi_item.recipient_email, "verwaltung@example.at")
+        self.assertEqual(overdue_item.recipient_email, "")
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="noreply@example.at",
+)
+class ReminderCommandTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Mail Verwaltung",
+            contact_person="Mia Mail",
+            email="mail@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Mail",
+            zip_code="1020",
+            city="Wien",
+            street_address="Mailgasse 2",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="1",
+            name="Top Mail",
+            usable_area=Decimal("60.00"),
+            operating_cost_share=Decimal("12.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Erika",
+            last_name="Empfang",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.FIX,
+            exit_date=date(2026, 4, 10),
+            net_rent=Decimal("700.00"),
+            operating_costs_net=Decimal("120.00"),
+            heating_costs_net=Decimal("60.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+        ReminderRuleConfig.objects.update_or_create(
+            code="lease_exit",
+            defaults={
+                "title": "Vertragsende",
+                "lead_months": 3,
+                "is_active": True,
+                "sort_order": 20,
+            },
+        )
+        ReminderRuleConfig.objects.update_or_create(
+            code="vpi_indexation",
+            defaults={
+                "title": "VPI-Indexierung",
+                "lead_months": 2,
+                "is_active": False,
+                "sort_order": 10,
+            },
+        )
+
+    def test_send_reminders_is_idempotent_within_same_week(self):
+        call_command("send_reminders", today="2026-02-12")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(ReminderEmailLog.objects.count(), 1)
+
+        call_command("send_reminders", today="2026-02-12")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(ReminderEmailLog.objects.count(), 1)
+
+    def test_send_reminders_dry_run_writes_nothing(self):
+        call_command("send_reminders", today="2026-02-12", dry_run=True)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(ReminderEmailLog.objects.count(), 0)
+
+    def test_send_reminders_skips_items_without_email(self):
+        self.manager.email = ""
+        self.manager.save(update_fields=["email"])
+
+        call_command("send_reminders", today="2026-02-12")
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(ReminderEmailLog.objects.count(), 0)
+
+
+class ReminderUiIntegrationTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="UI Verwaltung",
+            contact_person="Uli UI",
+            email="ui@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt UI",
+            zip_code="1030",
+            city="Wien",
+            street_address="Uigasse 3",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="3",
+            name="Top UI",
+            usable_area=Decimal("55.00"),
+            operating_cost_share=Decimal("11.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Lukas",
+            last_name="Listen",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.FIX,
+            exit_date=date(2026, 4, 1),
+            net_rent=Decimal("650.00"),
+            operating_costs_net=Decimal("110.00"),
+            heating_costs_net=Decimal("55.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+        ReminderRuleConfig.objects.update_or_create(
+            code="lease_exit",
+            defaults={
+                "title": "Vertragsende",
+                "lead_months": 3,
+                "is_active": True,
+                "sort_order": 20,
+            },
+        )
+
+    def test_dashboard_shows_reminder_section(self):
+        response = self.client.get(reverse("dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Erinnerungen")
+        self.assertContains(response, "Vertragsende")
+
+    def test_lease_list_highlights_rows_with_reminders(self):
+        response = self.client.get(reverse("lease_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "lease-row-has-reminders")
+        self.assertContains(response, "Vertragsende")
+
+    def test_reminder_settings_can_update_lead_months(self):
+        configs = list(ReminderRuleConfig.objects.order_by("sort_order", "code"))
+        post_data = {
+            "form-TOTAL_FORMS": str(len(configs)),
+            "form-INITIAL_FORMS": str(len(configs)),
+            "form-MIN_NUM_FORMS": "0",
+            "form-MAX_NUM_FORMS": "1000",
+        }
+
+        for index, config in enumerate(configs):
+            post_data[f"form-{index}-id"] = str(config.id)
+            post_data[f"form-{index}-title"] = config.title
+            post_data[f"form-{index}-lead_months"] = str(config.lead_months)
+            if config.is_active:
+                post_data[f"form-{index}-is_active"] = "on"
+
+        lease_exit_index = next(
+            index for index, config in enumerate(configs) if config.code == "lease_exit"
+        )
+        post_data[f"form-{lease_exit_index}-lead_months"] = "4"
+
+        response = self.client.post(reverse("reminder_settings"), data=post_data)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("reminder_settings"))
+        self.assertEqual(
+            ReminderRuleConfig.objects.get(code="lease_exit").lead_months,
+            4,
+        )
+
+
+class VpiAdjustmentModelTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="VPI Verwaltung",
+            contact_person="Vera VPI",
+            email="vpi@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt VPI",
+            zip_code="1040",
+            city="Wien",
+            street_address="Indexgasse 1",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="1",
+            name="Top 1",
+            usable_area=Decimal("60.00"),
+            operating_cost_share=Decimal("12.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Vito",
+            last_name="Mieter",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+    def _build_letter(self, *, run: VpiAdjustmentRun) -> VpiAdjustmentLetter:
+        return VpiAdjustmentLetter(
+            run=run,
+            lease=self.lease,
+            unit=self.unit,
+            effective_date=date(2026, 3, 1),
+            old_index_value=Decimal("100.00"),
+            new_index_value=Decimal("110.00"),
+            factor=Decimal("1.100000"),
+            old_hmz_net=Decimal("500.00"),
+            new_hmz_net=Decimal("550.00"),
+            delta_hmz_net=Decimal("50.00"),
+            catchup_months=1,
+            catchup_net_total=Decimal("50.00"),
+            catchup_tax_percent=Decimal("10.00"),
+            catchup_gross_total=Decimal("55.00"),
+        )
+
+    def test_vpi_index_value_month_must_be_first_day(self):
+        invalid = VpiIndexValue(
+            month=date(2026, 2, 2),
+            index_value=Decimal("123.45"),
+            is_released=False,
+        )
+        with self.assertRaises(ValidationError):
+            invalid.full_clean()
+
+    def test_vpi_index_value_month_is_unique(self):
+        VpiIndexValue.objects.create(
+            month=date(2026, 2, 1),
+            index_value=Decimal("123.45"),
+            is_released=True,
+        )
+        duplicate = VpiIndexValue(
+            month=date(2026, 2, 1),
+            index_value=Decimal("124.10"),
+            is_released=True,
+        )
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
+    def test_vpi_adjustment_letter_is_unique_per_run_and_lease(self):
+        index_value = VpiIndexValue.objects.create(
+            month=date(2026, 2, 1),
+            index_value=Decimal("110.00"),
+            is_released=True,
+        )
+        run = VpiAdjustmentRun.objects.create(
+            index_value=index_value,
+            run_date=date(2026, 4, 15),
+        )
+        first = self._build_letter(run=run)
+        first.full_clean()
+        first.save()
+
+        duplicate = self._build_letter(run=run)
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
+
+class VpiAdjustmentRunServiceTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Service Verwaltung",
+            contact_person="Susi Service",
+            email="service@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Service",
+            zip_code="1050",
+            city="Wien",
+            street_address="Serviceweg 5",
+            manager=self.manager,
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Tina",
+            last_name="Test",
+        )
+
+        self.unit_due = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="1",
+            name="Top 1",
+            usable_area=Decimal("55.00"),
+            operating_cost_share=Decimal("11.00"),
+        )
+        self.unit_future = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="2",
+            name="Top 2",
+            usable_area=Decimal("50.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.unit_missing = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="3",
+            name="Top 3",
+            usable_area=Decimal("48.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.unit_non_increase = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="4",
+            name="Top 4",
+            usable_area=Decimal("46.00"),
+            operating_cost_share=Decimal("9.00"),
+        )
+        self.unit_fix = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="5",
+            name="Top 5",
+            usable_area=Decimal("52.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+
+        self.due_lease = LeaseAgreement.objects.create(
+            unit=self.unit_due,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.due_lease.tenants.add(self.tenant)
+
+        self.future_lease = LeaseAgreement.objects.create(
+            unit=self.unit_future,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 10, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("600.00"),
+            operating_costs_net=Decimal("110.00"),
+            heating_costs_net=Decimal("55.00"),
+        )
+        self.future_lease.tenants.add(self.tenant)
+
+        self.missing_base_lease = LeaseAgreement.objects.create(
+            unit=self.unit_missing,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=None,
+            net_rent=Decimal("530.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.missing_base_lease.tenants.add(self.tenant)
+
+        self.non_increase_lease = LeaseAgreement.objects.create(
+            unit=self.unit_non_increase,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("120.00"),
+            net_rent=Decimal("700.00"),
+            operating_costs_net=Decimal("120.00"),
+            heating_costs_net=Decimal("60.00"),
+        )
+        self.non_increase_lease.tenants.add(self.tenant)
+
+        self.fix_lease = LeaseAgreement.objects.create(
+            unit=self.unit_fix,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.FIX,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("480.00"),
+            operating_costs_net=Decimal("95.00"),
+            heating_costs_net=Decimal("45.00"),
+        )
+        self.fix_lease.tenants.add(self.tenant)
+
+        self.index_value = VpiIndexValue.objects.create(
+            month=date(2026, 2, 1),
+            index_value=Decimal("110.00"),
+            is_released=True,
+            released_at=date(2026, 2, 20),
+        )
+        self.run = VpiAdjustmentRun.objects.create(
+            index_value=self.index_value,
+            run_date=date(2026, 4, 15),
+        )
+
+        Buchung.objects.create(
+            mietervertrag=self.due_lease,
+            einheit=self.due_lease.unit,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext="HMZ 03/2026",
+            datum=date(2026, 3, 1),
+            netto=Decimal("500.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("550.00"),
+        )
+
+    def _service(self) -> VpiAdjustmentRunService:
+        return VpiAdjustmentRunService(run=self.run)
+
+    def _create_pdf_datei(self) -> Datei:
+        return Datei.objects.create(
+            file=SimpleUploadedFile("vpi.pdf", b"%PDF-1.4", content_type="application/pdf"),
+            kategorie=Datei.Kategorie.DOKUMENT,
+        )
+
+    def test_ensure_letters_filters_due_vpi_and_calculates_values(self):
+        letters = self._service().ensure_letters()
+        letters_by_lease = {letter.lease_id: letter for letter in letters}
+
+        self.assertIn(self.due_lease.pk, letters_by_lease)
+        self.assertIn(self.missing_base_lease.pk, letters_by_lease)
+        self.assertIn(self.non_increase_lease.pk, letters_by_lease)
+        self.assertNotIn(self.future_lease.pk, letters_by_lease)
+        self.assertNotIn(self.fix_lease.pk, letters_by_lease)
+
+        due_letter = letters_by_lease[self.due_lease.pk]
+        self.assertEqual(due_letter.effective_date, date(2026, 3, 1))
+        self.assertEqual(due_letter.factor, Decimal("1.100000"))
+        self.assertEqual(due_letter.new_hmz_net, Decimal("550.00"))
+        self.assertEqual(due_letter.delta_hmz_net, Decimal("50.00"))
+
+    def test_ensure_letters_marks_skip_reasons(self):
+        letters = self._service().ensure_letters()
+        letters_by_lease = {letter.lease_id: letter for letter in letters}
+
+        self.assertIn("Index-Basiswert fehlt", letters_by_lease[self.missing_base_lease.pk].skip_reason)
+        self.assertIn(
+            "Kein Erhöhungsfaktor",
+            letters_by_lease[self.non_increase_lease.pk].skip_reason,
+        )
+
+    def test_catchup_counts_only_months_with_existing_hmz_soll(self):
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+
+        self.assertEqual(letter.catchup_months, 1)
+        self.assertEqual(letter.catchup_net_total, Decimal("50.00"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("55.00"))
+
+        Buchung.objects.create(
+            mietervertrag=self.due_lease,
+            einheit=self.due_lease.unit,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext="HMZ 04/2026",
+            datum=date(2026, 4, 1),
+            netto=Decimal("500.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("550.00"),
+        )
+        service.ensure_letters()
+        letter.refresh_from_db()
+
+        self.assertEqual(letter.catchup_months, 2)
+        self.assertEqual(letter.catchup_net_total, Decimal("100.00"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("110.00"))
+
+    def test_apply_run_is_idempotent(self):
+        service = self._service()
+        service.ensure_letters()
+        self.run.brief_nummer_start = 100
+        self.run.save(update_fields=["brief_nummer_start"])
+
+        actionable_letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+        actionable_letter.pdf_datei = self._create_pdf_datei()
+        actionable_letter.save(update_fields=["pdf_datei", "updated_at"])
+
+        result_first = service.apply_run()
+        self.assertEqual(result_first["updated_leases"], 1)
+        self.assertEqual(result_first["catchup_bookings"], 1)
+
+        self.due_lease.refresh_from_db()
+        self.assertEqual(self.due_lease.net_rent, Decimal("550.00"))
+        self.assertEqual(self.due_lease.index_base_value, Decimal("110.00"))
+        self.assertEqual(self.due_lease.last_index_adjustment, date(2026, 3, 1))
+
+        bookings = Buchung.objects.filter(
+            mietervertrag=self.due_lease,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext__startswith="Nachverrechnung VPI",
+        )
+        self.assertEqual(bookings.count(), 1)
+
+        result_second = service.apply_run()
+        self.assertEqual(result_second["updated_leases"], 0)
+        self.assertEqual(result_second["catchup_bookings"], 0)
+        self.assertEqual(bookings.count(), 1)
+
+
+class CheckVpiReleasesCommandTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Command Verwaltung",
+            contact_person="Conny Command",
+            email="command@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Command",
+            zip_code="1060",
+            city="Wien",
+            street_address="Cronweg 6",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="6",
+            name="Top 6",
+            usable_area=Decimal("49.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Karl",
+            last_name="Cron",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+        self.pending_index = VpiIndexValue.objects.create(
+            month=date(2026, 2, 1),
+            index_value=Decimal("110.00"),
+            is_released=True,
+            released_at=date(2026, 2, 20),
+        )
+        existing_run_index = VpiIndexValue.objects.create(
+            month=date(2025, 2, 1),
+            index_value=Decimal("106.00"),
+            is_released=True,
+            released_at=date(2025, 2, 20),
+        )
+        VpiAdjustmentRun.objects.create(
+            index_value=existing_run_index,
+            run_date=date(2025, 3, 15),
+        )
+        VpiIndexValue.objects.create(
+            month=date(2026, 1, 1),
+            index_value=Decimal("109.00"),
+            is_released=False,
+        )
+
+    def test_check_vpi_releases_reports_pending_released_values(self):
+        out = StringIO()
+        call_command("check_vpi_releases", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("freigegeben: 2", output)
+        self.assertIn("ohne Lauf: 1", output)
+        self.assertIn("- Offen: 02/2026", output)
+
+    def test_check_vpi_releases_create_runs_is_idempotent(self):
+        out_first = StringIO()
+        call_command("check_vpi_releases", "--create-runs", "--today", "2026-04-10", stdout=out_first)
+        self.assertTrue(
+            VpiAdjustmentRun.objects.filter(
+                index_value=self.pending_index,
+                run_date=date(2026, 4, 10),
+            ).exists()
+        )
+        self.assertIn("Läufe erstellt: 1", out_first.getvalue())
+        self.assertIn("ohne Lauf: 0", out_first.getvalue())
+
+        out_second = StringIO()
+        call_command("check_vpi_releases", "--create-runs", "--today", "2026-04-10", stdout=out_second)
+        self.assertIn("Läufe erstellt: 0", out_second.getvalue())
+        self.assertIn("ohne Lauf: 0", out_second.getvalue())
+        self.assertEqual(VpiAdjustmentRun.objects.filter(index_value=self.pending_index).count(), 1)
+
+
+class VpiAdjustmentUiIntegrationTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="UI VPI Verwaltung",
+            contact_person="Ute UI",
+            email="ui-vpi@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt UI VPI",
+            zip_code="1070",
+            city="Wien",
+            street_address="Uiweg 7",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="7",
+            name="Top 7",
+            usable_area=Decimal("51.00"),
+            operating_cost_share=Decimal("10.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Uma",
+            last_name="UI",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+        self.index_value = VpiIndexValue.objects.create(
+            month=date(2026, 2, 1),
+            index_value=Decimal("110.00"),
+            is_released=True,
+            released_at=date(2026, 2, 20),
+        )
+
+    def test_run_can_be_created_from_released_index(self):
+        response = self.client.get(
+            reverse("vpi_adjustment_run_ensure"),
+            {"index_id": str(self.index_value.pk), "run_date": "2026-04-15"},
+        )
+        run = VpiAdjustmentRun.objects.get(index_value=self.index_value)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            reverse("vpi_adjustment_run_detail", kwargs={"pk": run.pk}),
+        )
+        self.assertEqual(run.run_date, date(2026, 4, 15))
+
+    def test_apply_endpoint_stays_blocked_until_letters_are_generated(self):
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.index_value, run_date=date(2026, 4, 15))
+        VpiAdjustmentRunService(run=run).ensure_letters()
+        run.brief_nummer_start = 200
+        run.save(update_fields=["brief_nummer_start"])
+
+        response = self.client.post(reverse("vpi_adjustment_run_apply", kwargs={"pk": run.pk}))
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(run.status, VpiAdjustmentRun.Status.DRAFT)

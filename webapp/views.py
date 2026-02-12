@@ -31,6 +31,10 @@ from .models import (
     Property,
     Tenant,
     Unit,
+    ReminderRuleConfig,
+    VpiAdjustmentLetter,
+    VpiAdjustmentRun,
+    VpiIndexValue,
 )
 from .forms import (
     BankImportForm,
@@ -42,6 +46,8 @@ from .forms import (
     MeterReadingForm,
     PropertyForm,
     PropertyOwnershipFormSet,
+    ReminderRuleConfigFormSet,
+    VpiIndexValueFormSet,
     OwnerForm,
     UnitForm,
     ManagerForm,
@@ -52,6 +58,9 @@ from .services.annual_statement_pdf_service import AnnualStatementPdfService
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.operating_cost_service import OperatingCostService
 from .services.settlement_adjustments import match_settlement_adjustment_text
+from .services.reminders import ReminderService
+from .services.vpi_adjustment_pdf_service import VpiAdjustmentPdfService
+from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
 
 
 def build_attachments_panel_context(request, target_object, *, title: str):
@@ -186,6 +195,10 @@ class DashboardView(TemplateView):
                 0,
             )
         context["property_cards"] = property_cards
+        reminder_service = ReminderService(today=today)
+        reminder_items = reminder_service.collect_items()
+        context["reminder_summary"] = reminder_service.build_summary(reminder_items)
+        context["upcoming_reminders"] = reminder_service.top_items(reminder_items, limit=8)
         return context
 
 
@@ -413,6 +426,30 @@ class ManagerDeleteView(DeleteView):
     success_url = reverse_lazy("manager_list")
 
 
+class ReminderSettingsView(TemplateView):
+    template_name = "webapp/reminder_settings.html"
+
+    def _build_formset(self, *, data=None):
+        queryset = ReminderRuleConfig.objects.order_by("sort_order", "code")
+        if data is not None:
+            return ReminderRuleConfigFormSet(data=data, queryset=queryset)
+        return ReminderRuleConfigFormSet(queryset=queryset)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["formset"] = kwargs.get("formset") or self._build_formset()
+        return context
+
+    def post(self, request, *args, **kwargs):
+        formset = self._build_formset(data=request.POST)
+        if formset.is_valid():
+            formset.save()
+            messages.success(request, "Erinnerungsregeln wurden gespeichert.")
+            return redirect("reminder_settings")
+        messages.error(request, "Bitte prüfen Sie die Eingaben bei den Erinnerungsregeln.")
+        return self.render_to_response(self.get_context_data(formset=formset))
+
+
 class TenantListView(ListView):
     model = Tenant
     template_name = "webapp/tenant_list.html"
@@ -457,12 +494,25 @@ class LeaseAgreementListView(ListView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["active_leases"] = (
+        reminder_service = ReminderService(today=timezone.localdate())
+        reminder_items = reminder_service.collect_items()
+        reminders_by_lease = reminder_service.items_by_lease(reminder_items)
+
+        active_leases = list(
             self.queryset.filter(status=LeaseAgreement.Status.AKTIV).order_by(*self.unit_ordering)
         )
-        context["ended_leases"] = (
+        for lease in active_leases:
+            lease.reminder_items = reminders_by_lease.get(lease.pk, [])
+
+        ended_leases = list(
             self.queryset.filter(status=LeaseAgreement.Status.BEENDET).order_by(*self.unit_ordering)
         )
+        for lease in ended_leases:
+            lease.reminder_items = []
+
+        context["active_leases"] = active_leases
+        context["ended_leases"] = ended_leases
+        context["lease_reminder_total"] = len(reminder_items)
         return context
 
 
@@ -2909,6 +2959,251 @@ class AnnualStatementRunGenerateLettersView(View):
         response["Content-Length"] = str(len(zip_bytes))
         response["X-Generated-Letters"] = str(generated_count)
         return response
+
+
+class VpiAdjustmentRunListView(TemplateView):
+    template_name = "webapp/vpi_adjustment_run_list.html"
+    formset_prefix = "index"
+
+    def _build_formset(self, *, data=None):
+        queryset = VpiIndexValue.objects.order_by("-month", "-id")
+        if data is not None:
+            return VpiIndexValueFormSet(data=data, queryset=queryset, prefix=self.formset_prefix)
+        return VpiIndexValueFormSet(queryset=queryset, prefix=self.formset_prefix)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        formset = kwargs.get("formset") or self._build_formset()
+        runs = (
+            VpiAdjustmentRun.objects.select_related("index_value")
+            .annotate(letter_count=Count("letters"))
+            .order_by("-run_date", "-id")
+        )
+        pending_released_values = (
+            VpiIndexValue.objects.filter(is_released=True)
+            .exclude(adjustment_runs__isnull=False)
+            .order_by("-month")
+        )
+        context["formset"] = formset
+        context["runs"] = list(runs)
+        context["pending_released_values"] = list(pending_released_values)
+        context["today"] = timezone.localdate()
+        return context
+
+    def post(self, request, *args, **kwargs):
+        formset = self._build_formset(data=request.POST)
+        if formset.is_valid():
+            instances = formset.save(commit=False)
+            for instance in instances:
+                instance.full_clean()
+                instance.save()
+            messages.success(request, "VPI-Indexwerte wurden gespeichert.")
+            return redirect("vpi_adjustment_run_list")
+        messages.error(request, "Bitte prüfen Sie die Eingaben der VPI-Indexwerte.")
+        return self.render_to_response(self.get_context_data(formset=formset))
+
+
+class VpiAdjustmentRunEnsureView(View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        index_id = (request.GET.get("index_id") or "").strip()
+        run_date_raw = (request.GET.get("run_date") or "").strip()
+        if not index_id.isdigit():
+            messages.error(request, "Bitte einen freigegebenen VPI-Indexwert auswählen.")
+            return redirect("vpi_adjustment_run_list")
+
+        index_value = get_object_or_404(VpiIndexValue, pk=int(index_id))
+        if not index_value.is_released:
+            messages.error(request, "Der ausgewählte VPI-Indexwert ist noch nicht freigegeben.")
+            return redirect("vpi_adjustment_run_list")
+
+        run_date = timezone.localdate()
+        if run_date_raw:
+            try:
+                run_date = datetime.strptime(run_date_raw, "%Y-%m-%d").date()
+            except ValueError:
+                messages.error(request, "Ungültiges Laufdatum. Erwartet: YYYY-MM-DD.")
+                return redirect("vpi_adjustment_run_list")
+
+        run = VpiAdjustmentRunService.ensure_run(index_value=index_value, run_date=run_date)
+        VpiAdjustmentRunService(run=run).ensure_letters()
+        return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+
+class VpiAdjustmentRunDetailView(DetailView):
+    model = VpiAdjustmentRun
+    template_name = "webapp/vpi_adjustment_run_detail.html"
+    context_object_name = "run"
+
+    def get_queryset(self):
+        return VpiAdjustmentRun.objects.select_related("index_value")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        service = VpiAdjustmentRunService(run=self.object)
+        service.ensure_letters()
+
+        letters = list(
+            self.object.letters.select_related("lease", "unit", "pdf_datei")
+            .prefetch_related("lease__tenants")
+            .order_by("unit__door_number", "unit__name", "lease_id")
+        )
+        sequence_numbers = {}
+        if self.object.brief_nummer_start and int(self.object.brief_nummer_start) > 0:
+            sequence_numbers = service._sequence_numbers_for_letters(
+                letters=letters,
+                start_number=int(self.object.brief_nummer_start),
+            )
+
+        rows = []
+        for letter in letters:
+            rows.append(
+                {
+                    "letter": letter,
+                    "payload": service.payload_for_letter(
+                        letter=letter,
+                        sequence_number=sequence_numbers.get(letter.id),
+                    ),
+                    "preview_url": reverse(
+                        "vpi_adjustment_letter_preview",
+                        kwargs={"run_pk": self.object.pk, "pk": letter.pk},
+                    ),
+                }
+            )
+
+        context["letter_rows"] = rows
+        context["create_zip_url"] = reverse(
+            "vpi_adjustment_run_generate_letters",
+            kwargs={"pk": self.object.pk},
+        )
+        context["apply_url"] = reverse(
+            "vpi_adjustment_run_apply",
+            kwargs={"pk": self.object.pk},
+        )
+        context["note_update_url"] = reverse(
+            "vpi_adjustment_run_update_note",
+            kwargs={"pk": self.object.pk},
+        )
+        context["next_number_suggestion"] = VpiAdjustmentRunService.next_letter_number_suggestion()
+        context["weasyprint_available"] = VpiAdjustmentPdfService.weasyprint_available()
+        can_apply, apply_block_reason = service.apply_readiness()
+        context["can_apply"] = can_apply
+        context["apply_block_reason"] = apply_block_reason
+        return context
+
+
+class VpiAdjustmentRunNoteUpdateView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(VpiAdjustmentRun, pk=kwargs["pk"])
+        raw_number = (request.POST.get("brief_nummer_start") or "").strip()
+        parsed_number = None
+        if raw_number:
+            if not raw_number.isdigit() or int(raw_number) <= 0:
+                messages.error(request, "Startnummer muss eine positive Zahl sein.")
+                return redirect("vpi_adjustment_run_detail", pk=run.pk)
+            parsed_number = int(raw_number)
+        run.brief_freitext = (request.POST.get("brief_freitext") or "").strip()
+        run.brief_nummer_start = parsed_number
+        run.save(update_fields=["brief_freitext", "brief_nummer_start", "updated_at"])
+        if parsed_number:
+            messages.success(request, f"Freitext und Startnummer {parsed_number} gespeichert.")
+        else:
+            messages.success(request, "Freitext gespeichert. Startnummer bitte noch bestätigen.")
+        return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+
+class VpiAdjustmentLetterPreviewView(TemplateView):
+    template_name = "webapp/vpi_adjustment_letter_preview.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        run = get_object_or_404(
+            VpiAdjustmentRun.objects.select_related("index_value"),
+            pk=self.kwargs["run_pk"],
+        )
+        service = VpiAdjustmentRunService(run=run)
+        service.ensure_letters()
+        letter = get_object_or_404(
+            run.letters.select_related("lease", "unit", "pdf_datei").prefetch_related("lease__tenants"),
+            pk=self.kwargs["pk"],
+        )
+        ordered_letters = list(
+            run.letters.select_related("lease", "unit")
+            .order_by("unit__door_number", "unit__name", "lease_id")
+        )
+        sequence_numbers = {}
+        if run.brief_nummer_start and int(run.brief_nummer_start) > 0:
+            sequence_numbers = service._sequence_numbers_for_letters(
+                letters=ordered_letters,
+                start_number=int(run.brief_nummer_start),
+            )
+        payload = service.payload_for_letter(
+            letter=letter,
+            sequence_number=sequence_numbers.get(letter.id),
+        )
+        context["run"] = run
+        context["letter"] = letter
+        context["payload"] = payload
+        return context
+
+
+class VpiAdjustmentRunGenerateLettersView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            VpiAdjustmentRun.objects.select_related("index_value"),
+            pk=kwargs["pk"],
+        )
+        service = VpiAdjustmentRunService(run=run)
+        try:
+            zip_bytes, generated_count = service.generate_letters_zip()
+        except RuntimeError as exc:
+            messages.error(request, str(exc))
+            return redirect("vpi_adjustment_run_detail", pk=run.pk)
+        response = HttpResponse(zip_bytes, content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="{service.build_zip_filename()}"'
+        response["Content-Length"] = str(len(zip_bytes))
+        response["X-Generated-Letters"] = str(generated_count)
+        return response
+
+
+class VpiAdjustmentRunApplyView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            VpiAdjustmentRun.objects.select_related("index_value"),
+            pk=kwargs["pk"],
+        )
+        if run.status == VpiAdjustmentRun.Status.APPLIED:
+            messages.info(request, "Dieser VPI-Lauf wurde bereits angewendet.")
+            return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+        service = VpiAdjustmentRunService(run=run)
+        can_apply, reason = service.apply_readiness(ensure_letters=True)
+        if not can_apply:
+            messages.error(request, reason)
+            return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+        try:
+            result = service.apply_run()
+        except RuntimeError as exc:
+            messages.error(request, str(exc))
+            return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+        messages.success(
+            request,
+            (
+                f"VPI-Anpassung angewendet. Verträge aktualisiert: {result['updated_leases']}, "
+                f"Nachverrechnungs-Buchungen: {result['catchup_bookings']}, "
+                f"übersprungene Zeilen: {result['skipped_letters']}."
+            ),
+        )
+        return redirect("vpi_adjustment_run_detail", pk=run.pk)
 
 
 class UnitListView(ListView):

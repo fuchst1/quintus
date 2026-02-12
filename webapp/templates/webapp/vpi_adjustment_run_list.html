@@ -1,0 +1,139 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}VPI-Anpassung{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold mb-0">VPI-Anpassungsläufe</h3>
+    <div class="text-muted small">VPI 2020 pflegen, freigeben und Lauf starten.</div>
+</div>
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <h5 class="mb-3">VPI-Indexwerte pflegen</h5>
+        <form method="post">
+            {% csrf_token %}
+            {{ formset.management_form }}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Monat</th>
+                            <th>VPI 2020</th>
+                            <th class="text-center">Veröffentlicht</th>
+                            <th>Veröffentlicht am</th>
+                            <th>Notiz</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for form in formset %}
+                            <tr>
+                                <td>
+                                    {{ form.id }}
+                                    {{ form.month }}
+                                    {% if form.month.errors %}<div class="text-danger small mt-1">{{ form.month.errors|join:", " }}</div>{% endif %}
+                                </td>
+                                <td>
+                                    {{ form.index_value }}
+                                    {% if form.index_value.errors %}<div class="text-danger small mt-1">{{ form.index_value.errors|join:", " }}</div>{% endif %}
+                                </td>
+                                <td class="text-center">
+                                    <div class="form-check d-inline-flex justify-content-center">{{ form.is_released }}</div>
+                                </td>
+                                <td>
+                                    {{ form.released_at }}
+                                    {% if form.released_at.errors %}<div class="text-danger small mt-1">{{ form.released_at.errors|join:", " }}</div>{% endif %}
+                                </td>
+                                <td>
+                                    {{ form.note }}
+                                    {% if form.note.errors %}<div class="text-danger small mt-1">{{ form.note.errors|join:", " }}</div>{% endif %}
+                                </td>
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">Keine VPI-Indexwerte vorhanden.</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex justify-content-end mt-3">
+                <button type="submit" class="btn btn-primary">Indexwerte speichern</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+        <h5 class="mb-3">Lauf öffnen oder erstellen</h5>
+        <form method="get" action="{% url 'vpi_adjustment_run_ensure' %}" class="row g-3 align-items-end">
+            <div class="col-md-5">
+                <label for="id_index_id" class="form-label">Freigegebener Indexmonat</label>
+                <select id="id_index_id" name="index_id" class="form-select" required>
+                    <option value="">Bitte wählen</option>
+                    {% for idx in pending_released_values %}
+                        <option value="{{ idx.pk }}">{{ idx.month|date:"m/Y" }} · {{ idx.index_value }}</option>
+                    {% endfor %}
+                </select>
+                {% if not pending_released_values %}
+                    <div class="text-muted small mt-2">Keine neuen freigegebenen Werte ohne Lauf vorhanden.</div>
+                {% endif %}
+            </div>
+            <div class="col-md-4">
+                <label for="id_run_date" class="form-label">Laufdatum</label>
+                <input id="id_run_date" type="date" name="run_date" value="{{ today|date:'Y-m-d' }}" class="form-control" required>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary w-100" {% if not pending_released_values %}disabled{% endif %}>
+                    <i class="bi bi-graph-up-arrow me-1"></i>
+                    Lauf öffnen
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <h5 class="mb-3">Bestehende VPI-Läufe</h5>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Indexmonat</th>
+                        <th>Indexwert</th>
+                        <th>Laufdatum</th>
+                        <th>Status</th>
+                        <th class="text-end">Schreiben</th>
+                        <th class="text-end">Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for run in runs %}
+                        <tr>
+                            <td>{{ run.index_value.month|date:"m/Y" }}</td>
+                            <td>{{ run.index_value.index_value }}</td>
+                            <td>{{ run.run_date|date:"d.m.Y" }}</td>
+                            <td>
+                                {% if run.status == 'applied' %}
+                                    <span class="badge text-bg-success">Angewendet</span>
+                                {% else %}
+                                    <span class="badge text-bg-secondary">Entwurf</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end">{{ run.letter_count }}</td>
+                            <td class="text-end">
+                                <a href="{% url 'vpi_adjustment_run_detail' run.pk %}" class="btn btn-sm btn-outline-primary">Öffnen</a>
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">Noch keine VPI-Läufe vorhanden.</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

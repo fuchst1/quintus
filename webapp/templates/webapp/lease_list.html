@@ -4,9 +4,12 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Alle Mietverträge</h3>
-    <a href="{% url 'lease_create' %}" class="btn btn-primary shadow-sm">
-        <i class="bi bi-plus-lg me-1"></i> Neuer Mietvertrag
-    </a>
+    <div class="d-flex align-items-center gap-3">
+        <span class="small text-muted">Offene Erinnerungen: <strong>{{ lease_reminder_total }}</strong></span>
+        <a href="{% url 'lease_create' %}" class="btn btn-primary shadow-sm">
+            <i class="bi bi-plus-lg me-1"></i> Neuer Mietvertrag
+        </a>
+    </div>
 </div>
 
 <h4 class="fw-semibold mb-3">Laufende Mietverträge</h4>
@@ -22,6 +25,7 @@
                     <th>Verwalter</th>
                     <th>Einzug</th>
                     <th>Auszug</th>
+                    <th>Erinnerungen</th>
                     <th>HMZ Netto</th>
                     <th>BK Netto</th>
                     <th>Heizung Netto</th>
@@ -29,7 +33,7 @@
             </thead>
             <tbody>
                 {% for lease in active_leases %}
-                <tr>
+                <tr class="{% if lease.reminder_items %}lease-row-has-reminders{% endif %}">
                     <td class="text-center">
                         <a href="{% url 'lease_update' lease.pk %}" class="btn btn-sm btn-outline-secondary me-1">
                             <i class="bi bi-pencil"></i>
@@ -54,13 +58,26 @@
                     <td>{{ lease.manager|default:"—" }}</td>
                     <td>{{ lease.entry_date|date:"d.m.Y" }}</td>
                     <td>{{ lease.exit_date|date:"d.m.Y"|default:"—" }}</td>
+                    <td>
+                        {% if lease.reminder_items %}
+                            <div class="d-flex flex-column gap-1">
+                                {% for reminder in lease.reminder_items %}
+                                    <span class="badge text-start lease-reminder-badge {% if reminder.is_overdue %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                                        {{ reminder.rule_title }} · {{ reminder.due_date|date:"d.m.Y" }}
+                                    </span>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
                     <td>{{ lease.net_rent }}</td>
                     <td>{{ lease.operating_costs_net }}</td>
                     <td>{{ lease.heating_costs_net }}</td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="10" class="text-center py-5 text-muted">Keine Mietverträge gefunden.</td>
+                    <td colspan="11" class="text-center py-5 text-muted">Keine Mietverträge gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -80,6 +97,7 @@
                     <th>Verwalter</th>
                     <th>Einzug</th>
                     <th>Auszug</th>
+                    <th>Erinnerungen</th>
                     <th>HMZ Netto</th>
                     <th>BK Netto</th>
                     <th>Heizung Netto</th>
@@ -104,13 +122,20 @@
                     <td>{{ lease.manager|default:"—" }}</td>
                     <td>{{ lease.entry_date|date:"d.m.Y" }}</td>
                     <td>{{ lease.exit_date|date:"d.m.Y"|default:"—" }}</td>
+                    <td>
+                        {% if lease.reminder_items %}
+                            <span class="badge text-bg-warning">{{ lease.reminder_items|length }}</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
                     <td>{{ lease.net_rent }}</td>
                     <td>{{ lease.operating_costs_net }}</td>
                     <td>{{ lease.heating_costs_net }}</td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="9" class="text-center py-5 text-muted">Keine Mietverträge gefunden.</td>
+                    <td colspan="10" class="text-center py-5 text-muted">Keine Mietverträge gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>

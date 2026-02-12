@@ -379,6 +379,79 @@ class LeaseAgreement(models.Model):
         return f"{self.unit} · {self.entry_date}"
 
 
+class ReminderRuleConfig(models.Model):
+    code = models.CharField(
+        max_length=80,
+        unique=True,
+        verbose_name=_("Code"),
+    )
+    title = models.CharField(
+        max_length=255,
+        verbose_name=_("Titel"),
+    )
+    lead_months = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(60)],
+        verbose_name=_("Vorlauf (Monate)"),
+        help_text=_("Wie viele Monate vor dem Termin erinnert werden soll."),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_("Aktiv"),
+    )
+    sort_order = models.PositiveIntegerField(
+        default=100,
+        verbose_name=_("Sortierung"),
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_("Erstellt am"),
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_("Aktualisiert am"),
+    )
+
+    class Meta:
+        verbose_name = _("Erinnerungsregel")
+        verbose_name_plural = _("Erinnerungsregeln")
+        ordering = ["sort_order", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.code})"
+
+
+class ReminderEmailLog(models.Model):
+    period_start = models.DateField(verbose_name=_("Periode ab"))
+    recipient_email = models.EmailField(verbose_name=_("Empfänger-E-Mail"))
+    rule_code = models.CharField(max_length=80, verbose_name=_("Regel-Code"))
+    lease = models.ForeignKey(
+        "LeaseAgreement",
+        on_delete=models.CASCADE,
+        related_name="reminder_email_logs",
+        verbose_name=_("Mietvertrag"),
+    )
+    due_date = models.DateField(verbose_name=_("Fällig am"))
+    sent_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Gesendet am"))
+
+    class Meta:
+        verbose_name = _("Erinnerungsversand")
+        verbose_name_plural = _("Erinnerungsversände")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["period_start", "recipient_email", "rule_code", "lease", "due_date"],
+                name="uniq_reminder_mail_period_recipient_rule_lease_due",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["period_start", "recipient_email"]),
+            models.Index(fields=["rule_code", "due_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.recipient_email} · {self.rule_code} · {self.due_date}"
+
+
 class Abrechnungslauf(models.Model):
     liegenschaft = models.ForeignKey(
         "Property",
@@ -469,6 +542,199 @@ class Abrechnungsschreiben(models.Model):
 
     def __str__(self) -> str:
         return f"{self.lauf} · {self.mietervertrag}"
+
+
+class VpiIndexValue(models.Model):
+    month = models.DateField(
+        unique=True,
+        verbose_name=_("Monat"),
+        help_text=_("Monatswert als erster Tag des Monats (z. B. 01.01.2026)."),
+    )
+    index_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        verbose_name=_("VPI 2020"),
+    )
+    is_released = models.BooleanField(
+        default=False,
+        verbose_name=_("Veröffentlicht"),
+    )
+    released_at = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Veröffentlicht am"),
+    )
+    note = models.TextField(
+        blank=True,
+        verbose_name=_("Notiz"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
+
+    class Meta:
+        verbose_name = _("VPI-Indexwert")
+        verbose_name_plural = _("VPI-Indexwerte")
+        ordering = ["-month", "-id"]
+
+    def clean(self):
+        super().clean()
+        if self.month and self.month.day != 1:
+            raise ValidationError({"month": _("Der Monat muss auf den 1. des Monats gesetzt sein.")})
+
+    def __str__(self) -> str:
+        return f"{self.month:%m/%Y} · {self.index_value}"
+
+
+class VpiAdjustmentRun(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", _("Entwurf")
+        APPLIED = "applied", _("Angewendet")
+
+    index_value = models.ForeignKey(
+        "VpiIndexValue",
+        on_delete=models.PROTECT,
+        related_name="adjustment_runs",
+        verbose_name=_("VPI-Indexwert"),
+    )
+    run_date = models.DateField(verbose_name=_("Laufdatum"))
+    brief_nummer_start = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Startnummer Brief"),
+        help_text=_("Fortlaufende Startnummer für diesen Brieflauf (muss bestätigt werden)."),
+    )
+    brief_freitext = models.TextField(
+        blank=True,
+        verbose_name=_("Brief-Freitext"),
+        help_text=_("Optionaler Freitext, der in allen Schreiben dieses Laufs angezeigt wird."),
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        verbose_name=_("Status"),
+    )
+    applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Angewendet am"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
+
+    class Meta:
+        verbose_name = _("VPI-Anpassungslauf")
+        verbose_name_plural = _("VPI-Anpassungsläufe")
+        ordering = ["-run_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["index_value"],
+                name="uniq_vpi_adjustment_run_index_value",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"VPI-Lauf {self.index_value.month:%m/%Y} · {self.run_date:%d.%m.%Y}"
+
+
+class VpiAdjustmentLetter(models.Model):
+    run = models.ForeignKey(
+        "VpiAdjustmentRun",
+        on_delete=models.CASCADE,
+        related_name="letters",
+        verbose_name=_("VPI-Anpassungslauf"),
+    )
+    lease = models.ForeignKey(
+        "LeaseAgreement",
+        on_delete=models.PROTECT,
+        related_name="vpi_adjustment_letters",
+        verbose_name=_("Mietvertrag"),
+    )
+    unit = models.ForeignKey(
+        "Unit",
+        on_delete=models.PROTECT,
+        related_name="vpi_adjustment_letters",
+        verbose_name=_("Einheit"),
+    )
+    effective_date = models.DateField(verbose_name=_("Wirksam ab"))
+    old_index_value = models.DecimalField(max_digits=10, decimal_places=2, verbose_name=_("Alter Indexwert"))
+    new_index_value = models.DecimalField(max_digits=10, decimal_places=2, verbose_name=_("Neuer Indexwert"))
+    factor = models.DecimalField(max_digits=12, decimal_places=6, verbose_name=_("Faktor"))
+    old_hmz_net = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Alter HMZ Netto"))
+    new_hmz_net = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Neuer HMZ Netto"))
+    delta_hmz_net = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Differenz HMZ Netto"))
+    catchup_months = models.PositiveIntegerField(default=0, verbose_name=_("Monate Nachverrechnung"))
+    catchup_net_total = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        verbose_name=_("Nachverrechnung Netto"),
+    )
+    catchup_tax_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("10.00"),
+        verbose_name=_("Nachverrechnung USt (%)"),
+    )
+    catchup_gross_total = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        verbose_name=_("Nachverrechnung Brutto"),
+    )
+    skip_reason = models.CharField(
+        max_length=255,
+        blank=True,
+        verbose_name=_("Übersprungen wegen"),
+    )
+    pdf_datei = models.ForeignKey(
+        "Datei",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vpi_adjustment_letters",
+        verbose_name=_("Brief-PDF"),
+    )
+    generated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("PDF erzeugt am"),
+    )
+    laufende_nummer = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Laufende Nummer"),
+    )
+    catchup_booking = models.ForeignKey(
+        "Buchung",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vpi_adjustment_letters",
+        verbose_name=_("Nachverrechnungs-Buchung"),
+    )
+    applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Angewendet am"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
+
+    class Meta:
+        verbose_name = _("VPI-Anpassungsschreiben")
+        verbose_name_plural = _("VPI-Anpassungsschreiben")
+        ordering = ["unit__name", "lease_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "lease"],
+                name="uniq_vpi_adjustment_letter_run_lease",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.run} · {self.lease}"
 
 
 class BankTransaktion(models.Model):

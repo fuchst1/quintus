@@ -22,6 +22,11 @@ from .models import (
     Property,
     Tenant,
     Unit,
+    ReminderRuleConfig,
+    ReminderEmailLog,
+    VpiIndexValue,
+    VpiAdjustmentRun,
+    VpiAdjustmentLetter,
 )
 from .services.files import DateiService
 
@@ -257,6 +262,65 @@ class DateiOperationLogAdmin(admin.ModelAdmin):
         "object_id",
         "detail",
     )
+
+
+@admin.register(ReminderRuleConfig)
+class ReminderRuleConfigAdmin(admin.ModelAdmin):
+    list_display = ("code", "title", "lead_months", "is_active", "sort_order", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("code", "title")
+    ordering = ("sort_order", "code")
+
+
+@admin.register(ReminderEmailLog)
+class ReminderEmailLogAdmin(admin.ModelAdmin):
+    list_display = ("period_start", "recipient_email", "rule_code", "lease", "due_date", "sent_at")
+    list_filter = ("period_start", "rule_code", "sent_at")
+    search_fields = ("recipient_email", "rule_code", "lease__unit__name", "lease__unit__property__name")
+    readonly_fields = ("period_start", "recipient_email", "rule_code", "lease", "due_date", "sent_at")
+    ordering = ("-sent_at",)
+
+
+@admin.register(VpiIndexValue)
+class VpiIndexValueAdmin(admin.ModelAdmin):
+    list_display = ("month", "index_value", "is_released", "released_at", "updated_at")
+    list_filter = ("is_released", "released_at")
+    search_fields = ("month", "note")
+    ordering = ("-month",)
+
+
+@admin.register(VpiAdjustmentRun)
+class VpiAdjustmentRunAdmin(admin.ModelAdmin):
+    list_display = (
+        "index_value",
+        "run_date",
+        "status",
+        "brief_nummer_start",
+        "applied_at",
+        "created_at",
+    )
+    list_filter = ("status", "run_date")
+    search_fields = ("index_value__month",)
+    ordering = ("-run_date", "-id")
+
+
+@admin.register(VpiAdjustmentLetter)
+class VpiAdjustmentLetterAdmin(admin.ModelAdmin):
+    list_display = (
+        "run",
+        "laufende_nummer",
+        "lease",
+        "effective_date",
+        "old_hmz_net",
+        "new_hmz_net",
+        "catchup_gross_total",
+        "generated_at",
+        "applied_at",
+    )
+    list_filter = ("run__run_date", "generated_at", "applied_at")
+    search_fields = ("lease__unit__name", "lease__unit__property__name", "skip_reason")
+    ordering = ("run__run_date", "unit__name", "lease_id")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(Abrechnungslauf)

@@ -1,0 +1,68 @@
+{% extends "webapp/base.html" %}
+
+{% block page_title %}Erinnerungen{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h3 class="fw-bold mb-1">Erinnerungsregeln</h3>
+        <p class="text-muted mb-0">Vorlauf und Aktivität für automatische Erinnerungen konfigurieren.</p>
+    </div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            {{ formset.management_form }}
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Code</th>
+                            <th>Titel</th>
+                            <th>Vorlauf (Monate)</th>
+                            <th class="text-center">Aktiv</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for form in formset %}
+                            <tr>
+                                <td>
+                                    <span class="fw-semibold">{{ form.instance.code }}</span>
+                                    {{ form.id }}
+                                </td>
+                                <td>
+                                    {{ form.title }}
+                                    {% if form.title.errors %}
+                                        <div class="text-danger small mt-1">{{ form.title.errors|join:", " }}</div>
+                                    {% endif %}
+                                </td>
+                                <td style="max-width: 180px;">
+                                    {{ form.lead_months }}
+                                    {% if form.lead_months.errors %}
+                                        <div class="text-danger small mt-1">{{ form.lead_months.errors|join:", " }}</div>
+                                    {% endif %}
+                                </td>
+                                <td class="text-center">
+                                    <div class="form-check d-inline-flex justify-content-center">
+                                        {{ form.is_active }}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="4" class="text-center text-muted py-4">Keine Erinnerungsregeln vorhanden.</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="d-flex justify-content-end">
+                <button type="submit" class="btn btn-primary px-4">Speichern</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

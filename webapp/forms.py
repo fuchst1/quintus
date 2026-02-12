@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import CharField, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
-from django.forms import inlineformset_factory
+from django.forms import inlineformset_factory, modelformset_factory
 from .models import (
     BankTransaktion,
     BetriebskostenBeleg,
@@ -18,8 +18,10 @@ from .models import (
     Ownership,
     Owner,
     Property,
+    VpiIndexValue,
     Tenant,
     Unit,
+    ReminderRuleConfig,
 )
 from .services.files import DateiService
 
@@ -192,6 +194,64 @@ class LeaseAgreementForm(forms.ModelForm):
         if entry_date and exit_date and exit_date < entry_date:
             self.add_error("exit_date", "Auszugsdatum darf nicht vor dem Einzugsdatum liegen.")
         return cleaned_data
+
+
+class ReminderRuleConfigForm(forms.ModelForm):
+    class Meta:
+        model = ReminderRuleConfig
+        fields = ["title", "lead_months", "is_active"]
+        widgets = {
+            "title": forms.TextInput(attrs={"class": "form-control"}),
+            "lead_months": forms.NumberInput(
+                attrs={"class": "form-control", "min": "0", "max": "60", "step": "1"}
+            ),
+            "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }
+
+
+ReminderRuleConfigFormSet = modelformset_factory(
+    ReminderRuleConfig,
+    form=ReminderRuleConfigForm,
+    extra=0,
+    can_delete=False,
+)
+
+
+class VpiIndexValueForm(forms.ModelForm):
+    month = forms.DateField(
+        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+        input_formats=["%Y-%m-%d", "%d.%m.%Y"],
+    )
+
+    class Meta:
+        model = VpiIndexValue
+        fields = [
+            "month",
+            "index_value",
+            "is_released",
+            "released_at",
+            "note",
+        ]
+        widgets = {
+            "index_value": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
+            "is_released": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "released_at": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
+            "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+        }
+
+    def clean_month(self):
+        value = self.cleaned_data["month"]
+        if value.day != 1:
+            raise forms.ValidationError("Monat muss auf den 1. des Monats gesetzt sein.")
+        return value
+
+
+VpiIndexValueFormSet = modelformset_factory(
+    VpiIndexValue,
+    form=VpiIndexValueForm,
+    extra=1,
+    can_delete=False,
+)
 
 
 class MeterForm(forms.ModelForm):

@@ -1,0 +1,96 @@
+<div class="letter-wrap">
+    <div class="letter-head">
+        <div>
+            <div><strong>{{ payload.sender_name }}</strong></div>
+            {% if payload.sender_contact %}<div>{{ payload.sender_contact }}</div>{% endif %}
+            {% if payload.sender_email %}<div>{{ payload.sender_email }}</div>{% endif %}
+            {% if payload.sender_phone %}<div>{{ payload.sender_phone }}</div>{% endif %}
+        </div>
+        <div>
+            <div><strong>Dokument</strong></div>
+            <div>Nr. {{ payload.document_number_display }}</div>
+            <div>Datum {{ payload.issue_date }}</div>
+        </div>
+    </div>
+
+    <div style="margin-bottom: 8mm;">
+        <div><strong>Empfänger</strong></div>
+        <div>{{ payload.tenant_names }}</div>
+        <div>{{ payload.property_name }} · {{ payload.unit_label }}</div>
+    </div>
+
+    <h2 style="margin: 0 0 5mm 0;">{{ payload.subject }}</h2>
+
+    <p>{{ payload.greeting_text }}</p>
+    <p>
+        wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020.
+        Verwendeter Indexmonat: <strong>{{ payload.index_month }}</strong>.
+        Die Anpassung ist wirksam ab <strong>{{ payload.effective_date }}</strong>.
+    </p>
+
+    {% if payload.skip_reason %}
+        <p><strong>Hinweis:</strong> {{ payload.skip_reason }}</p>
+    {% else %}
+        <table class="letter-table" role="table" aria-label="VPI-Anpassung">
+            <thead>
+                <tr>
+                    <th>Position</th>
+                    <th>Wert</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Alter Indexwert</td>
+                    <td>{{ payload.old_index_value }}</td>
+                </tr>
+                <tr>
+                    <td>Neuer Indexwert</td>
+                    <td>{{ payload.new_index_value }}</td>
+                </tr>
+                <tr>
+                    <td>Faktor</td>
+                    <td>{{ payload.factor }}</td>
+                </tr>
+                <tr>
+                    <td>HMZ bisher (netto)</td>
+                    <td>€ {{ payload.old_hmz_net_display }}</td>
+                </tr>
+                <tr>
+                    <td>HMZ neu (netto)</td>
+                    <td>€ {{ payload.new_hmz_net_display }}</td>
+                </tr>
+                <tr>
+                    <td>Differenz pro Monat (netto)</td>
+                    <td>€ {{ payload.delta_hmz_net_display }}</td>
+                </tr>
+                <tr>
+                    <td>Differenz pro Monat (brutto)</td>
+                    <td>€ {{ payload.delta_hmz_gross_display }}</td>
+                </tr>
+                {% if payload.has_catchup %}
+                <tr>
+                    <td>Nachverrechnung {{ payload.catchup_period_text }}</td>
+                    <td>€ {{ payload.catchup_gross_display }} ({{ payload.catchup_months }} Monat(e))</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+
+        {% if payload.has_catchup %}
+            <p>
+                Für den Zeitraum {{ payload.catchup_period_text }} ergibt sich eine Nachverrechnung von
+                <strong>€ {{ payload.catchup_gross_display }}</strong> brutto.
+                Bitte überweisen Sie den Betrag bis spätestens <strong>{{ payload.payment_due_date }}</strong>.
+            </p>
+        {% else %}
+            <p>Es ergibt sich keine Nachverrechnung für bereits gebuchte Monate.</p>
+        {% endif %}
+    {% endif %}
+
+    {% if payload.free_text %}
+        <p>{{ payload.free_text|linebreaksbr }}</p>
+    {% endif %}
+
+    <p>Mit freundlichen Grüßen</p>
+    <p><strong>{{ payload.sender_name }}</strong></p>
+</div>

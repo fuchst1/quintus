@@ -79,6 +79,18 @@
                 BK-Briefe
             </a>
         </li>
+        <li>
+            <a href="{% url 'vpi_adjustment_run_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}active-quintus{% endif %}">
+                <i class="bi bi-graph-up-arrow me-2"></i>
+                VPI-Anpassung
+            </a>
+        </li>
+        <li>
+            <a href="{% url 'reminder_settings' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% endif %}">
+                <i class="bi bi-bell me-2"></i>
+                Erinnerungen
+            </a>
+        </li>
         <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
             Personen
         </div>

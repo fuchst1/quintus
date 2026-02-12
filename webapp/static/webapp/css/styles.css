@@ -267,6 +267,15 @@ body {
     background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
+.lease-row-has-reminders {
+    background: rgba(255, 193, 7, 0.09);
+}
+
+.lease-reminder-badge {
+    white-space: normal;
+    max-width: 280px;
+}
+
 @media (max-width: 768px) {
     .bk-finance-result__value {
         font-size: 1.45rem;
