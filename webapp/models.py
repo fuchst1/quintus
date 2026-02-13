@@ -453,6 +453,10 @@ class ReminderEmailLog(models.Model):
 
 
 class Abrechnungslauf(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", _("Entwurf")
+        APPLIED = "applied", _("Angewendet")
+
     liegenschaft = models.ForeignKey(
         "Property",
         on_delete=models.PROTECT,
@@ -470,6 +474,19 @@ class Abrechnungslauf(models.Model):
         blank=True,
         verbose_name=_("Brief-Freitext"),
         help_text=_("Optionaler Freitext, der in allen Schreiben dieses Laufs angezeigt wird."),
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+        verbose_name=_("Status"),
+    )
+    applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Angewendet am"),
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
     updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
@@ -525,6 +542,28 @@ class Abrechnungsschreiben(models.Model):
         null=True,
         blank=True,
         verbose_name=_("Laufende Nummer"),
+    )
+    settlement_booking_bk = models.ForeignKey(
+        "Buchung",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="abrechnungsschreiben_settlement_bk",
+        verbose_name=_("Ausgleichsbuchung BK"),
+    )
+    settlement_booking_hk = models.ForeignKey(
+        "Buchung",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="abrechnungsschreiben_settlement_hk",
+        verbose_name=_("Ausgleichsbuchung HK"),
+    )
+    applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Angewendet am"),
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
     updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
@@ -1216,6 +1255,45 @@ class Buchung(models.Model):
             )
 
 
+class BetriebskostenGruppe(models.Model):
+    SYSTEM_KEY_UNGROUPED = "ungrouped"
+
+    name = models.CharField(max_length=120, unique=True, verbose_name=_("Name"))
+    sort_order = models.PositiveIntegerField(default=100, verbose_name=_("Sortierung"))
+    is_active = models.BooleanField(default=True, verbose_name=_("Aktiv"))
+    system_key = models.CharField(
+        max_length=40,
+        unique=True,
+        null=True,
+        blank=True,
+        verbose_name=_("Systemschlüssel"),
+    )
+
+    class Meta:
+        verbose_name = _("Betriebskosten-Gruppe")
+        verbose_name_plural = _("Betriebskosten-Gruppen")
+        ordering = ["sort_order", "name", "id"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @classmethod
+    def get_or_create_ungrouped(cls) -> tuple["BetriebskostenGruppe", bool]:
+        return cls.objects.get_or_create(
+            system_key=cls.SYSTEM_KEY_UNGROUPED,
+            defaults={
+                "name": "Ungruppiert",
+                "sort_order": 0,
+                "is_active": True,
+            },
+        )
+
+
+def default_betriebskosten_gruppe_pk() -> int:
+    group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+    return group.pk
+
+
 class BetriebskostenBeleg(models.Model):
     class BKArt(models.TextChoices):
         STROM = "strom", _("Strom")
@@ -1233,6 +1311,13 @@ class BetriebskostenBeleg(models.Model):
         max_length=30,
         choices=BKArt.choices,
         verbose_name=_("BK-Art"),
+    )
+    ausgabengruppe = models.ForeignKey(
+        "BetriebskostenGruppe",
+        on_delete=models.PROTECT,
+        related_name="belege",
+        verbose_name=_("Ausgabengruppe"),
+        default=default_betriebskosten_gruppe_pk,
     )
     datum = models.DateField(verbose_name=_("Datum"))
     netto = models.DecimalField(max_digits=12, decimal_places=2, verbose_name=_("Netto"))

@@ -23,7 +23,7 @@
                 </div>
             {% endif %}
             <div class="row g-3">
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <label class="form-label">Liegenschaft</label>
                     {{ form.liegenschaft }}
                     {% if form.liegenschaft.errors %}
@@ -32,12 +32,21 @@
                         </div>
                     {% endif %}
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <label class="form-label">Art</label>
                     {{ form.bk_art }}
                     {% if form.bk_art.errors %}
                         <div class="invalid-feedback d-block">
                             {{ form.bk_art.errors|striptags }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Ausgabengruppe</label>
+                    {{ form.ausgabengruppe }}
+                    {% if form.ausgabengruppe.errors %}
+                        <div class="invalid-feedback d-block">
+                            {{ form.ausgabengruppe.errors|striptags }}
                         </div>
                     {% endif %}
                 </div>

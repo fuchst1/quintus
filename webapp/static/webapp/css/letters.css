@@ -1,6 +1,11 @@
 @page {
     size: A4 portrait;
-    margin: 16mm;
+    margin: 16mm 16mm 24mm 16mm;
+    @bottom-center {
+        content: "Immo-Fuchs KG – IBAN: AT82 2011 1847 2203 9000 – UID: ATU78726489 – FB: FN 592404 h";
+        color: #64748b;
+        font-size: 7pt;
+    }
 }
 
 .bk-letter-preview-container {
@@ -19,13 +24,13 @@
 }
 
 .bk-letter-letterhead {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: flex-start;
     gap: 1.2rem;
     border-bottom: 1px solid #111827;
     padding-bottom: 0.35rem;
-    margin-bottom: 1.25rem;
+    margin-bottom: 1.6rem;
 }
 
 .bk-letter-sender-name {
@@ -34,10 +39,26 @@
     margin-bottom: 0.1rem;
 }
 
+.bk-letter-logo-wrap {
+    margin: 0;
+}
+
+.bk-letter-logo {
+    display: block;
+    width: 24mm;
+    height: auto;
+}
+
 .bk-letter-letterhead-left,
+.bk-letter-letterhead-center,
 .bk-letter-letterhead-right,
 .bk-letter-recipient {
     font-size: 0.76rem;
+}
+
+.bk-letter-letterhead-center {
+    display: flex;
+    justify-content: center;
 }
 
 .bk-letter-letterhead-right {
@@ -152,6 +173,11 @@
     font-weight: 700;
 }
 
+.bk-letter-signature-subline {
+    margin-top: 0.02rem;
+    font-size: 0.74rem;
+}
+
 .bk-letter-page-break {
     page-break-before: always;
     break-before: page;
@@ -166,6 +192,14 @@
 .bk-letter-section-title {
     font-size: 0.85rem;
     margin: 0.75rem 0 0.3rem;
+}
+
+.bk-letter-expense-warning {
+    margin-top: 0.5rem;
+}
+
+.bk-letter-expense-hinweis {
+    margin-top: 0.75rem;
 }
 
 .bk-letter-global-footer {
@@ -195,11 +229,17 @@
 
 @media (max-width: 992px) {
     .bk-letter-letterhead {
+        display: flex;
         flex-direction: column;
+        gap: 0.6rem;
     }
 
     .bk-letter-letterhead-right {
         text-align: left;
+    }
+
+    .bk-letter-letterhead-center {
+        justify-content: flex-start;
     }
 
     .bk-letter-meta-inline {
@@ -210,17 +250,7 @@
 }
 
 @media print {
-    .bk-letter-sheet {
-        padding-bottom: 12mm;
-    }
-
     .bk-letter-global-footer {
-        position: fixed;
-        left: 0;
-        right: 0;
-        bottom: 6mm;
-        margin: 0;
-        padding: 0;
-        border-top: none;
+        display: none;
     }
 }

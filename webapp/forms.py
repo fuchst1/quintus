@@ -2,13 +2,14 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django import forms
 from django.core.exceptions import ValidationError
-from django.db.models import CharField, Value
+from django.db.models import CharField, Q, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.forms import inlineformset_factory, modelformset_factory
 from .models import (
     BankTransaktion,
     BetriebskostenBeleg,
+    BetriebskostenGruppe,
     Buchung,
     Datei,
     LeaseAgreement,
@@ -598,6 +599,7 @@ class BetriebskostenBelegForm(forms.ModelForm):
         fields = [
             "liegenschaft",
             "bk_art",
+            "ausgabengruppe",
             "datum",
             "netto",
             "ust_prozent",
@@ -608,6 +610,7 @@ class BetriebskostenBelegForm(forms.ModelForm):
         widgets = {
             "liegenschaft": forms.Select(attrs={"class": "form-select"}),
             "bk_art": forms.Select(attrs={"class": "form-select"}),
+            "ausgabengruppe": forms.Select(attrs={"class": "form-select"}),
             "netto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "ust_prozent": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
             "brutto": forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
@@ -616,9 +619,17 @@ class BetriebskostenBelegForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        group_queryset = BetriebskostenGruppe.objects.filter(is_active=True).order_by("sort_order", "name", "id")
+        if self.instance.pk and self.instance.ausgabengruppe_id:
+            group_queryset = BetriebskostenGruppe.objects.filter(
+                Q(is_active=True) | Q(pk=self.instance.ausgabengruppe_id)
+            ).order_by("sort_order", "name", "id")
+        self.fields["ausgabengruppe"].queryset = group_queryset
         if not self.is_bound and not self.instance.pk:
             self.fields["datum"].initial = timezone.now().date()
             self.fields["ust_prozent"].initial = Decimal("20.00")
+            ungrouped, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+            self.fields["ausgabengruppe"].initial = ungrouped.pk
         if self.instance.pk and self.instance.netto is not None and self.instance.ust_prozent is not None:
             self.fields["ust_betrag"].initial = self._calculate_ust_betrag(
                 self.instance.netto,
@@ -634,3 +645,14 @@ class BetriebskostenBelegForm(forms.ModelForm):
 
     def clean(self):
         return super().clean()
+
+
+class BetriebskostenGruppeForm(forms.ModelForm):
+    class Meta:
+        model = BetriebskostenGruppe
+        fields = ["name", "sort_order", "is_active"]
+        widgets = {
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "sort_order": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "1"}),
+            "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }

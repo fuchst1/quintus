@@ -164,6 +164,15 @@
                                                 {% endfor %}
                                             </select>
                                         </div>
+                                        <div class="col-12">
+                                            <label class="form-label small mb-1">Ausgabengruppe</label>
+                                            <select name="bk_group_{{ forloop.counter0 }}" class="form-select form-select-sm" required>
+                                                <option value="">Bitte auswählen</option>
+                                                {% for option in bk_group_choices %}
+                                                <option value="{{ option.id }}" {% if option.id|stringformat:"s" == row.bk_group_id %}selected{% endif %}>{{ option.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
                                         <div class="col-7">
                                             <label class="form-label small mb-1">BK-Art</label>
                                             <select name="bk_art_{{ forloop.counter0 }}" class="form-select form-select-sm">

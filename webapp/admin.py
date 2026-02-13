@@ -9,6 +9,7 @@ from .models import (
     Abrechnungsschreiben,
     BankTransaktion,
     BetriebskostenBeleg,
+    BetriebskostenGruppe,
     Buchung,
     Datei,
     DateiOperationLog,
@@ -153,9 +154,25 @@ class BuchungAdmin(SimpleHistoryAdmin):
 
 @admin.register(BetriebskostenBeleg)
 class BetriebskostenBelegAdmin(admin.ModelAdmin):
-    list_display = ("datum", "liegenschaft", "bk_art", "netto", "ust_prozent", "brutto")
-    list_filter = ("bk_art", "datum", "liegenschaft")
+    list_display = (
+        "datum",
+        "liegenschaft",
+        "ausgabengruppe",
+        "bk_art",
+        "netto",
+        "ust_prozent",
+        "brutto",
+    )
+    list_filter = ("ausgabengruppe", "bk_art", "datum", "liegenschaft")
     search_fields = ("buchungstext", "lieferant_name", "iban", "import_referenz")
+
+
+@admin.register(BetriebskostenGruppe)
+class BetriebskostenGruppeAdmin(admin.ModelAdmin):
+    list_display = ("name", "sort_order", "is_active", "system_key")
+    list_filter = ("is_active",)
+    search_fields = ("name", "system_key")
+    ordering = ("sort_order", "name", "id")
 
 
 @admin.register(Datei)
@@ -325,15 +342,34 @@ class VpiAdjustmentLetterAdmin(admin.ModelAdmin):
 
 @admin.register(Abrechnungslauf)
 class AbrechnungslaufAdmin(admin.ModelAdmin):
-    list_display = ("liegenschaft", "jahr", "brief_nummer_start", "brief_freitext", "created_at", "updated_at")
-    list_filter = ("jahr", "liegenschaft")
+    list_display = (
+        "liegenschaft",
+        "jahr",
+        "status",
+        "brief_nummer_start",
+        "applied_at",
+        "brief_freitext",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("jahr", "liegenschaft", "status")
     search_fields = ("liegenschaft__name",)
 
 
 @admin.register(Abrechnungsschreiben)
 class AbrechnungsschreibenAdmin(admin.ModelAdmin):
-    list_display = ("lauf", "laufende_nummer", "mietervertrag", "einheit", "pdf_datei", "generated_at")
-    list_filter = ("lauf__jahr", "lauf__liegenschaft")
+    list_display = (
+        "lauf",
+        "laufende_nummer",
+        "mietervertrag",
+        "einheit",
+        "settlement_booking_bk",
+        "settlement_booking_hk",
+        "applied_at",
+        "pdf_datei",
+        "generated_at",
+    )
+    list_filter = ("lauf__jahr", "lauf__liegenschaft", "applied_at")
     search_fields = (
         "mietervertrag__unit__name",
         "mietervertrag__tenants__first_name",

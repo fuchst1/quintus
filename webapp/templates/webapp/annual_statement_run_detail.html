@@ -20,15 +20,30 @@
             <div class="text-muted small">Anzahl Schreiben</div>
             <div class="fs-4 fw-bold">{{ letter_rows|length }}</div>
         </div>
-        <form method="post" action="{{ create_zip_url }}">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-primary">
-                <i class="bi bi-download me-1"></i>
-                Briefe erstellen (Download + Ablage)
-            </button>
-        </form>
+        <div class="d-flex gap-2">
+            <form method="post" action="{{ create_zip_url }}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-download me-1"></i>
+                    Briefe erstellen (Download + Ablage)
+                </button>
+            </form>
+            <form method="post" action="{{ apply_url }}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-success" {% if not can_apply %}disabled{% endif %}>
+                    <i class="bi bi-check2-circle me-1"></i>
+                    BK-Sollbuchungen anwenden
+                </button>
+            </form>
+        </div>
     </div>
 </div>
+
+{% if not can_apply and apply_block_reason %}
+<div class="alert alert-warning">
+    {{ apply_block_reason }}
+</div>
+{% endif %}
 
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-body">
@@ -80,6 +95,7 @@
                         <th class="text-end">Brutto gesamt</th>
                         <th class="text-end">Akonto brutto</th>
                         <th class="text-end">Saldo brutto</th>
+                        <th>Status</th>
                         <th>PDF</th>
                         <th class="text-end">Aktion</th>
                     </tr>
@@ -96,6 +112,13 @@
                             € {{ row.payload.saldo_brutto }}
                         </td>
                         <td>
+                            {% if row.letter.applied_at %}
+                            <span class="badge text-bg-success">Angewendet</span>
+                            {% else %}
+                            <span class="badge text-bg-secondary">Bereit</span>
+                            {% endif %}
+                        </td>
+                        <td>
                             {% if row.letter.pdf_datei_id %}
                             <a href="{% url 'datei_download' row.letter.pdf_datei_id %}" class="btn btn-sm btn-outline-success">Download</a>
                             <div class="small text-muted mt-1">{{ row.letter.generated_at|date:"d.m.Y H:i" }}</div>
@@ -109,7 +132,7 @@
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="8" class="text-center text-muted py-4">
+                        <td colspan="9" class="text-center text-muted py-4">
                             Für diesen Lauf sind keine abrechenbaren Einheiten vorhanden.
                         </td>
                     </tr>

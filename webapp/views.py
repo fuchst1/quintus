@@ -21,6 +21,7 @@ from .models import (
     Abrechnungslauf,
     Abrechnungsschreiben,
     BetriebskostenBeleg,
+    BetriebskostenGruppe,
     Buchung,
     Datei,
     LeaseAgreement,
@@ -39,6 +40,7 @@ from .models import (
 from .forms import (
     BankImportForm,
     BetriebskostenBelegForm,
+    BetriebskostenGruppeForm,
     BuchungForm,
     DateiUploadForm,
     LeaseAgreementForm,
@@ -252,13 +254,18 @@ class DateiDownloadView(View):
             Datei.objects.prefetch_related("zuordnungen__content_type"),
             pk=pk,
         )
-        DateiService.prepare_download(user=None, datei=datei)
-        if not datei.file:
+        download_target = datei
+        replacement = DateiService.replacement_for_archived_download(datei=datei)
+        if replacement is not None:
+            download_target = replacement
+
+        DateiService.prepare_download(user=None, datei=download_target)
+        if not download_target.file:
             raise Http404("Datei wurde nicht gefunden.")
 
-        download_name = datei.original_name or os.path.basename(datei.file.name or "")
+        download_name = download_target.original_name or os.path.basename(download_target.file.name or "")
         response = FileResponse(
-            datei.file.open("rb"),
+            download_target.file.open("rb"),
             as_attachment=True,
             filename=download_name,
         )
@@ -821,6 +828,14 @@ class BankImportView(TemplateView):
             {"id": property_obj.pk, "label": property_obj.name}
             for property_obj in Property.objects.order_by("name")
         ]
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        group_queryset = BetriebskostenGruppe.objects.filter(
+            Q(is_active=True) | Q(pk=ungrouped_group.pk)
+        ).order_by("sort_order", "name", "id")
+        context["bk_group_choices"] = [
+            {"id": group.pk, "label": group.name}
+            for group in group_queryset
+        ]
         context["bk_art_choices"] = [
             {"id": choice_value, "label": choice_label}
             for choice_value, choice_label in BetriebskostenBeleg.BKArt.choices
@@ -848,7 +863,7 @@ class BankImportView(TemplateView):
             return False
         booking_type = row.get("booking_type")
         if booking_type == "bk":
-            return bool(row.get("bk_property_id"))
+            return bool(row.get("bk_property_id") and row.get("bk_group_id"))
         return bool(row.get("lease_id") or row.get("auto_split"))
 
     def post(self, request, *args, **kwargs):
@@ -895,6 +910,8 @@ class BankImportView(TemplateView):
         skipped_count = 0
         duplicate_count = 0
         seen_references = set()
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        ungrouped_group_id = str(ungrouped_group.pk)
 
         leases = list(
             LeaseAgreement.objects.select_related("unit", "unit__property")
@@ -963,6 +980,7 @@ class BankImportView(TemplateView):
                 amount=amount,
                 property_name_map=property_name_map,
             )
+            row_defaults["bk_group_id"] = row_defaults.get("bk_group_id") or ungrouped_group_id
 
             preview_rows.append(
                 {
@@ -980,6 +998,7 @@ class BankImportView(TemplateView):
                     "candidate_lease_ids": [lease.pk for lease in candidates],
                     "lease_id": str(selected_lease.pk) if selected_lease else "",
                     "bk_property_id": row_defaults["bk_property_id"] or selected_property_id,
+                    "bk_group_id": row_defaults["bk_group_id"],
                     "bk_art": row_defaults["bk_art"],
                     "bk_ust_prozent": row_defaults["bk_ust_prozent"],
                     "dismiss": row_defaults["dismiss"],
@@ -1031,6 +1050,13 @@ class BankImportView(TemplateView):
             str(property_obj.pk): property_obj
             for property_obj in Property.objects.all()
         }
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        groups_by_id = {
+            str(group.pk): group
+            for group in BetriebskostenGruppe.objects.filter(
+                Q(is_active=True) | Q(pk=ungrouped_group.pk)
+            )
+        }
         valid_bk_art_values = {choice for choice, _ in BetriebskostenBeleg.BKArt.choices}
 
         created_buchungen = []
@@ -1065,6 +1091,12 @@ class BankImportView(TemplateView):
             row["lease_id"] = selected_lease_id
             selected_property_id = (request.POST.get(f"bk_property_{index}") or "").strip()
             row["bk_property_id"] = selected_property_id
+            selected_group_id = (
+                request.POST.get(f"bk_group_{index}")
+                or row.get("bk_group_id")
+                or str(ungrouped_group.pk)
+            ).strip()
+            row["bk_group_id"] = selected_group_id
             selected_bk_art = (
                 request.POST.get(f"bk_art_{index}") or row.get("bk_art") or BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN
             ).strip()
@@ -1188,6 +1220,11 @@ class BankImportView(TemplateView):
                 unassigned_count += 1
                 remaining_rows.append(row)
                 continue
+            ausgabengruppe = groups_by_id.get(selected_group_id)
+            if not ausgabengruppe:
+                unassigned_count += 1
+                remaining_rows.append(row)
+                continue
 
             try:
                 ust_prozent = Decimal(selected_ust_raw.replace(",", ".")).quantize(
@@ -1221,6 +1258,7 @@ class BankImportView(TemplateView):
                 BetriebskostenBeleg(
                     liegenschaft=liegenschaft,
                     bk_art=selected_bk_art,
+                    ausgabengruppe=ausgabengruppe,
                     datum=booking_date,
                     netto=netto,
                     ust_prozent=ust_prozent,
@@ -1555,6 +1593,7 @@ def infer_bank_import_row_defaults(partner_name, purpose, amount, property_name_
     defaults = {
         "booking_type": "miete" if Decimal(amount) > Decimal("0.00") else "bk",
         "bk_art": infer_bk_art_from_bank_text(partner_name, purpose),
+        "bk_group_id": "",
         "bk_ust_prozent": "20.00",
         "bk_property_id": "",
         "dismiss": False,
@@ -2015,11 +2054,32 @@ class BuchungDeleteView(DeleteView):
     success_url = reverse_lazy("buchung_list")
 
 
+class BetriebskostenGruppeListView(ListView):
+    model = BetriebskostenGruppe
+    template_name = "webapp/betriebskosten_gruppe_list.html"
+    context_object_name = "gruppen"
+    queryset = BetriebskostenGruppe.objects.order_by("sort_order", "name", "id")
+
+
+class BetriebskostenGruppeCreateView(CreateView):
+    model = BetriebskostenGruppe
+    form_class = BetriebskostenGruppeForm
+    template_name = "webapp/betriebskosten_gruppe_form.html"
+    success_url = reverse_lazy("betriebskosten_gruppe_list")
+
+
+class BetriebskostenGruppeUpdateView(UpdateView):
+    model = BetriebskostenGruppe
+    form_class = BetriebskostenGruppeForm
+    template_name = "webapp/betriebskosten_gruppe_form.html"
+    success_url = reverse_lazy("betriebskosten_gruppe_list")
+
+
 class BetriebskostenBelegListView(ListView):
     model = BetriebskostenBeleg
     template_name = "webapp/betriebskostenbeleg_list.html"
     context_object_name = "belege"
-    queryset = BetriebskostenBeleg.objects.select_related("liegenschaft").order_by("-datum", "-id")
+    queryset = BetriebskostenBeleg.objects.select_related("liegenschaft", "ausgabengruppe").order_by("-datum", "-id")
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -2029,6 +2089,11 @@ class BetriebskostenBelegListView(ListView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        context["bulk_group_choices"] = (
+            BetriebskostenGruppe.objects.filter(Q(is_active=True) | Q(pk=ungrouped_group.pk))
+            .order_by("sort_order", "name", "id")
+        )
         context["year_choices"] = getattr(self, "year_choices", [])
         context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
         return context
@@ -2070,6 +2135,8 @@ class BetriebskostenBelegCreateView(CreateView):
     def get_initial(self):
         initial = super().get_initial()
         initial["bk_art"] = BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        initial["ausgabengruppe"] = ungrouped_group.pk
 
         requested_property_id = (self.request.GET.get("liegenschaft") or "").strip()
         if requested_property_id and Property.objects.filter(pk=requested_property_id).exists():
@@ -2116,6 +2183,57 @@ class BetriebskostenBelegDeleteView(DeleteView):
     model = BetriebskostenBeleg
     template_name = "webapp/betriebskostenbeleg_confirm_delete.html"
     success_url = reverse_lazy("betriebskostenbeleg_list")
+
+
+class BetriebskostenBelegBulkGroupUpdateView(View):
+    http_method_names = ["post"]
+
+    def _get_valid_next_url(self):
+        next_url = self.request.POST.get("next")
+        if not next_url:
+            return None
+        if url_has_allowed_host_and_scheme(
+            url=next_url,
+            allowed_hosts={self.request.get_host()},
+            require_https=self.request.is_secure(),
+        ):
+            return next_url
+        return None
+
+    def post(self, request, *args, **kwargs):
+        selected_ids_raw = request.POST.getlist("selected_belege")
+        selected_group_id = (request.POST.get("bulk_group_id") or "").strip()
+        next_url = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
+
+        selected_ids: set[int] = set()
+        for value in selected_ids_raw:
+            if str(value).isdigit():
+                selected_ids.add(int(value))
+        if not selected_ids:
+            messages.warning(request, "Bitte mindestens einen Beleg auswählen.")
+            return redirect(next_url)
+
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        valid_groups_qs = BetriebskostenGruppe.objects.filter(
+            Q(is_active=True) | Q(pk=ungrouped_group.pk)
+        )
+        selected_group = valid_groups_qs.filter(pk=selected_group_id).first()
+        if selected_group is None:
+            messages.warning(request, "Bitte eine gültige Ausgabengruppe auswählen.")
+            return redirect(next_url)
+
+        queryset = BetriebskostenBeleg.objects.filter(pk__in=selected_ids)
+        if not queryset.exists():
+            messages.warning(request, "Die ausgewählten Belege konnten nicht gefunden werden.")
+            return redirect(next_url)
+
+        with transaction.atomic():
+            updated_count = queryset.update(ausgabengruppe=selected_group)
+        messages.success(
+            request,
+            f"{updated_count} Beleg(e) wurden der Gruppe „{selected_group.name}“ zugewiesen.",
+        )
+        return redirect(next_url)
 
 
 class BetriebskostenAbrechnungView(TemplateView):
@@ -2820,8 +2938,15 @@ class AnnualStatementRunDetailView(DetailView):
             "annual_statement_run_update_note",
             kwargs={"pk": self.object.pk},
         )
+        context["apply_url"] = reverse(
+            "annual_statement_run_apply",
+            kwargs={"pk": self.object.pk},
+        )
         context["next_number_suggestion"] = AnnualStatementRunService.next_letter_number_suggestion()
         context["weasyprint_available"] = AnnualStatementPdfService.weasyprint_available()
+        can_apply, apply_block_reason = service.apply_readiness()
+        context["can_apply"] = can_apply
+        context["apply_block_reason"] = apply_block_reason
         return context
 
 
@@ -2959,6 +3084,41 @@ class AnnualStatementRunGenerateLettersView(View):
         response["Content-Length"] = str(len(zip_bytes))
         response["X-Generated-Letters"] = str(generated_count)
         return response
+
+
+class AnnualStatementRunApplyView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=kwargs["pk"],
+        )
+        if run.status == Abrechnungslauf.Status.APPLIED:
+            messages.info(request, "Dieser BK-Lauf wurde bereits angewendet.")
+            return redirect("annual_statement_run_detail", pk=run.pk)
+
+        service = AnnualStatementRunService(run=run)
+        can_apply, reason = service.apply_readiness(ensure_letters=True)
+        if not can_apply:
+            messages.error(request, reason)
+            return redirect("annual_statement_run_detail", pk=run.pk)
+
+        try:
+            result = service.apply_run()
+        except RuntimeError as exc:
+            messages.error(request, str(exc))
+            return redirect("annual_statement_run_detail", pk=run.pk)
+
+        messages.success(
+            request,
+            (
+                f"BK-Sollbuchungen angewendet. Verarbeitete Schreiben: {result['processed_letters']}, "
+                f"BK-Buchungen: {result['created_bk']}, HK-Buchungen: {result['created_hk']}, "
+                f"ohne Buchung (0,00): {result['skipped_zero']}."
+            ),
+        )
+        return redirect("annual_statement_run_detail", pk=run.pk)
 
 
 class VpiAdjustmentRunListView(TemplateView):

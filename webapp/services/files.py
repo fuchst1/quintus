@@ -64,6 +64,11 @@ class DateiValidationResult:
 
 
 class DateiService:
+    GENERATED_LETTER_DESCRIPTIONS = (
+        "BK-Abrechnung ",
+        "VPI-Anpassung ",
+    )
+
     @classmethod
     def normalize_filter_key(cls, filter_key: str | None) -> str:
         key = (filter_key or "alle").strip().lower()
@@ -301,6 +306,41 @@ class DateiService:
             detail="Download freigegeben.",
         )
         return datei
+
+    @classmethod
+    def replacement_for_archived_download(cls, *, datei: Datei) -> Datei | None:
+        if not datei.is_archived:
+            return None
+
+        beschreibung = (datei.beschreibung or "").strip()
+        if not beschreibung.startswith(cls.GENERATED_LETTER_DESCRIPTIONS):
+            return None
+
+        primary_assignment = (
+            datei.zuordnungen.order_by("id")
+            .values("content_type_id", "object_id")
+            .first()
+        )
+        if primary_assignment is None:
+            return None
+
+        replacement_assignment = (
+            DateiZuordnung.objects.filter(
+                content_type_id=primary_assignment["content_type_id"],
+                object_id=primary_assignment["object_id"],
+                datei__is_archived=False,
+                datei__original_name=datei.original_name,
+                datei__kategorie=datei.kategorie,
+                datei__beschreibung=datei.beschreibung,
+            )
+            .exclude(datei_id=datei.pk)
+            .order_by("-datei__created_at", "-datei_id")
+            .first()
+        )
+        if replacement_assignment is None:
+            return None
+
+        return replacement_assignment.datei
 
     @classmethod
     def archive(cls, *, user, datei: Datei) -> Datei:

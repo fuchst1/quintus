@@ -6,6 +6,13 @@
             {% if payload.sender_zip_city %}<div>{{ payload.sender_zip_city }}</div>{% endif %}
             <div>ATU78726489</div>
         </div>
+        <div class="bk-letter-letterhead-center">
+            {% if payload.sender_logo_data_uri %}
+            <div class="bk-letter-logo-wrap">
+                <img src="{{ payload.sender_logo_data_uri }}" alt="Logo {{ payload.sender_name }}" class="bk-letter-logo">
+            </div>
+            {% endif %}
+        </div>
         <div class="bk-letter-letterhead-right">
             {% if payload.sender_phone %}<div>Mobile: {{ payload.sender_phone }}</div>{% endif %}
             {% if payload.sender_email %}<div>e-mail: {{ payload.sender_email }}</div>{% endif %}
@@ -62,9 +69,9 @@
 
     <div class="bk-letter-textblock">
         {% if payload.payment_type == "nachzahlung" %}
-        <p><strong>Nachzahlungsbetrag:</strong> € {{ payload.payment_amount_display }} (fällig bis {{ payload.payment_due_date }}).</p>
+        <p><strong>Nachzahlungsbetrag:</strong> <strong class="text-danger">€ {{ payload.payment_amount_display }}</strong>.</p>
         {% elif payload.payment_type == "guthaben" %}
-        <p><strong>Guthaben:</strong> € {{ payload.payment_amount_display }}.</p>
+        <p><strong>Guthaben:</strong> <strong class="text-success">€ {{ payload.payment_amount_display }}</strong>.</p>
         {% else %}
         <p><strong>Ergebnis:</strong> Die Abrechnung ist ausgeglichen.</p>
         {% endif %}
@@ -77,6 +84,7 @@
     <div class="bk-letter-signature">
         <p>{{ payload.closing_text }}</p>
         <p class="bk-letter-signature-name">{{ payload.sender_name }}</p>
+        <p class="bk-letter-signature-subline">i.V. Martina und Thomas Fuchs</p>
     </div>
 
     <div class="bk-letter-page-break"></div>
@@ -113,32 +121,52 @@
     </table>
 
     <h2 class="bk-letter-appendix-title">Anhang: Kostenzusammenfassung</h2>
-    <p class="bk-letter-text-small mb-2">Ausgabenübersicht für die Liegenschaft {{ payload.property_name }} im Jahr {{ payload.year }} (netto).</p>
-    <table class="bk-letter-table" role="table" aria-label="Kostenzusammenfassung">
+    <p class="bk-letter-text-small mb-2">Ausgabenübersicht für die Liegenschaft {{ payload.property_name }} im Jahr {{ payload.year }} (netto), gruppiert nach Ausgabengruppen.</p>
+    {% for section in payload.expense_group_sections %}
+    <h3 class="bk-letter-section-title">{{ section.group_name }}</h3>
+    <table class="bk-letter-table bk-letter-table-compact" role="table" aria-label="Kostengruppe {{ section.group_name }}">
         <thead>
             <tr>
-                <th>Kategorie</th>
+                <th>Datum</th>
+                <th>Position</th>
                 <th class="text-end">Kosten (Netto)</th>
             </tr>
         </thead>
         <tbody>
-            {% for row in payload.expense_summary_rows %}
+            {% for row in section.rows %}
             <tr>
-                <td>{{ row.label }}</td>
+                <td>{{ row.date_display }}</td>
+                <td>{{ row.position }}</td>
                 <td class="text-end">€ {{ row.amount_display }}</td>
             </tr>
-            {% empty %}
-            <tr>
-                <td colspan="2" class="text-center bk-letter-muted">Keine Kosten im Abrechnungsjahr vorhanden.</td>
-            </tr>
             {% endfor %}
+            <tr class="bk-letter-table-total">
+                <td colspan="2">Summe {{ section.group_name }}</td>
+                <td class="text-end">€ {{ section.group_total_display }}</td>
+            </tr>
+        </tbody>
+    </table>
+    {% empty %}
+    <table class="bk-letter-table" role="table" aria-label="Kostenzusammenfassung">
+        <tbody>
+            <tr>
+                <td class="text-center bk-letter-muted">Keine Kosten im Abrechnungsjahr vorhanden.</td>
+            </tr>
+        </tbody>
+    </table>
+    {% endfor %}
+    {% if payload.expense_has_ungrouped %}
+    <p class="bk-letter-text-small text-danger bk-letter-expense-warning">{{ payload.expense_ungrouped_warning }}</p>
+    {% endif %}
+    <table class="bk-letter-table" role="table" aria-label="Gesamtsumme Kosten">
+        <tbody>
             <tr class="bk-letter-table-total">
                 <td>Summe der Kosten</td>
                 <td class="text-end">€ {{ payload.expense_summary_total_display }}</td>
             </tr>
         </tbody>
     </table>
-    <p class="bk-letter-text-small">Auf Wunsch kann jederzeit Einsicht in die Originalbelege genommen werden.</p>
+    <p class="bk-letter-text-small bk-letter-expense-hinweis">Auf Wunsch kann jederzeit Einsicht in die Originalbelege genommen werden.</p>
 
     <div class="bk-letter-global-footer">Immo-Fuchs KG – IBAN: AT82 2011 1847 2203 9000 – UID: ATU78726489 – FB: FN 592404 h</div>
 </div>

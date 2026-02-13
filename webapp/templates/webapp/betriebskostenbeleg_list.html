@@ -5,9 +5,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Betriebskosten</h3>
-    <a href="{% url 'betriebskostenbeleg_create' %}" class="btn btn-primary shadow-sm">
-        <i class="bi bi-plus-lg me-1"></i> Neuer Beleg
-    </a>
+    <div class="d-flex gap-2">
+        <a href="{% url 'betriebskosten_gruppe_list' %}" class="btn btn-light shadow-sm">
+            <i class="bi bi-collection me-1"></i> BK-Gruppen
+        </a>
+        <a href="{% url 'betriebskostenbeleg_create' %}" class="btn btn-primary shadow-sm">
+            <i class="bi bi-plus-lg me-1"></i> Neuer Beleg
+        </a>
+    </div>
 </div>
 
 <div class="card border-0 shadow-sm mb-3">
@@ -23,10 +28,16 @@
                     autocomplete="off"
                 >
             </div>
-            <div class="col-sm-6 col-md-3 col-lg-3">
+            <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="belegPropertyFilter" class="form-label mb-1">Liegenschaft</label>
                 <select id="belegPropertyFilter" class="form-select">
                     <option value="">Alle Liegenschaften</option>
+                </select>
+            </div>
+            <div class="col-sm-6 col-md-3 col-lg-2">
+                <label for="belegGroupFilter" class="form-label mb-1">Gruppe</label>
+                <select id="belegGroupFilter" class="form-select">
+                    <option value="">Alle Gruppen</option>
                 </select>
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
@@ -35,7 +46,7 @@
                     <option value="">Alle Arten</option>
                 </select>
             </div>
-            <div class="col-sm-6 col-md-3 col-lg-2">
+            <div class="col-sm-6 col-md-3 col-lg-1">
                 <form method="get">
                     <label for="belegYearFilter" class="form-label mb-1">Jahr</label>
                     <select id="belegYearFilter" name="jahr" class="form-select" onchange="this.form.submit()">
@@ -54,104 +65,145 @@
     </div>
 </div>
 
-<div class="card border-0 shadow-sm">
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th class="text-center">Aktion</th>
-                        <th class="ps-4">
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="datum">
-                                Datum <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th>
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="liegenschaft">
-                                Liegenschaft <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th>
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="art">
-                                Art <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th class="text-end">
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="netto">
-                                Netto <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th class="text-end">
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="ust">
-                                USt % <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th class="text-end">
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="brutto">
-                                Brutto <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th>
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="text">
-                                Text <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                        <th>
-                            <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="referenz">
-                                Import-Referenz <span class="sort-indicator" aria-hidden="true"></span>
-                            </button>
-                        </th>
-                    </tr>
-                </thead>
-                <tbody id="belegTableBody">
-                    {% for beleg in belege %}
-                    <tr
-                        data-row="1"
-                        data-search="{{ beleg.datum|date:'d.m.Y' }} {{ beleg.liegenschaft.name }} {{ beleg.get_bk_art_display }} {{ beleg.buchungstext|default:'' }} {{ beleg.import_referenz|default:'' }}"
-                        data-datum="{{ beleg.datum|date:'Y-m-d' }}"
-                        data-liegenschaft="{{ beleg.liegenschaft.name }}"
-                        data-bk-art="{{ beleg.bk_art }}"
-                        data-bk-art-label="{{ beleg.get_bk_art_display }}"
-                        data-netto="{{ beleg.netto|unlocalize }}"
-                        data-ust="{{ beleg.ust_prozent|unlocalize }}"
-                        data-brutto="{{ beleg.brutto|unlocalize }}"
-                        data-text="{{ beleg.buchungstext|default:'' }}"
-                        data-referenz="{{ beleg.import_referenz|default:'' }}"
-                    >
-                        <td class="text-center">
-                            <a
-                                href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
-                                data-base-href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
-                                class="btn btn-sm btn-outline-secondary me-1 beleg-edit-link"
-                            >
-                                <i class="bi bi-pencil"></i>
-                            </a>
-                            <a href="{% url 'betriebskostenbeleg_delete' beleg.pk %}" class="btn btn-sm btn-outline-danger">
-                                <i class="bi bi-trash"></i>
-                            </a>
-                        </td>
-                        <td class="ps-4">{{ beleg.datum|date:"d.m.Y" }}</td>
-                        <td>{{ beleg.liegenschaft.name }}</td>
-                        <td>{{ beleg.get_bk_art_display }}</td>
-                        <td class="text-end">{{ beleg.netto }}</td>
-                        <td class="text-end">{{ beleg.ust_prozent }}</td>
-                        <td class="text-end fw-semibold">{{ beleg.brutto }}</td>
-                        <td>{{ beleg.buchungstext|default:"—"|truncatechars:80 }}</td>
-                        <td>{{ beleg.import_referenz|default:"—" }}</td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="9" class="text-center py-5 text-muted">Keine Betriebskostenbelege gefunden.</td>
-                    </tr>
-                    {% endfor %}
-                    <tr id="belegNoResults" class="d-none">
-                        <td colspan="9" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
-                    </tr>
-                </tbody>
-            </table>
+<form method="post" action="{% url 'betriebskostenbeleg_bulk_group_update' %}" id="belegBulkForm">
+    {% csrf_token %}
+    <input type="hidden" name="next" id="belegBulkNext" value="{% url 'betriebskostenbeleg_list' %}">
+
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-6 col-lg-4">
+                    <label for="bulkGroupSelect" class="form-label mb-1">Bulk-Aktion: Ausgabengruppe</label>
+                    <select id="bulkGroupSelect" name="bulk_group_id" class="form-select">
+                        <option value="">Bitte auswählen</option>
+                        {% for group in bulk_group_choices %}
+                        <option value="{{ group.pk }}">{{ group.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6 col-lg-3 d-grid">
+                    <button type="submit" class="btn btn-outline-primary">Gruppe zuweisen</button>
+                </div>
+                <div class="col-lg-5 text-muted small">
+                    Mehrfachauswahl über die Checkboxen in der Tabelle.
+                </div>
+            </div>
         </div>
     </div>
-</div>
+
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="text-center" style="width: 42px;">
+                                <input type="checkbox" id="selectAllBelege" class="form-check-input" aria-label="Alle auswählen">
+                            </th>
+                            <th class="text-center">Aktion</th>
+                            <th class="ps-2">
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="datum">
+                                    Datum <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="liegenschaft">
+                                    Liegenschaft <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="gruppe">
+                                    Gruppe <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="art">
+                                    Art <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th class="text-end">
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="netto">
+                                    Netto <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th class="text-end">
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="ust">
+                                    USt % <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th class="text-end">
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="brutto">
+                                    Brutto <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="text">
+                                    Text <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="referenz">
+                                    Import-Referenz <span class="sort-indicator" aria-hidden="true"></span>
+                                </button>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="belegTableBody">
+                        {% for beleg in belege %}
+                        <tr
+                            data-row="1"
+                            data-search="{{ beleg.datum|date:'d.m.Y' }} {{ beleg.liegenschaft.name }} {{ beleg.ausgabengruppe.name }} {{ beleg.get_bk_art_display }} {{ beleg.buchungstext|default:'' }} {{ beleg.import_referenz|default:'' }}"
+                            data-datum="{{ beleg.datum|date:'Y-m-d' }}"
+                            data-liegenschaft="{{ beleg.liegenschaft.name }}"
+                            data-gruppe-id="{{ beleg.ausgabengruppe_id }}"
+                            data-gruppe-label="{{ beleg.ausgabengruppe.name }}"
+                            data-bk-art="{{ beleg.bk_art }}"
+                            data-bk-art-label="{{ beleg.get_bk_art_display }}"
+                            data-netto="{{ beleg.netto|unlocalize }}"
+                            data-ust="{{ beleg.ust_prozent|unlocalize }}"
+                            data-brutto="{{ beleg.brutto|unlocalize }}"
+                            data-text="{{ beleg.buchungstext|default:'' }}"
+                            data-referenz="{{ beleg.import_referenz|default:'' }}"
+                        >
+                            <td class="text-center">
+                                <input type="checkbox" class="form-check-input beleg-select" name="selected_belege" value="{{ beleg.pk }}" aria-label="Beleg {{ beleg.pk }} auswählen">
+                            </td>
+                            <td class="text-center">
+                                <a
+                                    href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
+                                    data-base-href="{% url 'betriebskostenbeleg_update' beleg.pk %}"
+                                    class="btn btn-sm btn-outline-secondary me-1 beleg-edit-link"
+                                >
+                                    <i class="bi bi-pencil"></i>
+                                </a>
+                                <a href="{% url 'betriebskostenbeleg_delete' beleg.pk %}" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </a>
+                            </td>
+                            <td class="ps-2">{{ beleg.datum|date:"d.m.Y" }}</td>
+                            <td>{{ beleg.liegenschaft.name }}</td>
+                            <td>{{ beleg.ausgabengruppe.name }}</td>
+                            <td>{{ beleg.get_bk_art_display }}</td>
+                            <td class="text-end">{{ beleg.netto }}</td>
+                            <td class="text-end">{{ beleg.ust_prozent }}</td>
+                            <td class="text-end fw-semibold">{{ beleg.brutto }}</td>
+                            <td>{{ beleg.buchungstext|default:"—"|truncatechars:80 }}</td>
+                            <td>{{ beleg.import_referenz|default:"—" }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="11" class="text-center py-5 text-muted">Keine Betriebskostenbelege gefunden.</td>
+                        </tr>
+                        {% endfor %}
+                        <tr id="belegNoResults" class="d-none">
+                            <td colspan="11" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</form>
 {% endblock %}
 
 {% block extra_js %}
@@ -169,17 +221,23 @@
 
     const searchInput = document.getElementById("belegSearch");
     const propertyFilter = document.getElementById("belegPropertyFilter");
+    const groupFilter = document.getElementById("belegGroupFilter");
     const artFilter = document.getElementById("belegArtFilter");
     const countElement = document.getElementById("belegCount");
     const noResultsRow = document.getElementById("belegNoResults");
     const sortButtons = Array.from(document.querySelectorAll(".beleg-sort"));
     const editLinks = Array.from(document.querySelectorAll(".beleg-edit-link"));
+    const bulkForm = document.getElementById("belegBulkForm");
+    const bulkNextInput = document.getElementById("belegBulkNext");
+    const selectAllCheckbox = document.getElementById("selectAllBelege");
+    const rowCheckboxes = Array.from(document.querySelectorAll(".beleg-select"));
 
     const DEFAULT_SORT_KEY = "datum";
     const DEFAULT_SORT_DIRECTION = "desc";
     const QUERY_KEYS = {
         search: "suche",
         property: "liegenschaft",
+        group: "gruppe",
         art: "art",
         sort: "sort",
         direction: "richtung",
@@ -187,6 +245,7 @@
     const VALID_SORT_KEYS = new Set([
         "datum",
         "liegenschaft",
+        "gruppe",
         "art",
         "netto",
         "ust",
@@ -243,6 +302,13 @@
                 { sensitivity: "base" }
             ) * directionFactor;
         }
+        if (key === "gruppe") {
+            return normalize(a.dataset.gruppeLabel).localeCompare(
+                normalize(b.dataset.gruppeLabel),
+                "de",
+                { sensitivity: "base" }
+            ) * directionFactor;
+        }
         if (key === "art") {
             return normalize(a.dataset.bkArtLabel).localeCompare(
                 normalize(b.dataset.bkArtLabel),
@@ -280,22 +346,28 @@
     }
 
     const propertyValues = new Map();
+    const groupValues = new Map();
     const artValues = new Map();
     for (const row of rows) {
         if (row.dataset.liegenschaft) {
             propertyValues.set(row.dataset.liegenschaft, row.dataset.liegenschaft);
+        }
+        if (row.dataset.gruppeId) {
+            groupValues.set(row.dataset.gruppeId, row.dataset.gruppeLabel || row.dataset.gruppeId);
         }
         if (row.dataset.bkArt) {
             artValues.set(row.dataset.bkArt, row.dataset.bkArtLabel || row.dataset.bkArt);
         }
     }
     fillSelect(propertyFilter, propertyValues);
+    fillSelect(groupFilter, groupValues);
     fillSelect(artFilter, artValues);
 
     function applyStateFromQueryParams() {
         const params = new URLSearchParams(window.location.search);
         const searchValue = params.get(QUERY_KEYS.search);
         const propertyValue = params.get(QUERY_KEYS.property);
+        const groupValue = params.get(QUERY_KEYS.group);
         const artValue = params.get(QUERY_KEYS.art);
         const sortKey = params.get(QUERY_KEYS.sort);
         const sortDirection = params.get(QUERY_KEYS.direction);
@@ -305,6 +377,9 @@
         }
         if (propertyValue && propertyValues.has(propertyValue)) {
             propertyFilter.value = propertyValue;
+        }
+        if (groupValue && groupValues.has(groupValue)) {
+            groupFilter.value = groupValue;
         }
         if (artValue && artValues.has(artValue)) {
             artFilter.value = artValue;
@@ -330,6 +405,11 @@
         } else {
             params.delete(QUERY_KEYS.property);
         }
+        if (groupFilter.value) {
+            params.set(QUERY_KEYS.group, groupFilter.value);
+        } else {
+            params.delete(QUERY_KEYS.group);
+        }
         if (artFilter.value) {
             params.set(QUERY_KEYS.art, artFilter.value);
         } else {
@@ -354,11 +434,43 @@
         }
     }
 
+    function updateSelectionIndicators() {
+        if (!selectAllCheckbox) {
+            return;
+        }
+        const visibleChecked = rows.filter((row) => !row.classList.contains("d-none"))
+            .map((row) => row.querySelector(".beleg-select"))
+            .filter((checkbox) => checkbox && checkbox.checked);
+        const visibleCheckboxes = rows.filter((row) => !row.classList.contains("d-none"))
+            .map((row) => row.querySelector(".beleg-select"))
+            .filter(Boolean);
+        if (!visibleCheckboxes.length) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+            return;
+        }
+        if (visibleChecked.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+            return;
+        }
+        if (visibleChecked.length === visibleCheckboxes.length) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+            return;
+        }
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = true;
+    }
+
     function updateEditLinksWithNext() {
         if (!editLinks.length) {
             return;
         }
         const nextUrl = `${window.location.pathname}${window.location.search}`;
+        if (bulkNextInput) {
+            bulkNextInput.value = nextUrl;
+        }
         for (const link of editLinks) {
             const baseHref = link.dataset.baseHref || link.getAttribute("href");
             if (!baseHref) {
@@ -389,14 +501,16 @@
     function applyFiltersAndSorting() {
         const searchTerm = normalize(searchInput.value);
         const selectedProperty = propertyFilter.value;
+        const selectedGroup = groupFilter.value;
         const selectedArt = artFilter.value;
 
         const visibleRows = [];
         for (const row of rows) {
             const matchesSearch = !searchTerm || normalize(row.dataset.search).includes(searchTerm);
             const matchesProperty = !selectedProperty || row.dataset.liegenschaft === selectedProperty;
+            const matchesGroup = !selectedGroup || row.dataset.gruppeId === selectedGroup;
             const matchesArt = !selectedArt || row.dataset.bkArt === selectedArt;
-            const isVisible = matchesSearch && matchesProperty && matchesArt;
+            const isVisible = matchesSearch && matchesProperty && matchesGroup && matchesArt;
             row.classList.toggle("d-none", !isVisible);
             if (isVisible) {
                 visibleRows.push(row);
@@ -419,6 +533,7 @@
         updateSortIndicators();
         syncStateToQueryParams();
         updateEditLinksWithNext();
+        updateSelectionIndicators();
     }
 
     let frameRequested = false;
@@ -435,6 +550,7 @@
 
     searchInput.addEventListener("input", scheduleApply);
     propertyFilter.addEventListener("change", scheduleApply);
+    groupFilter.addEventListener("change", scheduleApply);
     artFilter.addEventListener("change", scheduleApply);
 
     for (const button of sortButtons) {
@@ -450,6 +566,36 @@
                 state.sortDirection = nextKey === "datum" ? "desc" : "asc";
             }
             scheduleApply();
+        });
+    }
+
+    if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener("change", () => {
+            for (const row of rows) {
+                if (row.classList.contains("d-none")) {
+                    continue;
+                }
+                const checkbox = row.querySelector(".beleg-select");
+                if (!checkbox) {
+                    continue;
+                }
+                checkbox.checked = selectAllCheckbox.checked;
+            }
+            updateSelectionIndicators();
+        });
+    }
+
+    for (const checkbox of rowCheckboxes) {
+        checkbox.addEventListener("change", updateSelectionIndicators);
+    }
+
+    if (bulkForm) {
+        bulkForm.addEventListener("submit", (event) => {
+            const hasSelection = rowCheckboxes.some((checkbox) => checkbox.checked);
+            if (!hasSelection) {
+                event.preventDefault();
+                window.alert("Bitte mindestens einen Beleg auswählen.");
+            }
         });
     }
 

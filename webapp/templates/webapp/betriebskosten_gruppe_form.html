@@ -1,0 +1,54 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}{% if object %}BK-Gruppe bearbeiten{% else %}Neue BK-Gruppe{% endif %}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">{% if object %}BK-Gruppe bearbeiten{% else %}Neue BK-Gruppe{% endif %}</h3>
+    <a href="{% url 'betriebskosten_gruppe_list' %}" class="btn btn-light">Zurück</a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <form method="post">
+            {% csrf_token %}
+            {% if form.errors %}
+            <div class="alert alert-danger">Bitte korrigiere die markierten Felder.</div>
+            {% endif %}
+            {% if form.non_field_errors %}
+            <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+            {% endif %}
+
+            <div class="row g-3">
+                <div class="col-md-8">
+                    <label class="form-label" for="id_name">Name</label>
+                    {{ form.name }}
+                    {% if form.name.errors %}
+                    <div class="invalid-feedback d-block">{{ form.name.errors|striptags }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label" for="id_sort_order">Sortierung</label>
+                    {{ form.sort_order }}
+                    {% if form.sort_order.errors %}
+                    <div class="invalid-feedback d-block">{{ form.sort_order.errors|striptags }}</div>
+                    {% endif %}
+                </div>
+                <div class="col-12">
+                    <div class="form-check mt-2">
+                        {{ form.is_active }}
+                        <label class="form-check-label" for="id_is_active">Aktiv</label>
+                    </div>
+                    {% if form.is_active.errors %}
+                    <div class="invalid-feedback d-block">{{ form.is_active.errors|striptags }}</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="mt-4 d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Speichern</button>
+                <a href="{% url 'betriebskosten_gruppe_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

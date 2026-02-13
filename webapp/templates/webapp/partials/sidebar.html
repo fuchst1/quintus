@@ -3,118 +3,132 @@
         <span class="fs-4 fw-bold tracking-tight">QUINTUS</span>
     </a>
     <hr style="opacity: 0.2;">
-    
+
     <ul class="nav nav-pills flex-column mb-auto">
         <li class="nav-item mb-2">
-            <a href="{% url 'dashboard' %}" class="nav-link text-white {% if request.resolver_match.url_name == 'dashboard' %}active-quintus{% endif %}">
+            <a href="{% url 'dashboard' %}" class="nav-link text-white {% if request.resolver_match.url_name == 'dashboard' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">
                 <i class="bi bi-speedometer2 me-2"></i>
                 Dashboard
             </a>
         </li>
 
-        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
-            Objekte
-        </div>
-        <li>
-            <a href="{% url 'property_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-building me-2"></i>
-                Liegenschaften
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'unit_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-door-open me-2"></i>
-                Einheiten
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'lease_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' %}active-quintus{% endif %}">
-                <i class="bi bi-file-earmark-text me-2"></i>
-                Mietverträge
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'meter_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-speedometer2 me-2"></i>
-                Zähler
-            </a>
+        <li class="sidebar-section mt-2">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' or request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' or request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}active-quintus{% endif %}" data-sidebar-section="stammdaten" aria-expanded="false">
+                <span><i class="bi bi-people me-2"></i>Stammdaten</span>
+                <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
+            </button>
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' or request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' or request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}is-open{% endif %}" data-sidebar-panel="stammdaten">
+                <li><a href="{% url 'tenant_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Mieter</a></li>
+                <li><a href="{% url 'owner_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Eigentümer</a></li>
+                <li><a href="{% url 'manager_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Verwalter</a></li>
+            </ul>
         </li>
 
-        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
-            Verwaltung
-        </div>
-        <li>
-            <a href="{% url 'bank_import' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'bank_import' %}active-quintus{% endif %}">
-                <i class="bi bi-bank me-2"></i>
-                Bankimport
-            </a>
+        <li class="sidebar-section">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' or request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' or request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}active-quintus{% endif %}" data-sidebar-section="objekte" aria-expanded="false">
+                <span><i class="bi bi-building me-2"></i>Objekte</span>
+                <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
+            </button>
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' or request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' or request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}is-open{% endif %}" data-sidebar-panel="objekte">
+                <li><a href="{% url 'property_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Liegenschaften</a></li>
+                <li><a href="{% url 'unit_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Einheiten</a></li>
+                <li><a href="{% url 'meter_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Zähler</a></li>
+            </ul>
         </li>
-        <li>
-            <a href="{% url 'offene_posten' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'offene_posten' %}active-quintus{% endif %}">
-                <i class="bi bi-exclamation-triangle me-2"></i>
-                Offene Posten
-            </a>
+
+        <li class="sidebar-section">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'bank_import' or request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' or request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' or request.resolver_match.url_name == 'offene_posten' %}active-quintus{% endif %}" data-sidebar-section="finanzen" aria-expanded="false">
+                <span><i class="bi bi-wallet2 me-2"></i>Finanzen</span>
+                <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
+            </button>
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'bank_import' or request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' or request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' or request.resolver_match.url_name == 'offene_posten' %}is-open{% endif %}" data-sidebar-panel="finanzen">
+                <li><a href="{% url 'bank_import' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'bank_import' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Bankimport</a></li>
+                <li><a href="{% url 'buchung_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Buchungen</a></li>
+                <li><a href="{% url 'betriebskostenbeleg_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Betriebskosten (Belege)</a></li>
+                <li><a href="{% url 'offene_posten' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'offene_posten' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Mieterkonto</a></li>
+            </ul>
         </li>
-        <li>
-            <a href="{% url 'buchung_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-receipt me-2"></i>
-                Buchungen
-            </a>
+
+        <li class="sidebar-section">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' or request.resolver_match.url_name == 'betriebskostenabrechnung' or request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_ensure' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_run_delete' or request.resolver_match.url_name == 'annual_statement_run_update_note' or request.resolver_match.url_name == 'annual_statement_run_generate_letters' or request.resolver_match.url_name == 'annual_statement_run_apply' or request.resolver_match.url_name == 'annual_statement_letter_preview' or request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_ensure' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_run_update_note' or request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' or request.resolver_match.url_name == 'vpi_adjustment_run_apply' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}active-quintus{% endif %}" data-sidebar-section="verwaltung" aria-expanded="false">
+                <span><i class="bi bi-briefcase me-2"></i>Verwaltung</span>
+                <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
+            </button>
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' or request.resolver_match.url_name == 'betriebskostenabrechnung' or request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_ensure' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_run_delete' or request.resolver_match.url_name == 'annual_statement_run_update_note' or request.resolver_match.url_name == 'annual_statement_run_generate_letters' or request.resolver_match.url_name == 'annual_statement_run_apply' or request.resolver_match.url_name == 'annual_statement_letter_preview' or request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_ensure' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_run_update_note' or request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' or request.resolver_match.url_name == 'vpi_adjustment_run_apply' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}is-open{% endif %}" data-sidebar-panel="verwaltung">
+                <li><a href="{% url 'lease_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Mietverträge</a></li>
+                <li><a href="{% url 'betriebskostenabrechnung' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'betriebskostenabrechnung' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">BK-Abrechnung</a></li>
+                <li><a href="{% url 'annual_statement_run_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_ensure' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_run_delete' or request.resolver_match.url_name == 'annual_statement_run_update_note' or request.resolver_match.url_name == 'annual_statement_run_generate_letters' or request.resolver_match.url_name == 'annual_statement_run_apply' or request.resolver_match.url_name == 'annual_statement_letter_preview' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">BK-Briefe</a></li>
+                <li><a href="{% url 'vpi_adjustment_run_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_ensure' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_run_update_note' or request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' or request.resolver_match.url_name == 'vpi_adjustment_run_apply' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Wertsicherung</a></li>
+            </ul>
         </li>
-        <li>
-            <a href="{% url 'betriebskostenbeleg_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-file-earmark-bar-graph me-2"></i>
-                Betriebskosten
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'betriebskostenabrechnung' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'betriebskostenabrechnung' %}active-quintus{% endif %}">
-                <i class="bi bi-calculator me-2"></i>
-                BK-Abrechnung
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'annual_statement_run_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_letter_preview' %}active-quintus{% endif %}">
-                <i class="bi bi-envelope-paper me-2"></i>
-                BK-Briefe
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'vpi_adjustment_run_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}active-quintus{% endif %}">
-                <i class="bi bi-graph-up-arrow me-2"></i>
-                VPI-Anpassung
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'reminder_settings' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% endif %}">
-                <i class="bi bi-bell me-2"></i>
-                Erinnerungen
-            </a>
-        </li>
-        <div class="text-uppercase small fw-bold mt-3 mb-2 text-white-50 px-3" style="font-size: 0.9rem; letter-spacing: 1px;">
-            Personen
-        </div>
-        <li>
-            <a href="{% url 'owner_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-people me-2"></i>
-                Eigentümer
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'tenant_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-person-badge me-2"></i>
-                Mieter
-            </a>
-        </li>
-        <li>
-            <a href="{% url 'manager_list' %}" class="nav-link text-white opacity-75 hover-light {% if request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}active-quintus{% endif %}">
-                <i class="bi bi-briefcase me-2"></i>
-                Verwalter
-            </a>
+
+        <li class="sidebar-section">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% endif %}" data-sidebar-section="einstellungen" aria-expanded="false">
+                <span><i class="bi bi-sliders me-2"></i>Einstellungen</span>
+                <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
+            </button>
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' %}is-open{% endif %}" data-sidebar-panel="einstellungen">
+                <li><a href="{% url 'betriebskosten_gruppe_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">BK-Gruppen</a></li>
+                <li><a href="{% url 'reminder_settings' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Erinnerungen</a></li>
+            </ul>
         </li>
     </ul>
 
     <hr style="opacity: 0.2;">
-    
-
 </div>
+
+<script>
+(() => {
+    const STORAGE_KEY = "quintus.sidebar.open_sections.v1";
+    const toggles = Array.from(document.querySelectorAll("[data-sidebar-section]"));
+    if (!toggles.length) {
+        return;
+    }
+
+    let storedOpen = [];
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]");
+        if (Array.isArray(parsed)) {
+            storedOpen = parsed;
+        }
+    } catch (_error) {
+        storedOpen = [];
+    }
+
+    const getPanel = (sectionId) => document.querySelector(`[data-sidebar-panel="${sectionId}"]`);
+
+    const setOpen = (toggle, panel, isOpen) => {
+        panel.classList.toggle("is-open", isOpen);
+        toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    };
+
+    const persist = () => {
+        const openIds = [];
+        for (const toggle of toggles) {
+            const sectionId = toggle.dataset.sidebarSection;
+            const panel = getPanel(sectionId);
+            if (sectionId && panel && panel.classList.contains("is-open")) {
+                openIds.push(sectionId);
+            }
+        }
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(openIds));
+    };
+
+    for (const toggle of toggles) {
+        const sectionId = toggle.dataset.sidebarSection;
+        const panel = getPanel(sectionId);
+        if (!sectionId || !panel) {
+            continue;
+        }
+
+        const hasActiveChild = Boolean(panel.querySelector(".active-quintus"));
+        const shouldBeOpen = hasActiveChild || storedOpen.includes(sectionId);
+        setOpen(toggle, panel, shouldBeOpen);
+
+        toggle.addEventListener("click", () => {
+            setOpen(toggle, panel, !panel.classList.contains("is-open"));
+            persist();
+        });
+    }
+})();
+</script>

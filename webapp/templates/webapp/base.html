@@ -15,7 +15,91 @@
         {% include "webapp/partials/sidebar.html" %}
         
         <div class="flex-grow-1 d-flex flex-column" style="height: 100vh; overflow-y: auto;">
-             <header class="py-3 px-4 bg-white border-bottom shadow-sm d-flex justify-content-between align-items-center">
+             <header class="py-3 px-4 bg-white border-bottom shadow-sm">
+                <nav aria-label="Breadcrumb" class="quintus-breadcrumb-nav mb-1">
+                    <ol class="breadcrumb mb-0">
+                        <li class="breadcrumb-item"><a href="{% url 'dashboard' %}">Dashboard</a></li>
+                        {% if request.resolver_match.url_name == 'tenant_list' or request.resolver_match.url_name == 'tenant_create' or request.resolver_match.url_name == 'tenant_update' or request.resolver_match.url_name == 'tenant_delete' or request.resolver_match.url_name == 'owner_list' or request.resolver_match.url_name == 'owner_create' or request.resolver_match.url_name == 'owner_update' or request.resolver_match.url_name == 'owner_delete' or request.resolver_match.url_name == 'manager_list' or request.resolver_match.url_name == 'manager_create' or request.resolver_match.url_name == 'manager_update' or request.resolver_match.url_name == 'manager_delete' %}
+                        <li class="breadcrumb-item">Stammdaten</li>
+                        {% elif request.resolver_match.url_name == 'property_list' or request.resolver_match.url_name == 'property_create' or request.resolver_match.url_name == 'property_update' or request.resolver_match.url_name == 'property_delete' or request.resolver_match.url_name == 'unit_list' or request.resolver_match.url_name == 'unit_create' or request.resolver_match.url_name == 'unit_update' or request.resolver_match.url_name == 'unit_delete' or request.resolver_match.url_name == 'meter_list' or request.resolver_match.url_name == 'meter_create' or request.resolver_match.url_name == 'meter_update' or request.resolver_match.url_name == 'meter_delete' or request.resolver_match.url_name == 'meter_reading_by_meter_list' or request.resolver_match.url_name == 'meter_reading_create' or request.resolver_match.url_name == 'meter_reading_update' or request.resolver_match.url_name == 'meter_reading_delete' %}
+                        <li class="breadcrumb-item">Objekte</li>
+                        {% elif request.resolver_match.url_name == 'buchung_list' or request.resolver_match.url_name == 'buchung_create' or request.resolver_match.url_name == 'buchung_update' or request.resolver_match.url_name == 'buchung_delete' or request.resolver_match.url_name == 'offene_posten' or request.resolver_match.url_name == 'bank_import' or request.resolver_match.url_name == 'betriebskostenbeleg_list' or request.resolver_match.url_name == 'betriebskostenbeleg_create' or request.resolver_match.url_name == 'betriebskostenbeleg_update' or request.resolver_match.url_name == 'betriebskostenbeleg_delete' %}
+                        <li class="breadcrumb-item">Finanzen</li>
+                        {% elif request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' or request.resolver_match.url_name == 'betriebskostenabrechnung' or request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_ensure' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_run_delete' or request.resolver_match.url_name == 'annual_statement_run_update_note' or request.resolver_match.url_name == 'annual_statement_run_generate_letters' or request.resolver_match.url_name == 'annual_statement_run_apply' or request.resolver_match.url_name == 'annual_statement_letter_preview' or request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_ensure' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_run_update_note' or request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' or request.resolver_match.url_name == 'vpi_adjustment_run_apply' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}
+                        <li class="breadcrumb-item">Verwaltung</li>
+                        {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' %}
+                        <li class="breadcrumb-item">Einstellungen</li>
+                        {% endif %}
+                        {% if request.resolver_match.url_name != 'dashboard' %}
+                        <li class="breadcrumb-item active" aria-current="page">
+                            {% if request.resolver_match.url_name == 'property_list' %}Liegenschaften
+                            {% elif request.resolver_match.url_name == 'property_create' %}Liegenschaft anlegen
+                            {% elif request.resolver_match.url_name == 'property_update' %}Liegenschaft bearbeiten
+                            {% elif request.resolver_match.url_name == 'property_delete' %}Liegenschaft löschen
+                            {% elif request.resolver_match.url_name == 'unit_list' %}Einheiten
+                            {% elif request.resolver_match.url_name == 'unit_create' %}Einheit anlegen
+                            {% elif request.resolver_match.url_name == 'unit_update' %}Einheit bearbeiten
+                            {% elif request.resolver_match.url_name == 'unit_delete' %}Einheit löschen
+                            {% elif request.resolver_match.url_name == 'lease_list' %}Mietverträge
+                            {% elif request.resolver_match.url_name == 'lease_create' %}Mietvertrag anlegen
+                            {% elif request.resolver_match.url_name == 'lease_update' %}Mietvertrag bearbeiten
+                            {% elif request.resolver_match.url_name == 'lease_delete' %}Mietvertrag löschen
+                            {% elif request.resolver_match.url_name == 'lease_detail' %}Mietvertrag Details
+                            {% elif request.resolver_match.url_name == 'meter_list' %}Zähler
+                            {% elif request.resolver_match.url_name == 'meter_create' %}Zähler anlegen
+                            {% elif request.resolver_match.url_name == 'meter_update' %}Zähler bearbeiten
+                            {% elif request.resolver_match.url_name == 'meter_delete' %}Zähler löschen
+                            {% elif request.resolver_match.url_name == 'meter_reading_by_meter_list' %}Zählerstände
+                            {% elif request.resolver_match.url_name == 'meter_reading_create' %}Zählerstand anlegen
+                            {% elif request.resolver_match.url_name == 'meter_reading_update' %}Zählerstand bearbeiten
+                            {% elif request.resolver_match.url_name == 'meter_reading_delete' %}Zählerstand löschen
+                            {% elif request.resolver_match.url_name == 'buchung_list' %}Buchungen
+                            {% elif request.resolver_match.url_name == 'buchung_create' %}Buchung anlegen
+                            {% elif request.resolver_match.url_name == 'buchung_update' %}Buchung bearbeiten
+                            {% elif request.resolver_match.url_name == 'buchung_delete' %}Buchung löschen
+                            {% elif request.resolver_match.url_name == 'offene_posten' %}Mieterkonto
+                            {% elif request.resolver_match.url_name == 'bank_import' %}Bankimport
+                            {% elif request.resolver_match.url_name == 'betriebskostenbeleg_list' %}Betriebskosten (Belege)
+                            {% elif request.resolver_match.url_name == 'betriebskostenbeleg_create' %}BK-Beleg anlegen
+                            {% elif request.resolver_match.url_name == 'betriebskostenbeleg_update' %}BK-Beleg bearbeiten
+                            {% elif request.resolver_match.url_name == 'betriebskostenbeleg_delete' %}BK-Beleg löschen
+                            {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_list' %}BK-Gruppen
+                            {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_create' %}BK-Gruppe anlegen
+                            {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_update' %}BK-Gruppe bearbeiten
+                            {% elif request.resolver_match.url_name == 'betriebskostenabrechnung' %}BK-Abrechnung
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_list' %}BK-Briefe
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_ensure' %}BK-Brieflauf anlegen
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_detail' %}BK-Brieflauf Details
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_delete' %}BK-Brieflauf löschen
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_update_note' %}BK-Brieflauf Notiz
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_generate_letters' %}BK-Briefe erstellen
+                            {% elif request.resolver_match.url_name == 'annual_statement_run_apply' %}BK-Sollbuchungen anwenden
+                            {% elif request.resolver_match.url_name == 'annual_statement_letter_preview' %}BK-Briefvorschau
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_list' %}Wertsicherung
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_ensure' %}Wertsicherung-Lauf anlegen
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_detail' %}Wertsicherung-Lauf Details
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_update_note' %}Wertsicherung-Lauf Notiz
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' %}Wertsicherung-Briefe erstellen
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_run_apply' %}Wertsicherung anwenden
+                            {% elif request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}Wertsicherung-Briefvorschau
+                            {% elif request.resolver_match.url_name == 'manager_list' %}Verwalter
+                            {% elif request.resolver_match.url_name == 'manager_create' %}Verwalter anlegen
+                            {% elif request.resolver_match.url_name == 'manager_update' %}Verwalter bearbeiten
+                            {% elif request.resolver_match.url_name == 'manager_delete' %}Verwalter löschen
+                            {% elif request.resolver_match.url_name == 'owner_list' %}Eigentümer
+                            {% elif request.resolver_match.url_name == 'owner_create' %}Eigentümer anlegen
+                            {% elif request.resolver_match.url_name == 'owner_update' %}Eigentümer bearbeiten
+                            {% elif request.resolver_match.url_name == 'owner_delete' %}Eigentümer löschen
+                            {% elif request.resolver_match.url_name == 'tenant_list' %}Mieter
+                            {% elif request.resolver_match.url_name == 'tenant_create' %}Mieter anlegen
+                            {% elif request.resolver_match.url_name == 'tenant_update' %}Mieter bearbeiten
+                            {% elif request.resolver_match.url_name == 'tenant_delete' %}Mieter löschen
+                            {% elif request.resolver_match.url_name == 'reminder_settings' %}Erinnerungen
+                            {% else %}Seite{% endif %}
+                        </li>
+                        {% endif %}
+                    </ol>
+                </nav>
                 <h2 class="h5 m-0 text-secondary">{% block page_title %}Dashboard{% endblock %}</h2>
             </header>
 

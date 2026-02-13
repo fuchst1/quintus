@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Case, Count, IntegerField, Max, Q, Value, When
 from django.utils import timezone
@@ -13,6 +16,9 @@ from django.utils.text import slugify
 from webapp.models import (
     Abrechnungslauf,
     Abrechnungsschreiben,
+    BetriebskostenBeleg,
+    BetriebskostenGruppe,
+    Buchung,
     LeaseAgreement,
 )
 from webapp.services.annual_statement_pdf_service import (
@@ -24,6 +30,8 @@ from webapp.services.operating_cost_service import OperatingCostService
 
 
 class AnnualStatementRunService:
+    _sender_logo_data_uri_cache: str | None = None
+
     def __init__(self, *, run: Abrechnungslauf):
         self.run = run
         self.property = run.liegenschaft
@@ -76,6 +84,32 @@ class AnnualStatementRunService:
         if not sequence_number:
             return "—"
         return f"{int(sequence_number):02d}/{int(year)}"
+
+    @classmethod
+    def _sender_logo_data_uri(cls) -> str:
+        if cls._sender_logo_data_uri_cache is not None:
+            return cls._sender_logo_data_uri_cache
+
+        upload_dir = Path(settings.MEDIA_ROOT) / "uploads"
+        logo_candidates = (
+            ("logo03.svg", "image/svg+xml"),
+            ("logo03.png", "image/png"),
+            ("logo03.jpg", "image/jpeg"),
+            ("logo03.jpeg", "image/jpeg"),
+        )
+        for file_name, mime_type in logo_candidates:
+            logo_path = upload_dir / file_name
+            if not logo_path.exists():
+                continue
+            try:
+                encoded = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            cls._sender_logo_data_uri_cache = f"data:{mime_type};base64,{encoded}"
+            return cls._sender_logo_data_uri_cache
+
+        cls._sender_logo_data_uri_cache = ""
+        return cls._sender_logo_data_uri_cache
 
     def _report_data(self) -> dict[str, object]:
         if self._report_data_cache is not None:
@@ -148,29 +182,91 @@ class AnnualStatementRunService:
             return f"Top {door}"
         return (letter.einheit.name or "Einheit").strip() or "Einheit"
 
-    def _expense_summary_rows(self) -> tuple[list[dict[str, object]], Decimal]:
-        expenses = self._report_data().get("financials", {}).get("expenses", {})
-        rows = [
-            {
-                "label": "Betriebskosten",
-                "amount": self._to_money_decimal(expenses.get("betriebskosten")),
-            },
-            {
-                "label": "Wasser",
-                "amount": self._to_money_decimal(expenses.get("wasser")),
-            },
-            {
-                "label": "Strom",
-                "amount": self._to_money_decimal(expenses.get("strom")),
-            },
-        ]
-        total = sum((row["amount"] for row in rows), Decimal("0.00")).quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP,
+    def _recipient_street(self, *, letter: Abrechnungsschreiben) -> str:
+        street = (self.property.street_address or "").strip()
+        door = (letter.einheit.door_number or "").strip()
+        if street and door:
+            return f"{street} / Top {door}"
+        if street:
+            return street
+        if door:
+            return f"Top {door}"
+        return ""
+
+    def _expense_group_sections(self) -> tuple[list[dict[str, object]], Decimal, bool, int, str]:
+        if self.property is None:
+            return [], Decimal("0.00"), False, 0, ""
+
+        belege = (
+            BetriebskostenBeleg.objects.select_related("ausgabengruppe")
+            .filter(
+                liegenschaft=self.property,
+                datum__gte=self.period_start,
+                datum__lte=self.period_end,
+            )
+            .order_by(
+                "ausgabengruppe__sort_order",
+                "ausgabengruppe__name",
+                "datum",
+                "id",
+            )
         )
-        for row in rows:
-            row["amount_display"] = self._format_money_at(row["amount"])
-        return rows, total
+
+        sections: list[dict[str, object]] = []
+        section_by_group_id: dict[int, dict[str, object]] = {}
+        total = Decimal("0.00")
+        ungrouped_count = 0
+
+        for beleg in belege:
+            group = beleg.ausgabengruppe
+            if group is None:
+                continue
+            group_id = int(group.pk)
+            section = section_by_group_id.get(group_id)
+            if section is None:
+                section = {
+                    "group_id": group_id,
+                    "group_name": group.name,
+                    "rows": [],
+                    "group_total": Decimal("0.00"),
+                }
+                section_by_group_id[group_id] = section
+                sections.append(section)
+
+            amount = self._to_money_decimal(beleg.netto)
+            position = (
+                (beleg.buchungstext or "").strip()
+                or (beleg.lieferant_name or "").strip()
+                or "Ohne Buchungstext"
+            )
+            section["rows"].append(
+                {
+                    "date_display": self._date_str(beleg.datum),
+                    "position": position,
+                    "amount": amount,
+                    "amount_display": self._format_money_at(amount),
+                }
+            )
+            section["group_total"] = (section["group_total"] + amount).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            total = (total + amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            if group.system_key == BetriebskostenGruppe.SYSTEM_KEY_UNGROUPED:
+                ungrouped_count += 1
+
+        for section in sections:
+            section["group_total_display"] = self._format_money_at(section["group_total"])
+
+        has_ungrouped = ungrouped_count > 0
+        warning_text = ""
+        if has_ungrouped:
+            warning_text = (
+                f"Hinweis: {ungrouped_count} Position(en) sind noch der Gruppe "
+                "„Ungruppiert“ zugeordnet."
+            )
+        return sections, total, has_ungrouped, ungrouped_count, warning_text
 
     def _meter_summary_rows(self, *, letter: Abrechnungsschreiben) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -259,6 +355,7 @@ class AnnualStatementRunService:
                 f"Betriebskostenabrechnung für den Zeitraum 01.01.{self.year} bis 31.12.{self.year}."
             ),
             "sender_name": sender_name,
+            "sender_logo_data_uri": self._sender_logo_data_uri(),
             "sender_contact": sender_contact,
             "sender_email": sender_email,
             "sender_phone": sender_phone,
@@ -267,7 +364,7 @@ class AnnualStatementRunService:
             "sender_street": (self.property.street_address or "").strip(),
             "sender_zip_city": zip_city,
             "recipient_name": tenant_names,
-            "recipient_street": (self.property.street_address or "").strip(),
+            "recipient_street": self._recipient_street(letter=letter),
             "recipient_zip_city": zip_city,
             "closing_text": "Mit freundlichen Grüßen",
             "has_sender_account": bool(sender_account),
@@ -340,6 +437,175 @@ class AnnualStatementRunService:
 
         return target_letters
 
+    def apply_readiness(self, *, ensure_letters: bool = False) -> tuple[bool, str]:
+        if self.run.status == Abrechnungslauf.Status.APPLIED:
+            return False, "Dieser BK-Lauf wurde bereits angewendet."
+
+        if ensure_letters:
+            self.ensure_letters()
+
+        letters = list(self.run.schreiben.only("id", "pdf_datei_id"))
+        if not letters:
+            return False, "Für diesen Lauf sind keine abrechenbaren Einheiten vorhanden."
+
+        missing_pdfs = [letter for letter in letters if letter.pdf_datei_id is None]
+        if missing_pdfs:
+            return False, "Bitte zuerst die BK-Briefe erzeugen, bevor Sollbuchungen angewendet werden."
+
+        return True, ""
+
+    def _settlement_components(
+        self,
+        *,
+        letter: Abrechnungsschreiben,
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        row = self._annual_rows_by_unit().get(letter.einheit_id)
+        if row is None:
+            return Decimal("0.00"), Decimal("0.00"), Decimal("0.00"), Decimal("0.00")
+
+        costs_net_10 = self._to_money_decimal(row.get("costs_net_10"))
+        costs_net_20 = self._to_money_decimal(row.get("costs_net_20"))
+        akonto_bk = self._to_money_decimal(row.get("akonto_bk"))
+        akonto_hk = self._to_money_decimal(row.get("akonto_hk"))
+
+        net_delta_10 = (costs_net_10 - akonto_bk).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        net_delta_20 = (costs_net_20 - akonto_hk).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        gross_delta_10 = (net_delta_10 * Decimal("1.10")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        gross_delta_20 = (net_delta_20 * Decimal("1.20")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return net_delta_10, gross_delta_10, net_delta_20, gross_delta_20
+
+    @staticmethod
+    def _next_available_settlement_date(
+        *,
+        lease: LeaseAgreement,
+        start_date: date,
+        categories: list[str],
+    ) -> date:
+        current = start_date
+        for _ in range(365):
+            conflict_exists = Buchung.objects.filter(
+                mietervertrag=lease,
+                typ=Buchung.Typ.SOLL,
+                kategorie__in=categories,
+                datum=current,
+            ).exists()
+            if not conflict_exists:
+                return current
+            current = current + timedelta(days=1)
+        raise RuntimeError("Konnte kein freies Datum für BK-Sollbuchungen finden.")
+
+    @transaction.atomic
+    def apply_run(self) -> dict[str, int]:
+        if self.run.status == Abrechnungslauf.Status.APPLIED:
+            return {
+                "processed_letters": 0,
+                "created_bk": 0,
+                "created_hk": 0,
+                "skipped_zero": 0,
+            }
+
+        ready, reason = self.apply_readiness(ensure_letters=True)
+        if not ready:
+            raise RuntimeError(reason)
+
+        letters = list(
+            self.run.schreiben.select_related(
+                "mietervertrag",
+                "einheit",
+                "settlement_booking_bk",
+                "settlement_booking_hk",
+            ).order_by("einheit__door_number", "einheit__name", "mietervertrag_id")
+        )
+        applied_at = timezone.now()
+        apply_date = applied_at.date()
+
+        processed_letters = 0
+        created_bk = 0
+        created_hk = 0
+        skipped_zero = 0
+
+        for letter in letters:
+            if letter.applied_at is not None:
+                continue
+
+            net_delta_10, gross_delta_10, net_delta_20, gross_delta_20 = self._settlement_components(letter=letter)
+            create_bk = net_delta_10 != Decimal("0.00")
+            create_hk = net_delta_20 != Decimal("0.00")
+            if not create_bk and not create_hk:
+                letter.applied_at = applied_at
+                letter.save(update_fields=["applied_at", "updated_at"])
+                skipped_zero += 1
+                processed_letters += 1
+                continue
+
+            categories: list[str] = []
+            if create_bk:
+                categories.append(Buchung.Kategorie.BK)
+            if create_hk:
+                categories.append(Buchung.Kategorie.HK)
+            booking_date = self._next_available_settlement_date(
+                lease=letter.mietervertrag,
+                start_date=apply_date,
+                categories=categories,
+            )
+
+            if create_bk and letter.settlement_booking_bk_id is None:
+                booking_bk = Buchung(
+                    mietervertrag=letter.mietervertrag,
+                    einheit=letter.einheit,
+                    typ=Buchung.Typ.SOLL,
+                    kategorie=Buchung.Kategorie.BK,
+                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich 10%",
+                    datum=booking_date,
+                    netto=net_delta_10,
+                    ust_prozent=Decimal("10.00"),
+                    brutto=gross_delta_10,
+                    is_settlement_adjustment=True,
+                )
+                booking_bk.full_clean(validate_unique=False, validate_constraints=False)
+                booking_bk.save()
+                letter.settlement_booking_bk = booking_bk
+                created_bk += 1
+
+            if create_hk and letter.settlement_booking_hk_id is None:
+                booking_hk = Buchung(
+                    mietervertrag=letter.mietervertrag,
+                    einheit=letter.einheit,
+                    typ=Buchung.Typ.SOLL,
+                    kategorie=Buchung.Kategorie.HK,
+                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich 20%",
+                    datum=booking_date,
+                    netto=net_delta_20,
+                    ust_prozent=Decimal("20.00"),
+                    brutto=gross_delta_20,
+                    is_settlement_adjustment=True,
+                )
+                booking_hk.full_clean(validate_unique=False, validate_constraints=False)
+                booking_hk.save()
+                letter.settlement_booking_hk = booking_hk
+                created_hk += 1
+
+            letter.applied_at = applied_at
+            letter.save(
+                update_fields=[
+                    "settlement_booking_bk",
+                    "settlement_booking_hk",
+                    "applied_at",
+                    "updated_at",
+                ]
+            )
+            processed_letters += 1
+
+        self.run.status = Abrechnungslauf.Status.APPLIED
+        self.run.applied_at = applied_at
+        self.run.save(update_fields=["status", "applied_at", "updated_at"])
+        return {
+            "processed_letters": processed_letters,
+            "created_bk": created_bk,
+            "created_hk": created_hk,
+            "skipped_zero": skipped_zero,
+        }
+
     def payload_for_letter(
         self,
         *,
@@ -355,7 +621,13 @@ class AnnualStatementRunService:
             year=self.year,
         )
         row = self._annual_rows_by_unit().get(letter.einheit_id)
-        expense_summary_rows, expense_summary_total = self._expense_summary_rows()
+        (
+            expense_group_sections,
+            expense_summary_total,
+            expense_has_ungrouped,
+            expense_ungrouped_count,
+            expense_ungrouped_warning,
+        ) = self._expense_group_sections()
         meter_summary_rows = self._meter_summary_rows(letter=letter)
 
         if row is None:
@@ -383,7 +655,11 @@ class AnnualStatementRunService:
                     "payment_hint": "Für diesen Brief liegen aktuell keine Abrechnungswerte vor.",
                     "statement_rows": [],
                     "meter_summary_rows": meter_summary_rows,
-                    "expense_summary_rows": expense_summary_rows,
+                    "expense_summary_rows": [],
+                    "expense_group_sections": expense_group_sections,
+                    "expense_has_ungrouped": expense_has_ungrouped,
+                    "expense_ungrouped_count": expense_ungrouped_count,
+                    "expense_ungrouped_warning": expense_ungrouped_warning,
                     "expense_summary_total": expense_summary_total,
                     "expense_summary_total_display": self._format_money_at(expense_summary_total),
                 }
@@ -586,7 +862,11 @@ class AnnualStatementRunService:
                 "payment_hint": payment_hint,
                 "statement_rows": statement_rows,
                 "meter_summary_rows": meter_summary_rows,
-                "expense_summary_rows": expense_summary_rows,
+                "expense_summary_rows": [],
+                "expense_group_sections": expense_group_sections,
+                "expense_has_ungrouped": expense_has_ungrouped,
+                "expense_ungrouped_count": expense_ungrouped_count,
+                "expense_ungrouped_warning": expense_ungrouped_warning,
                 "expense_summary_total": expense_summary_total,
                 "expense_summary_total_display": self._format_money_at(expense_summary_total),
             }
@@ -610,10 +890,10 @@ class AnnualStatementRunService:
     ) -> str:
         if sequence_number is None:
             sequence_number = letter.laufende_nummer
-        unit_source = letter.einheit.door_number or letter.einheit.name or f"einheit-{letter.einheit_id}"
-        unit_slug = slugify(unit_source) or f"einheit-{letter.einheit_id}"
-        number_prefix = f"{int(sequence_number):06d}_" if sequence_number else ""
-        return f"{number_prefix}BK-Abrechnung_{self.year}_{unit_slug}_{letter.mietervertrag_id}.pdf"
+        number_part = f"{int(sequence_number):02d}" if sequence_number else "00"
+        property_part = (slugify(self.property.name) or f"liegenschaft{self.property.pk}").replace("-", "").upper()
+        created_part = timezone.localdate().strftime("%Y%m%d")
+        return f"{number_part}_{self.year}_{property_part}_Betriebskostenabrechnung_{created_part}.pdf"
 
     def build_zip_filename(self) -> str:
         property_slug = slugify(self.property.name) or f"liegenschaft-{self.property.pk}"

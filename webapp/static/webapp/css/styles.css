@@ -26,6 +26,58 @@ body {
     color: #fff !important;
 }
 
+.sidebar-section-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 0;
+    text-align: left;
+    margin-bottom: 0.1rem;
+}
+
+.sidebar-section-toggle-caret {
+    font-size: 0.8rem;
+    opacity: 0.85;
+    transition: transform 0.2s ease;
+}
+
+.sidebar-section-toggle[aria-expanded="true"] .sidebar-section-toggle-caret {
+    transform: rotate(180deg);
+}
+
+.sidebar-subnav {
+    display: none;
+    margin: 0 0 0.4rem 0;
+    padding-left: 1.65rem;
+}
+
+.sidebar-subnav.is-open {
+    display: block;
+}
+
+.sidebar-subnav-link {
+    padding-top: 0.38rem;
+    padding-bottom: 0.38rem;
+    font-size: 0.93rem;
+}
+
+.quintus-breadcrumb-nav .breadcrumb-item,
+.quintus-breadcrumb-nav .breadcrumb-item a {
+    color: #6c7a8d;
+    font-size: 0.82rem;
+    text-decoration: none;
+}
+
+.quintus-breadcrumb-nav .breadcrumb-item a:hover {
+    color: #4f6076;
+    text-decoration: underline;
+}
+
+.quintus-breadcrumb-nav .breadcrumb-item.active {
+    color: #4f6076;
+    font-weight: 600;
+}
+
 /* Keep tables denser across the app */
 .table > :not(caption) > * > * {
     padding: 0.46rem 0.58rem;

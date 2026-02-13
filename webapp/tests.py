@@ -16,11 +16,13 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from .forms import BetriebskostenBelegForm, DateiUploadForm
 from .models import (
     Abrechnungslauf,
     BetriebskostenBeleg,
+    BetriebskostenGruppe,
     Buchung,
     Datei,
     DateiOperationLog,
@@ -881,6 +883,16 @@ class BetriebskostenBelegModelTests(TestCase):
         self.assertEqual(beleg.ust_prozent, Decimal("20.00"))
 
 
+class BetriebskostenGruppeModelTests(TestCase):
+    def test_get_or_create_ungrouped_is_idempotent(self):
+        first, _first_created = BetriebskostenGruppe.get_or_create_ungrouped()
+        second, second_created = BetriebskostenGruppe.get_or_create_ungrouped()
+        self.assertFalse(second_created)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.system_key, BetriebskostenGruppe.SYSTEM_KEY_UNGROUPED)
+        self.assertEqual(first.name, "Ungruppiert")
+
+
 class BetriebskostenBelegFormTests(TestCase):
     def setUp(self):
         self.property = Property.objects.create(
@@ -889,12 +901,14 @@ class BetriebskostenBelegFormTests(TestCase):
             city="Wien",
             street_address="Formgasse 8",
         )
+        self.ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
 
     def test_form_uses_user_provided_brutto_value_for_validation(self):
         form = BetriebskostenBelegForm(
             data={
                 "liegenschaft": str(self.property.pk),
                 "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                "ausgabengruppe": str(self.ungrouped_group.pk),
                 "datum": "2026-02-01",
                 "netto": "100.00",
                 "ust_prozent": "10.00",
@@ -939,14 +953,48 @@ class BetriebskostenBelegCreateViewTests(TestCase):
         response = self.client.get(reverse("betriebskostenbeleg_create"))
         self.assertEqual(response.status_code, 200)
         form = response.context["form"]
+        ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
 
         self.assertEqual(form.initial.get("liegenschaft"), self.bhg14.pk)
         self.assertEqual(
             form.initial.get("bk_art"),
             BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
         )
+        self.assertEqual(form.initial.get("ausgabengruppe"), ungrouped_group.pk)
         self.assertNotIn("lieferant_name", form.fields)
         self.assertNotIn("iban", form.fields)
+
+
+class BetriebskostenGruppeViewTests(TestCase):
+    def test_create_and_update_group(self):
+        create_response = self.client.post(
+            reverse("betriebskosten_gruppe_create"),
+            {
+                "name": "Hausreinigung",
+                "sort_order": "30",
+                "is_active": "on",
+            },
+            follow=False,
+        )
+        self.assertEqual(create_response.status_code, 302)
+        group = BetriebskostenGruppe.objects.get(name="Hausreinigung")
+        self.assertEqual(group.sort_order, 30)
+        self.assertTrue(group.is_active)
+
+        update_response = self.client.post(
+            reverse("betriebskosten_gruppe_update", args=[group.pk]),
+            {
+                "name": "Hausreinigung 2026",
+                "sort_order": "35",
+                "is_active": "",
+            },
+            follow=False,
+        )
+        self.assertEqual(update_response.status_code, 302)
+        group.refresh_from_db()
+        self.assertEqual(group.name, "Hausreinigung 2026")
+        self.assertEqual(group.sort_order, 35)
+        self.assertFalse(group.is_active)
 
 
 class BetriebskostenBelegListViewTests(TestCase):
@@ -956,6 +1004,12 @@ class BetriebskostenBelegListViewTests(TestCase):
             zip_code="1140",
             city="Wien",
             street_address="Belegweg 14",
+        )
+        self.ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
+        self.custom_group = BetriebskostenGruppe.objects.create(
+            name="Versicherung",
+            sort_order=20,
+            is_active=True,
         )
 
     def test_list_defaults_to_current_year(self):
@@ -1016,6 +1070,41 @@ class BetriebskostenBelegListViewTests(TestCase):
         self.assertEqual(len(response.context["belege"]), 1)
         self.assertEqual(response.context["belege"][0].datum.year, previous_year)
 
+    def test_bulk_group_update_assigns_selected_rows(self):
+        beleg_one = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 5, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+        beleg_two = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.WASSER,
+            datum=date(2026, 5, 11),
+            netto=Decimal("20.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("24.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+
+        response = self.client.post(
+            reverse("betriebskostenbeleg_bulk_group_update"),
+            {
+                "selected_belege": [str(beleg_one.pk), str(beleg_two.pk)],
+                "bulk_group_id": str(self.custom_group.pk),
+                "next": reverse("betriebskostenbeleg_list"),
+            },
+            follow=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        beleg_one.refresh_from_db()
+        beleg_two.refresh_from_db()
+        self.assertEqual(beleg_one.ausgabengruppe_id, self.custom_group.pk)
+        self.assertEqual(beleg_two.ausgabengruppe_id, self.custom_group.pk)
+
 
 class BetriebskostenBelegUpdateViewTests(TestCase):
     def setUp(self):
@@ -1045,6 +1134,7 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             {
                 "liegenschaft": str(self.property.pk),
                 "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                "ausgabengruppe": str(self.beleg.ausgabengruppe_id),
                 "datum": "2026-01-15",
                 "netto": "110.00",
                 "ust_prozent": "20.00",
@@ -1068,6 +1158,7 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             {
                 "liegenschaft": str(self.property.pk),
                 "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                "ausgabengruppe": str(self.beleg.ausgabengruppe_id),
                 "datum": "2026-01-15",
                 "netto": "100.00",
                 "ust_prozent": "20.00",
@@ -1339,6 +1430,7 @@ class BankImportWorkflowTests(TestCase):
         first_preview_rows = self.client.session.get("bank_import_preview_rows", [])
         self.assertEqual(len(first_preview_rows), 1)
         self.assertEqual(first_preview_rows[0]["booking_type"], "bk")
+        self.assertTrue(first_preview_rows[0]["bk_group_id"])
 
         response = self.client.post(
             reverse("bank_import"),
@@ -1356,6 +1448,11 @@ class BankImportWorkflowTests(TestCase):
         self.assertEqual(
             BetriebskostenBeleg.objects.filter(import_referenz="REF-BK-1000").count(),
             1,
+        )
+        created_beleg = BetriebskostenBeleg.objects.get(import_referenz="REF-BK-1000")
+        self.assertEqual(
+            created_beleg.ausgabengruppe.system_key,
+            BetriebskostenGruppe.SYSTEM_KEY_UNGROUPED,
         )
 
         self._upload_payload(payload)
@@ -2295,6 +2392,17 @@ class AnnualStatementLetterRunTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return response
 
+    def _create_pdf_datei(self) -> Datei:
+        return Datei.objects.create(
+            file=SimpleUploadedFile("bk.pdf", b"%PDF-1.4", content_type="application/pdf"),
+            kategorie=Datei.Kategorie.DOKUMENT,
+        )
+
+    def _mark_letters_with_pdf(self, *, run: Abrechnungslauf) -> None:
+        for letter in run.schreiben.all():
+            letter.pdf_datei = self._create_pdf_datei()
+            letter.save(update_fields=["pdf_datei", "updated_at"])
+
     def test_ensure_view_creates_run_and_letter_rows(self):
         run = self._ensure_run()
         self.assertEqual(run.schreiben.count(), 1)
@@ -2326,6 +2434,38 @@ class AnnualStatementLetterRunTests(TestCase):
         self.assertContains(response, "Summe der Kosten")
         self.assertContains(response, "Originalbelege")
         self.assertContains(response, "Immo-Fuchs KG")
+
+    def test_preview_shows_grouped_expenses_with_ungrouped_warning(self):
+        cleaning_group = BetriebskostenGruppe.objects.create(
+            name="Hausreinigung",
+            sort_order=10,
+            is_active=True,
+        )
+        BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            ausgabengruppe=cleaning_group,
+            datum=date(2026, 2, 15),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("60.00"),
+            buchungstext="Stiegenhaus Reinigung",
+        )
+
+        run = self._ensure_run()
+        letter = run.schreiben.first()
+        response = self.client.get(
+            reverse(
+                "annual_statement_letter_preview",
+                kwargs={"run_pk": run.pk, "pk": letter.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Hausreinigung")
+        self.assertContains(response, "Stiegenhaus Reinigung")
+        self.assertContains(response, "Ungruppiert")
+        self.assertContains(response, "Hinweis:")
 
     def test_money_format_uses_austrian_thousand_separator(self):
         self.assertEqual(
@@ -2384,7 +2524,10 @@ class AnnualStatementLetterRunTests(TestCase):
         file_names = archive.namelist()
         self.assertEqual(len(file_names), 1)
         self.assertTrue(file_names[0].endswith(".pdf"))
-        self.assertTrue(file_names[0].startswith("000700_"))
+        self.assertRegex(
+            file_names[0],
+            r"^700_2026_[A-Z0-9]+_Betriebskostenabrechnung_\d{8}\.pdf$",
+        )
         self.assertTrue(archive.read(file_names[0]).startswith(b"%PDF"))
 
         letter = run.schreiben.select_related("pdf_datei").get()
@@ -2427,6 +2570,26 @@ class AnnualStatementLetterRunTests(TestCase):
                 content_type=ContentType.objects.get_for_model(self.lease),
             ).exists()
         )
+
+    def test_archived_letter_download_link_resolves_to_current_pdf(self):
+        run = self._ensure_run()
+        self._generate_letters(run=run, start_number=901)
+        letter = run.schreiben.get()
+        archived_pdf_id = letter.pdf_datei_id
+        self.assertIsNotNone(archived_pdf_id)
+
+        self._generate_letters(run=run, start_number=901)
+        letter.refresh_from_db()
+        current_pdf_id = letter.pdf_datei_id
+        self.assertIsNotNone(current_pdf_id)
+        self.assertNotEqual(archived_pdf_id, current_pdf_id)
+
+        response = self.client.get(reverse("datei_download", kwargs={"pk": archived_pdf_id}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+        downloaded_bytes = b"".join(response.streaming_content)
+        with letter.pdf_datei.file.open("rb") as current_file:
+            self.assertEqual(downloaded_bytes, current_file.read())
 
     def test_delete_run_confirm_page_renders(self):
         run = self._ensure_run()
@@ -2577,6 +2740,194 @@ class AnnualStatementLetterRunTests(TestCase):
         self.assertContains(response, "Testfehler PDF")
         letter = run.schreiben.get()
         self.assertIsNone(letter.pdf_datei_id)
+
+    def test_apply_endpoint_stays_blocked_until_letters_are_generated(self):
+        run = self._ensure_run()
+        response = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(run.status, Abrechnungslauf.Status.DRAFT)
+        self.assertContains(response, "Bitte zuerst die BK-Briefe erzeugen")
+        self.assertEqual(Buchung.objects.filter(mietervertrag=self.lease, typ=Buchung.Typ.SOLL).count(), 0)
+
+    def test_apply_creates_two_soll_bookings_and_marks_run_applied(self):
+        run = self._ensure_run()
+        self._mark_letters_with_pdf(run=run)
+
+        with patch.object(
+            AnnualStatementRunService,
+            "_annual_rows_by_unit",
+            return_value={
+                self.unit.pk: {
+                    "costs_net_10": Decimal("100.00"),
+                    "costs_net_20": Decimal("50.00"),
+                    "akonto_bk": Decimal("20.00"),
+                    "akonto_hk": Decimal("10.00"),
+                }
+            },
+        ):
+            response = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.status, Abrechnungslauf.Status.APPLIED)
+        self.assertIsNotNone(run.applied_at)
+
+        letter = run.schreiben.get()
+        letter.refresh_from_db()
+        self.assertIsNotNone(letter.applied_at)
+        self.assertIsNotNone(letter.settlement_booking_bk_id)
+        self.assertIsNotNone(letter.settlement_booking_hk_id)
+
+        booking_bk = Buchung.objects.get(pk=letter.settlement_booking_bk_id)
+        booking_hk = Buchung.objects.get(pk=letter.settlement_booking_hk_id)
+        self.assertEqual(booking_bk.typ, Buchung.Typ.SOLL)
+        self.assertEqual(booking_bk.kategorie, Buchung.Kategorie.BK)
+        self.assertEqual(booking_bk.netto, Decimal("80.00"))
+        self.assertEqual(booking_bk.ust_prozent, Decimal("10.00"))
+        self.assertEqual(booking_bk.brutto, Decimal("88.00"))
+        self.assertTrue(booking_bk.is_settlement_adjustment)
+        self.assertEqual(booking_hk.typ, Buchung.Typ.SOLL)
+        self.assertEqual(booking_hk.kategorie, Buchung.Kategorie.HK)
+        self.assertEqual(booking_hk.netto, Decimal("40.00"))
+        self.assertEqual(booking_hk.ust_prozent, Decimal("20.00"))
+        self.assertEqual(booking_hk.brutto, Decimal("48.00"))
+        self.assertTrue(booking_hk.is_settlement_adjustment)
+
+    def test_apply_creates_negative_soll_bookings_for_guthaben(self):
+        run = self._ensure_run()
+        self._mark_letters_with_pdf(run=run)
+
+        with patch.object(
+            AnnualStatementRunService,
+            "_annual_rows_by_unit",
+            return_value={
+                self.unit.pk: {
+                    "costs_net_10": Decimal("20.00"),
+                    "costs_net_20": Decimal("10.00"),
+                    "akonto_bk": Decimal("100.00"),
+                    "akonto_hk": Decimal("50.00"),
+                }
+            },
+        ):
+            response = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        letter = run.schreiben.get()
+        booking_bk = Buchung.objects.get(pk=letter.settlement_booking_bk_id)
+        booking_hk = Buchung.objects.get(pk=letter.settlement_booking_hk_id)
+        self.assertEqual(booking_bk.netto, Decimal("-80.00"))
+        self.assertEqual(booking_bk.brutto, Decimal("-88.00"))
+        self.assertEqual(booking_hk.netto, Decimal("-40.00"))
+        self.assertEqual(booking_hk.brutto, Decimal("-48.00"))
+
+    def test_apply_skips_zero_components_and_still_marks_letter_applied(self):
+        run = self._ensure_run()
+        self._mark_letters_with_pdf(run=run)
+
+        with patch.object(
+            AnnualStatementRunService,
+            "_annual_rows_by_unit",
+            return_value={
+                self.unit.pk: {
+                    "costs_net_10": Decimal("0.00"),
+                    "costs_net_20": Decimal("0.00"),
+                    "akonto_bk": Decimal("0.00"),
+                    "akonto_hk": Decimal("0.00"),
+                }
+            },
+        ):
+            response = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        letter = run.schreiben.get()
+        self.assertIsNone(letter.settlement_booking_bk_id)
+        self.assertIsNone(letter.settlement_booking_hk_id)
+        self.assertIsNotNone(letter.applied_at)
+        self.assertEqual(
+            Buchung.objects.filter(
+                mietervertrag=self.lease,
+                typ=Buchung.Typ.SOLL,
+                kategorie__in=[Buchung.Kategorie.BK, Buchung.Kategorie.HK],
+            ).count(),
+            0,
+        )
+
+    def test_apply_shifts_booking_date_when_same_day_soll_exists(self):
+        run = self._ensure_run()
+        self._mark_letters_with_pdf(run=run)
+        apply_date = timezone.localdate()
+        Buchung.objects.create(
+            mietervertrag=self.lease,
+            einheit=self.unit,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.BK,
+            buchungstext="Bestehende BK-SOLL",
+            datum=apply_date,
+            netto=Decimal("1.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("1.10"),
+        )
+        Buchung.objects.create(
+            mietervertrag=self.lease,
+            einheit=self.unit,
+            typ=Buchung.Typ.SOLL,
+            kategorie=Buchung.Kategorie.HK,
+            buchungstext="Bestehende HK-SOLL",
+            datum=apply_date,
+            netto=Decimal("1.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("1.20"),
+        )
+
+        with patch.object(
+            AnnualStatementRunService,
+            "_annual_rows_by_unit",
+            return_value={
+                self.unit.pk: {
+                    "costs_net_10": Decimal("100.00"),
+                    "costs_net_20": Decimal("50.00"),
+                    "akonto_bk": Decimal("20.00"),
+                    "akonto_hk": Decimal("10.00"),
+                }
+            },
+        ):
+            response = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        letter = run.schreiben.get()
+        booking_bk = Buchung.objects.get(pk=letter.settlement_booking_bk_id)
+        booking_hk = Buchung.objects.get(pk=letter.settlement_booking_hk_id)
+        self.assertEqual(booking_bk.datum, apply_date + timedelta(days=1))
+        self.assertEqual(booking_hk.datum, apply_date + timedelta(days=1))
+
+    def test_apply_is_idempotent_when_run_already_applied(self):
+        run = self._ensure_run()
+        self._mark_letters_with_pdf(run=run)
+        fixed_rows = {
+            self.unit.pk: {
+                "costs_net_10": Decimal("100.00"),
+                "costs_net_20": Decimal("50.00"),
+                "akonto_bk": Decimal("20.00"),
+                "akonto_hk": Decimal("10.00"),
+            }
+        }
+
+        with patch.object(AnnualStatementRunService, "_annual_rows_by_unit", return_value=fixed_rows):
+            first = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+            second = self.client.post(reverse("annual_statement_run_apply", kwargs={"pk": run.pk}), follow=True)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(
+            Buchung.objects.filter(
+                mietervertrag=self.lease,
+                typ=Buchung.Typ.SOLL,
+                kategorie__in=[Buchung.Kategorie.BK, Buchung.Kategorie.HK],
+            ).count(),
+            2,
+        )
 
 
 class OperatingCostServiceTests(TestCase):
