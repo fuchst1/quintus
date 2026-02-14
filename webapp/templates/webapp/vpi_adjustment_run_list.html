@@ -4,7 +4,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold mb-0">VPI-Anpassungsläufe</h3>
-    <div class="text-muted small">VPI 2020 pflegen, freigeben und Lauf starten.</div>
+    <div class="text-muted small">VPI 2020 pflegen und Lauf starten.</div>
 </div>
 
 <div class="card border-0 shadow-sm mb-4">
@@ -19,9 +19,6 @@
                         <tr>
                             <th>Monat</th>
                             <th>VPI 2020</th>
-                            <th class="text-center">Veröffentlicht</th>
-                            <th>Veröffentlicht am</th>
-                            <th>Notiz</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -36,21 +33,10 @@
                                     {{ form.index_value }}
                                     {% if form.index_value.errors %}<div class="text-danger small mt-1">{{ form.index_value.errors|join:", " }}</div>{% endif %}
                                 </td>
-                                <td class="text-center">
-                                    <div class="form-check d-inline-flex justify-content-center">{{ form.is_released }}</div>
-                                </td>
-                                <td>
-                                    {{ form.released_at }}
-                                    {% if form.released_at.errors %}<div class="text-danger small mt-1">{{ form.released_at.errors|join:", " }}</div>{% endif %}
-                                </td>
-                                <td>
-                                    {{ form.note }}
-                                    {% if form.note.errors %}<div class="text-danger small mt-1">{{ form.note.errors|join:", " }}</div>{% endif %}
-                                </td>
                             </tr>
                         {% empty %}
                             <tr>
-                                <td colspan="5" class="text-center text-muted py-4">Keine VPI-Indexwerte vorhanden.</td>
+                                <td colspan="2" class="text-center text-muted py-4">Keine VPI-Indexwerte vorhanden.</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -68,15 +54,16 @@
         <h5 class="mb-3">Lauf öffnen oder erstellen</h5>
         <form method="get" action="{% url 'vpi_adjustment_run_ensure' %}" class="row g-3 align-items-end">
             <div class="col-md-5">
-                <label for="id_index_id" class="form-label">Freigegebener Indexmonat</label>
-                <select id="id_index_id" name="index_id" class="form-select" required>
-                    <option value="">Bitte wählen</option>
-                    {% for idx in pending_released_values %}
-                        <option value="{{ idx.pk }}">{{ idx.month|date:"m/Y" }} · {{ idx.index_value }}</option>
-                    {% endfor %}
-                </select>
-                {% if not pending_released_values %}
-                    <div class="text-muted small mt-2">Keine neuen freigegebenen Werte ohne Lauf vorhanden.</div>
+                <label for="id_latest_index" class="form-label">Aktueller Indexmonat</label>
+                <input
+                    id="id_latest_index"
+                    type="text"
+                    class="form-control"
+                    value="{% if latest_index_value %}{{ latest_index_value.month|date:'m/Y' }} · {{ latest_index_value.index_value }}{% else %}Kein Indexwert vorhanden{% endif %}"
+                    readonly
+                >
+                {% if latest_run %}
+                    <div class="text-muted small mt-2">Für den aktuellen Indexwert existiert bereits ein Lauf und wird geöffnet.</div>
                 {% endif %}
             </div>
             <div class="col-md-4">
@@ -84,7 +71,7 @@
                 <input id="id_run_date" type="date" name="run_date" value="{{ today|date:'Y-m-d' }}" class="form-control" required>
             </div>
             <div class="col-md-3">
-                <button type="submit" class="btn btn-primary w-100" {% if not pending_released_values %}disabled{% endif %}>
+                <button type="submit" class="btn btn-primary w-100" {% if not latest_index_value %}disabled{% endif %}>
                     <i class="bi bi-graph-up-arrow me-1"></i>
                     Lauf öffnen
                 </button>
@@ -123,7 +110,13 @@
                             </td>
                             <td class="text-end">{{ run.letter_count }}</td>
                             <td class="text-end">
-                                <a href="{% url 'vpi_adjustment_run_detail' run.pk %}" class="btn btn-sm btn-outline-primary">Öffnen</a>
+                                <div class="d-inline-flex gap-2">
+                                    <a href="{% url 'vpi_adjustment_run_detail' run.pk %}" class="btn btn-sm btn-outline-primary">Öffnen</a>
+                                    <form method="post" action="{% url 'vpi_adjustment_run_delete' run.pk %}" onsubmit="return confirm('Wertsicherungs-Lauf wirklich löschen?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Löschen</button>
+                                    </form>
+                                </div>
                             </td>
                         </tr>
                     {% empty %}

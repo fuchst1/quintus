@@ -156,6 +156,11 @@
     font-weight: 700;
 }
 
+.bk-letter-table-section td {
+    background: #f1f5fb;
+    font-weight: 700;
+}
+
 .bk-letter-table-total td {
     background: #f5f7fb;
     font-weight: 700;

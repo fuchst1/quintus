@@ -8,7 +8,7 @@ from itertools import combinations
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.http import FileResponse, Http404, HttpResponse
-from django.db.models import Count, DecimalField, Prefetch, Q, Sum, Value
+from django.db.models import Case, Count, DecimalField, IntegerField, Max, Prefetch, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
@@ -56,6 +56,7 @@ from .forms import (
     TenantForm,
 )
 from .services.files import DateiService
+from .services.excel_export import ExcelColumn, ExcelExportService
 from .services.annual_statement_pdf_service import AnnualStatementPdfService
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.operating_cost_service import OperatingCostService
@@ -645,6 +646,9 @@ class LeaseAgreementDetailView(DetailView):
         context["soll_summe"] = soll_summe.quantize(cent)
         context["haben_summe"] = haben_summe.quantize(cent)
         context["kontostand"] = kontostand.quantize(cent)
+        reminder_service = ReminderService(today=timezone.localdate())
+        reminder_items = reminder_service.collect_items()
+        context["lease_reminder_items"] = reminder_service.items_by_lease(reminder_items).get(self.object.pk, [])
         context["attachments_panel"] = build_attachments_panel_context(
             self.request,
             self.object,
@@ -657,7 +661,11 @@ class MeterListView(ListView):
     model = Meter
     template_name = "webapp/meter_list.html"
     context_object_name = "meters"
-    queryset = Meter.objects.select_related("property", "unit").order_by("unit__name", "meter_type", "meter_number")
+    queryset = (
+        Meter.objects.select_related("property", "unit")
+        .annotate(latest_reading_date=Max("readings__date"))
+        .order_by("unit__name", "meter_type", "meter_number")
+    )
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -1934,16 +1942,52 @@ class BuchungListView(ListView):
 
         self.year_choices = self._year_choices_for_queryset(queryset)
         self.selected_year = self._selected_year(self.year_choices)
-        return queryset.filter(datum__year=self.selected_year)
+        queryset = queryset.filter(datum__year=self.selected_year)
+
+        self.selected_search_query = (self.request.GET.get("q") or "").strip()
+        if self.selected_search_query:
+            search_term = self.selected_search_query
+            queryset = queryset.filter(
+                Q(buchungstext__icontains=search_term)
+                | Q(mietervertrag__unit__property__name__icontains=search_term)
+                | Q(mietervertrag__unit__name__icontains=search_term)
+                | Q(mietervertrag__unit__door_number__icontains=search_term)
+                | Q(kategorie__icontains=search_term)
+                | Q(typ__icontains=search_term)
+            )
+
+        self.selected_category_filter = (self.request.GET.get("kategorie") or "").strip()
+        valid_categories = {choice for choice, _label in Buchung.Kategorie.choices}
+        if self.selected_category_filter in valid_categories:
+            queryset = queryset.filter(kategorie=self.selected_category_filter)
+        else:
+            self.selected_category_filter = ""
+        return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        totals = self.object_list.aggregate(
+            total_netto=Coalesce(
+                Sum("netto"),
+                Value(Decimal("0.00")),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+            total_brutto=Coalesce(
+                Sum("brutto"),
+                Value(Decimal("0.00")),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+        )
         context["year_choices"] = getattr(self, "year_choices", [])
         context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
         context["bank_transaktion_id"] = getattr(self, "bank_transaktion_id", "")
         context["properties"] = getattr(self, "properties", [])
         context["selected_property_id"] = getattr(self, "selected_property_id", "")
         context["selected_property_filter_value"] = getattr(self, "selected_property_filter_value", "")
+        context["selected_search_query"] = getattr(self, "selected_search_query", "")
+        context["selected_category_filter"] = getattr(self, "selected_category_filter", "")
+        context["filtered_sum_netto"] = totals["total_netto"]
+        context["filtered_sum_brutto"] = totals["total_brutto"]
         return context
 
     def _selected_property(self, properties):
@@ -2004,6 +2048,64 @@ class BuchungListView(ListView):
         if year_choices:
             return year_choices[-1]
         return current_year
+
+
+class BuchungExcelExportView(BuchungListView):
+    def _selected_row_ids(self) -> list[int]:
+        raw_ids = (self.request.GET.get("ids") or "").strip()
+        if not raw_ids:
+            return []
+        ids: list[int] = []
+        seen: set[int] = set()
+        for token in raw_ids.split(","):
+            value = token.strip()
+            if not value.isdigit():
+                continue
+            pk = int(value)
+            if pk in seen:
+                continue
+            seen.add(pk)
+            ids.append(pk)
+        return ids
+
+    def _ordered_queryset(self, queryset):
+        selected_ids = self._selected_row_ids()
+        if not selected_ids:
+            return queryset
+        order_expression = Case(
+            *[When(pk=pk, then=index) for index, pk in enumerate(selected_ids)],
+            output_field=IntegerField(),
+        )
+        return queryset.filter(pk__in=selected_ids).order_by(order_expression)
+
+    def render_to_response(self, context, **response_kwargs):
+        queryset = self._ordered_queryset(context["buchungen"])
+        rows = [
+            {
+                "datum": buchung.datum.strftime("%d.%m.%Y"),
+                "mietvertrag": str(buchung.mietervertrag) if buchung.mietervertrag else "—",
+                "netto": buchung.netto,
+                "brutto": buchung.brutto,
+                "kategorie": buchung.get_kategorie_display(),
+                "buchungstext": buchung.buchungstext or "",
+            }
+            for buchung in queryset
+        ]
+        columns = [
+            ExcelColumn(key="datum", label="Datum"),
+            ExcelColumn(key="mietvertrag", label="Mietvertrag"),
+            ExcelColumn(key="netto", label="Netto"),
+            ExcelColumn(key="brutto", label="Brutto"),
+            ExcelColumn(key="kategorie", label="Kategorie"),
+            ExcelColumn(key="buchungstext", label="Buchungstext"),
+        ]
+        filename = f"buchungen_{timezone.localdate().isoformat()}.xlsx"
+        return ExcelExportService.build_response(
+            filename=filename,
+            sheet_name="Buchungen",
+            columns=columns,
+            rows=rows,
+        )
 
 
 class BuchungCreateView(CreateView):
@@ -2085,10 +2187,50 @@ class BetriebskostenBelegListView(ListView):
         queryset = super().get_queryset()
         self.year_choices = self._year_choices_for_queryset(queryset)
         self.selected_year = self._selected_year(self.year_choices)
-        return queryset.filter(datum__year=self.selected_year)
+        queryset = queryset.filter(datum__year=self.selected_year)
+
+        self.selected_search_query = (self.request.GET.get("suche") or "").strip()
+        if self.selected_search_query:
+            search_term = self.selected_search_query
+            queryset = queryset.filter(
+                Q(buchungstext__icontains=search_term)
+                | Q(import_referenz__icontains=search_term)
+                | Q(liegenschaft__name__icontains=search_term)
+                | Q(ausgabengruppe__name__icontains=search_term)
+                | Q(bk_art__icontains=search_term)
+            )
+
+        self.selected_property_filter = (self.request.GET.get("liegenschaft") or "").strip()
+        if self.selected_property_filter:
+            queryset = queryset.filter(liegenschaft__name=self.selected_property_filter)
+
+        raw_group_filter = (self.request.GET.get("gruppe") or "").strip()
+        self.selected_group_filter = ""
+        if raw_group_filter.isdigit() and BetriebskostenGruppe.objects.filter(pk=int(raw_group_filter)).exists():
+            self.selected_group_filter = raw_group_filter
+            queryset = queryset.filter(ausgabengruppe_id=int(raw_group_filter))
+
+        raw_art_filter = (self.request.GET.get("art") or "").strip()
+        valid_bk_arts = {choice for choice, _label in BetriebskostenBeleg.BKArt.choices}
+        self.selected_art_filter = raw_art_filter if raw_art_filter in valid_bk_arts else ""
+        if self.selected_art_filter:
+            queryset = queryset.filter(bk_art=self.selected_art_filter)
+        return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        totals = self.object_list.aggregate(
+            total_netto=Coalesce(
+                Sum("netto"),
+                Value(Decimal("0.00")),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+            total_brutto=Coalesce(
+                Sum("brutto"),
+                Value(Decimal("0.00")),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+        )
         ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
         context["bulk_group_choices"] = (
             BetriebskostenGruppe.objects.filter(Q(is_active=True) | Q(pk=ungrouped_group.pk))
@@ -2096,6 +2238,12 @@ class BetriebskostenBelegListView(ListView):
         )
         context["year_choices"] = getattr(self, "year_choices", [])
         context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
+        context["selected_search_query"] = getattr(self, "selected_search_query", "")
+        context["selected_property_filter"] = getattr(self, "selected_property_filter", "")
+        context["selected_group_filter"] = getattr(self, "selected_group_filter", "")
+        context["selected_art_filter"] = getattr(self, "selected_art_filter", "")
+        context["filtered_sum_netto"] = totals["total_netto"]
+        context["filtered_sum_brutto"] = totals["total_brutto"]
         return context
 
     def _year_choices_for_queryset(self, queryset):
@@ -2124,6 +2272,70 @@ class BetriebskostenBelegListView(ListView):
         if year_choices:
             return year_choices[-1]
         return current_year
+
+
+class BetriebskostenBelegExcelExportView(BetriebskostenBelegListView):
+    def _selected_row_ids(self) -> list[int]:
+        raw_ids = (self.request.GET.get("ids") or "").strip()
+        if not raw_ids:
+            return []
+        ids: list[int] = []
+        seen: set[int] = set()
+        for token in raw_ids.split(","):
+            value = token.strip()
+            if not value.isdigit():
+                continue
+            pk = int(value)
+            if pk in seen:
+                continue
+            seen.add(pk)
+            ids.append(pk)
+        return ids
+
+    def _ordered_queryset(self, queryset):
+        selected_ids = self._selected_row_ids()
+        if not selected_ids:
+            return queryset
+        order_expression = Case(
+            *[When(pk=pk, then=index) for index, pk in enumerate(selected_ids)],
+            output_field=IntegerField(),
+        )
+        return queryset.filter(pk__in=selected_ids).order_by(order_expression)
+
+    def render_to_response(self, context, **response_kwargs):
+        queryset = self._ordered_queryset(context["belege"])
+        rows = [
+            {
+                "datum": beleg.datum.strftime("%d.%m.%Y"),
+                "liegenschaft": beleg.liegenschaft.name,
+                "gruppe": beleg.ausgabengruppe.name,
+                "art": beleg.get_bk_art_display(),
+                "netto": beleg.netto,
+                "ust_prozent": beleg.ust_prozent,
+                "brutto": beleg.brutto,
+                "text": beleg.buchungstext or "",
+                "import_referenz": beleg.import_referenz or "",
+            }
+            for beleg in queryset
+        ]
+        columns = [
+            ExcelColumn(key="datum", label="Datum"),
+            ExcelColumn(key="liegenschaft", label="Liegenschaft"),
+            ExcelColumn(key="gruppe", label="Gruppe"),
+            ExcelColumn(key="art", label="Art"),
+            ExcelColumn(key="netto", label="Netto"),
+            ExcelColumn(key="ust_prozent", label="USt %"),
+            ExcelColumn(key="brutto", label="Brutto"),
+            ExcelColumn(key="text", label="Text"),
+            ExcelColumn(key="import_referenz", label="Import-Referenz"),
+        ]
+        filename = f"betriebskosten_{timezone.localdate().isoformat()}.xlsx"
+        return ExcelExportService.build_response(
+            filename=filename,
+            sheet_name="Betriebskosten",
+            columns=columns,
+            rows=rows,
+        )
 
 
 class BetriebskostenBelegCreateView(CreateView):
@@ -2202,6 +2414,7 @@ class BetriebskostenBelegBulkGroupUpdateView(View):
 
     def post(self, request, *args, **kwargs):
         selected_ids_raw = request.POST.getlist("selected_belege")
+        bulk_action = (request.POST.get("bulk_action") or "assign_group").strip()
         selected_group_id = (request.POST.get("bulk_group_id") or "").strip()
         next_url = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
 
@@ -2213,6 +2426,24 @@ class BetriebskostenBelegBulkGroupUpdateView(View):
             messages.warning(request, "Bitte mindestens einen Beleg auswählen.")
             return redirect(next_url)
 
+        queryset = BetriebskostenBeleg.objects.filter(pk__in=selected_ids)
+        if not queryset.exists():
+            messages.warning(request, "Die ausgewählten Belege konnten nicht gefunden werden.")
+            return redirect(next_url)
+
+        if bulk_action == "delete":
+            with transaction.atomic():
+                deleted_count, _details = queryset.delete()
+            messages.success(
+                request,
+                f"{deleted_count} Beleg(e) wurden gelöscht.",
+            )
+            return redirect(next_url)
+
+        if bulk_action != "assign_group":
+            messages.warning(request, "Ungültige Bulk-Aktion.")
+            return redirect(next_url)
+
         ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
         valid_groups_qs = BetriebskostenGruppe.objects.filter(
             Q(is_active=True) | Q(pk=ungrouped_group.pk)
@@ -2220,11 +2451,6 @@ class BetriebskostenBelegBulkGroupUpdateView(View):
         selected_group = valid_groups_qs.filter(pk=selected_group_id).first()
         if selected_group is None:
             messages.warning(request, "Bitte eine gültige Ausgabengruppe auswählen.")
-            return redirect(next_url)
-
-        queryset = BetriebskostenBeleg.objects.filter(pk__in=selected_ids)
-        if not queryset.exists():
-            messages.warning(request, "Die ausgewählten Belege konnten nicht gefunden werden.")
             return redirect(next_url)
 
         with transaction.atomic():
@@ -3139,14 +3365,14 @@ class VpiAdjustmentRunListView(TemplateView):
             .annotate(letter_count=Count("letters"))
             .order_by("-run_date", "-id")
         )
-        pending_released_values = (
-            VpiIndexValue.objects.filter(is_released=True)
-            .exclude(adjustment_runs__isnull=False)
-            .order_by("-month")
-        )
+        latest_index_value = VpiIndexValue.objects.order_by("-month", "-id").first()
+        latest_run = None
+        if latest_index_value is not None:
+            latest_run = VpiAdjustmentRun.objects.filter(index_value=latest_index_value).first()
         context["formset"] = formset
         context["runs"] = list(runs)
-        context["pending_released_values"] = list(pending_released_values)
+        context["latest_index_value"] = latest_index_value
+        context["latest_run"] = latest_run
         context["today"] = timezone.localdate()
         return context
 
@@ -3167,15 +3393,10 @@ class VpiAdjustmentRunEnsureView(View):
     http_method_names = ["get"]
 
     def get(self, request, *args, **kwargs):
-        index_id = (request.GET.get("index_id") or "").strip()
         run_date_raw = (request.GET.get("run_date") or "").strip()
-        if not index_id.isdigit():
-            messages.error(request, "Bitte einen freigegebenen VPI-Indexwert auswählen.")
-            return redirect("vpi_adjustment_run_list")
-
-        index_value = get_object_or_404(VpiIndexValue, pk=int(index_id))
-        if not index_value.is_released:
-            messages.error(request, "Der ausgewählte VPI-Indexwert ist noch nicht freigegeben.")
+        index_value = VpiIndexValue.objects.order_by("-month", "-id").first()
+        if index_value is None:
+            messages.error(request, "Bitte zuerst mindestens einen VPI-Indexwert speichern.")
             return redirect("vpi_adjustment_run_list")
 
         run_date = timezone.localdate()
@@ -3364,6 +3585,41 @@ class VpiAdjustmentRunApplyView(View):
             ),
         )
         return redirect("vpi_adjustment_run_detail", pk=run.pk)
+
+
+class VpiAdjustmentRunDeleteView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            VpiAdjustmentRun.objects.select_related("index_value"),
+            pk=kwargs["pk"],
+        )
+        if run.status == VpiAdjustmentRun.Status.APPLIED:
+            messages.error(request, "Angewendete Wertsicherungs-Läufe können nicht gelöscht werden.")
+            return redirect("vpi_adjustment_run_list")
+
+        letters = list(run.letters.select_related("pdf_datei"))
+        pdf_by_id = {}
+        for letter in letters:
+            if letter.pdf_datei_id and letter.pdf_datei is not None:
+                pdf_by_id[letter.pdf_datei_id] = letter.pdf_datei
+        pdf_files = list(pdf_by_id.values())
+        for pdf in pdf_files:
+            DateiService.archive(user=None, datei=pdf)
+
+        run_label = f"{run.index_value.month:%m/%Y} · {run.run_date:%d.%m.%Y}"
+        letter_count = len(letters)
+        pdf_count = len(pdf_files)
+        run.delete()
+        messages.success(
+            request,
+            (
+                f"Wertsicherungs-Lauf {run_label} wurde gelöscht. "
+                f"Zeilen: {letter_count}, archivierte PDF-Dateien: {pdf_count}."
+            ),
+        )
+        return redirect("vpi_adjustment_run_list")
 
 
 class UnitListView(ListView):

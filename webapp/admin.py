@@ -300,9 +300,9 @@ class ReminderEmailLogAdmin(admin.ModelAdmin):
 
 @admin.register(VpiIndexValue)
 class VpiIndexValueAdmin(admin.ModelAdmin):
-    list_display = ("month", "index_value", "is_released", "released_at", "updated_at")
-    list_filter = ("is_released", "released_at")
-    search_fields = ("month", "note")
+    list_display = ("month", "index_value", "updated_at")
+    list_filter = ("month",)
+    search_fields = ("month",)
     ordering = ("-month",)
 
 

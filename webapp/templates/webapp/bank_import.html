@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="card border-0 shadow-sm mb-4 bank-import-upload">
-    <div class="card-body p-4">
+    <div class="card-body p-3 p-md-4">
         <div class="bank-import-upload__header mb-3">
             <div class="bank-import-upload__icon">
                 <i class="bi bi-cloud-arrow-up"></i>
@@ -16,12 +16,12 @@
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
             <input type="hidden" name="action" value="preview">
-            <div class="row g-3 align-items-center">
-                <div class="col-lg-9">
+            <div class="row g-2 align-items-end bank-import-upload__form-row">
+                <div class="col-lg bank-import-upload__file-col">
                     <label class="form-label">JSON-Datei</label>
                     {{ form.json_file }}
                 </div>
-                <div class="col-lg-3 d-grid">
+                <div class="col-lg-auto bank-import-upload__button-col d-grid">
                     <button type="submit" class="btn btn-primary bank-import-upload__button">Vorschau laden</button>
                 </div>
             </div>

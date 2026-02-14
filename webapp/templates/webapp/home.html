@@ -108,53 +108,52 @@
 
 <div class="row g-3 mb-4">
     <div class="col-12">
-        <div class="card border-0 shadow-sm h-100">
+        <div class="card border-0 shadow-sm h-100 dashboard-reminder-card">
             <div class="card-body">
-                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                     <h3 class="h6 fw-bold mb-0">Erinnerungen</h3>
                     <a href="{% url 'reminder_settings' %}" class="small text-decoration-none">Einstellungen</a>
                 </div>
-                <div class="row g-2 mb-3">
-                    <div class="col-sm-4">
-                        <div class="border rounded-3 p-2">
-                            <div class="small text-muted">Offen gesamt</div>
-                            <div class="h5 mb-0">{{ reminder_summary.total }}</div>
-                        </div>
-                    </div>
-                    <div class="col-sm-4">
-                        <div class="border rounded-3 p-2">
-                            <div class="small text-muted">Überfällig</div>
-                            <div class="h5 mb-0 text-danger">{{ reminder_summary.overdue }}</div>
-                        </div>
-                    </div>
-                    <div class="col-sm-4">
-                        <div class="border rounded-3 p-2">
-                            <div class="small text-muted">Ohne E-Mail-Ziel</div>
-                            <div class="h5 mb-0 text-warning">{{ reminder_summary.without_email }}</div>
-                        </div>
-                    </div>
+                <div class="dashboard-reminder-summary mb-2">
+                    <span class="dashboard-reminder-summary-item">
+                        Offen gesamt <strong>{{ reminder_summary.total }}</strong>
+                    </span>
+                    <span class="dashboard-reminder-summary-item dashboard-reminder-summary-item-danger">
+                        Überfällig <strong>{{ reminder_summary.overdue }}</strong>
+                    </span>
+                    <span class="dashboard-reminder-summary-item dashboard-reminder-summary-item-warning">
+                        Ohne E-Mail-Ziel <strong>{{ reminder_summary.without_email }}</strong>
+                    </span>
                 </div>
 
                 {% if upcoming_reminders %}
-                    <div class="list-group list-group-flush">
-                        {% for reminder in upcoming_reminders %}
-                            <div class="list-group-item px-0">
-                                <div class="d-flex justify-content-between align-items-start gap-2">
-                                    <div>
-                                        <div class="fw-semibold">{{ reminder.rule_title }}</div>
-                                        <div class="small text-muted">{{ reminder.lease_label }}</div>
-                                        <div class="small text-muted">{{ reminder.tenant_label }}</div>
+                    <div class="list-group list-group-flush dashboard-reminder-list">
+                        {% for reminder in upcoming_reminders|slice:":4" %}
+                            <div class="list-group-item px-0 py-2">
+                                <div class="d-flex justify-content-between align-items-center gap-2">
+                                    <div class="small text-truncate dashboard-reminder-main">
+                                        <span class="fw-semibold">{{ reminder.rule_title }}</span>
+                                        <span class="text-muted">· {{ reminder.lease_label }}</span>
                                     </div>
-                                    <div class="text-end">
-                                        <div class="small fw-semibold">{{ reminder.due_date|date:"d.m.Y" }}</div>
-                                        <span class="badge {% if reminder.is_overdue %}text-bg-danger{% else %}text-bg-warning{% endif %}">
-                                            {{ reminder.due_status_label }}
+                                    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                                        <span class="small text-muted">{{ reminder.due_date|date:"d.m.Y" }}</span>
+                                        <span class="badge dashboard-reminder-status-badge {% if reminder.is_overdue %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                                            {% if reminder.is_overdue %}
+                                                Überfällig
+                                            {% elif reminder.days_until_due == 0 %}
+                                                Heute
+                                            {% else %}
+                                                {{ reminder.days_until_due }} T.
+                                            {% endif %}
                                         </span>
                                     </div>
                                 </div>
                             </div>
                         {% endfor %}
                     </div>
+                    {% if reminder_summary.total > 4 %}
+                        <div class="small text-muted mt-2">{{ reminder_summary.total|add:"-4" }} weitere Erinnerungen.</div>
+                    {% endif %}
                 {% else %}
                     <p class="text-muted small mb-0">Derzeit sind keine Erinnerungen offen.</p>
                 {% endif %}

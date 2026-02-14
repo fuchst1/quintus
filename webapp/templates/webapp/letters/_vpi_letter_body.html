@@ -1,96 +1,137 @@
-<div class="letter-wrap">
-    <div class="letter-head">
-        <div>
-            <div><strong>{{ payload.sender_name }}</strong></div>
-            {% if payload.sender_contact %}<div>{{ payload.sender_contact }}</div>{% endif %}
-            {% if payload.sender_email %}<div>{{ payload.sender_email }}</div>{% endif %}
-            {% if payload.sender_phone %}<div>{{ payload.sender_phone }}</div>{% endif %}
+<div class="bk-letter-sheet">
+    <div class="bk-letter-letterhead">
+        <div class="bk-letter-letterhead-left">
+            <div class="bk-letter-sender-name">{{ payload.sender_name }}</div>
+            {% if payload.sender_street %}<div>{{ payload.sender_street }}</div>{% endif %}
+            {% if payload.sender_zip_city %}<div>{{ payload.sender_zip_city }}</div>{% endif %}
+            <div>ATU78726489</div>
         </div>
-        <div>
-            <div><strong>Dokument</strong></div>
-            <div>Nr. {{ payload.document_number_display }}</div>
-            <div>Datum {{ payload.issue_date }}</div>
+        <div class="bk-letter-letterhead-center">
+            {% if payload.sender_logo_data_uri %}
+            <div class="bk-letter-logo-wrap">
+                <img src="{{ payload.sender_logo_data_uri }}" alt="Logo {{ payload.sender_name }}" class="bk-letter-logo">
+            </div>
+            {% endif %}
+        </div>
+        <div class="bk-letter-letterhead-right">
+            {% if payload.sender_phone %}<div>Mobile: {{ payload.sender_phone }}</div>{% endif %}
+            {% if payload.sender_email %}<div>e-mail: {{ payload.sender_email }}</div>{% endif %}
+            {% if payload.sender_website %}<div>homepage: {{ payload.sender_website }}</div>{% endif %}
         </div>
     </div>
 
-    <div style="margin-bottom: 8mm;">
-        <div><strong>Empfänger</strong></div>
-        <div>{{ payload.tenant_names }}</div>
-        <div>{{ payload.property_name }} · {{ payload.unit_label }}</div>
+    <div class="bk-letter-recipient">
+        <div class="bk-letter-recipient-title">Empfänger</div>
+        <div class="bk-letter-recipient-name">{{ payload.recipient_name }}</div>
+        {% if payload.recipient_street %}<div>{{ payload.recipient_street }}</div>{% endif %}
+        {% if payload.recipient_zip_city %}<div>{{ payload.recipient_zip_city }}</div>{% endif %}
     </div>
 
-    <h2 style="margin: 0 0 5mm 0;">{{ payload.subject }}</h2>
+    <div class="bk-letter-meta-inline">
+        <div><span>Ausstellungsdatum:</span> <strong>{{ payload.issue_date }}</strong></div>
+        <div><span>Wirksam ab:</span> <strong>{{ payload.effective_date }}</strong></div>
+        <div><span>Einheit:</span> <strong>{{ payload.unit_label }}</strong></div>
+        <div><span>Rechnungsnummer:</span> <strong>{{ payload.document_number_display }}</strong></div>
+    </div>
+    <h1 class="bk-letter-subject">{{ payload.subject }}</h1>
 
-    <p>{{ payload.greeting_text }}</p>
-    <p>
-        wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020.
-        Verwendeter Indexmonat: <strong>{{ payload.index_month }}</strong>.
-        Die Anpassung ist wirksam ab <strong>{{ payload.effective_date }}</strong>.
-    </p>
+    <div class="bk-letter-textblock">
+        <p>{{ payload.greeting_text }}</p>
+        <p>
+            wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020.
+            Die Anpassung ist wirksam ab <strong>{{ payload.effective_date }}</strong>.
+        </p>
+    </div>
 
     {% if payload.skip_reason %}
-        <p><strong>Hinweis:</strong> {{ payload.skip_reason }}</p>
+        <div class="bk-letter-textblock">
+            <p><strong>Hinweis:</strong> {{ payload.skip_reason }}</p>
+        </div>
     {% else %}
-        <table class="letter-table" role="table" aria-label="VPI-Anpassung">
+        <table class="bk-letter-table" role="table" aria-label="Wertsicherungsanpassung">
             <thead>
                 <tr>
-                    <th>Position</th>
-                    <th>Wert</th>
+                    <th>Berechnung Hauptmietzins</th>
+                    <th class="text-end">Wert</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>Alter Indexwert</td>
-                    <td>{{ payload.old_index_value }}</td>
+                    <td>Alter Indexwert (VPI 2020 {{ payload.old_index_year }})</td>
+                    <td class="text-end">{{ payload.old_index_value }}</td>
                 </tr>
                 <tr>
-                    <td>Neuer Indexwert</td>
-                    <td>{{ payload.new_index_value }}</td>
+                    <td>Neuer Indexwert (VPI 2020 {{ payload.new_index_year }})</td>
+                    <td class="text-end">{{ payload.new_index_value }}</td>
                 </tr>
                 <tr>
-                    <td>Faktor</td>
-                    <td>{{ payload.factor }}</td>
+                    <td>Erhöhung um</td>
+                    <td class="text-end">{{ payload.adjustment_percent_display }} %</td>
                 </tr>
                 <tr>
                     <td>HMZ bisher (netto)</td>
-                    <td>€ {{ payload.old_hmz_net_display }}</td>
+                    <td class="text-end">€ {{ payload.old_hmz_net_display }}</td>
                 </tr>
                 <tr>
                     <td>HMZ neu (netto)</td>
-                    <td>€ {{ payload.new_hmz_net_display }}</td>
+                    <td class="text-end">€ {{ payload.new_hmz_net_display }}</td>
+                </tr>
+                <tr class="bk-letter-table-section">
+                    <td colspan="2">Miete neu</td>
                 </tr>
                 <tr>
-                    <td>Differenz pro Monat (netto)</td>
-                    <td>€ {{ payload.delta_hmz_net_display }}</td>
+                    <td>HMZ neu (brutto)</td>
+                    <td class="text-end">€ {{ payload.new_hmz_gross_display }}</td>
                 </tr>
                 <tr>
-                    <td>Differenz pro Monat (brutto)</td>
-                    <td>€ {{ payload.delta_hmz_gross_display }}</td>
+                    <td>BK (brutto)</td>
+                    <td class="text-end">€ {{ payload.bk_gross_display }}</td>
+                </tr>
+                <tr>
+                    <td>HZ (brutto)</td>
+                    <td class="text-end">€ {{ payload.hz_gross_display }}</td>
+                </tr>
+                <tr>
+                    <td><strong>Gesamt monatlich (brutto)</strong></td>
+                    <td class="text-end"><strong>€ {{ payload.monthly_total_gross_display }}</strong></td>
                 </tr>
                 {% if payload.has_catchup %}
                 <tr>
                     <td>Nachverrechnung {{ payload.catchup_period_text }}</td>
-                    <td>€ {{ payload.catchup_gross_display }} ({{ payload.catchup_months }} Monat(e))</td>
+                    <td class="text-end">€ {{ payload.catchup_gross_display }} ({{ payload.catchup_months }} Monat(e))</td>
                 </tr>
                 {% endif %}
             </tbody>
         </table>
 
+        <div class="bk-letter-textblock">
         {% if payload.has_catchup %}
-            <p>
-                Für den Zeitraum {{ payload.catchup_period_text }} ergibt sich eine Nachverrechnung von
-                <strong>€ {{ payload.catchup_gross_display }}</strong> brutto.
-                Bitte überweisen Sie den Betrag bis spätestens <strong>{{ payload.payment_due_date }}</strong>.
-            </p>
+        <p>
+            Für den Zeitraum {{ payload.catchup_period_text }} ergibt sich eine Nachverrechnung von
+            <strong>€ {{ payload.catchup_gross_display }}</strong> brutto.
+            Bitte überweisen Sie den Betrag bis spätestens <strong>{{ payload.payment_due_date }}</strong>.
+        </p>
         {% else %}
-            <p>Es ergibt sich keine Nachverrechnung für bereits gebuchte Monate.</p>
+        <p>Es ergibt sich keine Nachverrechnung für bereits gebuchte Monate.</p>
         {% endif %}
+        <p>
+            Ich bitte Sie, den Dauerauftrag mit Wirkung ab <strong>{{ payload.effective_date }}</strong>
+            auf <strong>€ {{ payload.monthly_total_gross_display }}</strong> anzupassen.
+        </p>
+        </div>
     {% endif %}
 
-    {% if payload.free_text %}
+    <div class="bk-letter-textblock">
+        {% if payload.free_text %}
         <p>{{ payload.free_text|linebreaksbr }}</p>
-    {% endif %}
+        {% endif %}
+    </div>
 
-    <p>Mit freundlichen Grüßen</p>
-    <p><strong>{{ payload.sender_name }}</strong></p>
+    <div class="bk-letter-signature">
+        <p>{{ payload.closing_text }}</p>
+        <p class="bk-letter-signature-name">{{ payload.sender_name }}</p>
+        <p class="bk-letter-signature-subline">i.V. Martina und Thomas Fuchs</p>
+    </div>
+
+    <div class="bk-letter-global-footer">Immo-Fuchs KG – IBAN: AT82 2011 1847 2203 9000 – UID: ATU78726489 – FB: FN 592404 h</div>
 </div>

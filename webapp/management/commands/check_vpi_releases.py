@@ -10,13 +10,13 @@ from webapp.services.vpi_adjustment_run_service import VpiAdjustmentRunService
 
 
 class Command(BaseCommand):
-    help = "Prüft freigegebene VPI-Indexwerte ohne Lauf und kann Draft-Läufe idempotent anlegen."
+    help = "Prüft VPI-Indexwerte ohne Lauf und kann Draft-Läufe idempotent anlegen."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--create-runs",
             action="store_true",
-            help="Erzeugt für freigegebene Werte ohne Lauf automatisch einen Draft-Lauf.",
+            help="Erzeugt für Werte ohne Lauf automatisch einen Draft-Lauf.",
         )
         parser.add_argument(
             "--today",
@@ -28,8 +28,8 @@ class Command(BaseCommand):
         today = self._parse_today(options.get("today"))
         create_runs = bool(options.get("create_runs"))
 
-        released_values = VpiIndexValue.objects.filter(is_released=True).order_by("month")
-        pending_before = list(released_values.filter(adjustment_runs__isnull=True))
+        all_values = VpiIndexValue.objects.order_by("month")
+        pending_before = list(all_values.filter(adjustment_runs__isnull=True))
 
         created_runs = 0
         letters_prepared = 0
@@ -40,13 +40,13 @@ class Command(BaseCommand):
                 created_runs += 1
                 letters_prepared += len(letters)
 
-        pending_after = list(released_values.filter(adjustment_runs__isnull=True))
+        pending_after = list(all_values.filter(adjustment_runs__isnull=True))
 
         self.stdout.write(
             self.style.SUCCESS(
                 (
                     f"VPI-Check abgeschlossen. Datum: {today.isoformat()}, "
-                    f"freigegeben: {released_values.count()}, "
+                    f"indexwerte: {all_values.count()}, "
                     f"ohne Lauf: {len(pending_after)}, "
                     f"Läufe erstellt: {created_runs}, "
                     f"Zeilen vorbereitet: {letters_prepared}."

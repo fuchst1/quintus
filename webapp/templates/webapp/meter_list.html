@@ -18,15 +18,14 @@
                     <th class="ps-4">Liegenschaft</th>
                     <th>Einheit</th>
                     <th>Typ</th>
-                    <th>Eingabeart</th>
-                    <th>Zählernummer</th>
-                    <th>Hauptzähler</th>
+                    <th>Letzte Ablesung Datum</th>
+                    <th>Letzter Verbrauch Datum</th>
                 </tr>
             </thead>
             <tbody>
                 {% for group in grouped_meters %}
                 <tr class="table-light">
-                    <td colspan="7" class="ps-4 fw-semibold">{{ group.label }}</td>
+                    <td colspan="6" class="ps-4 fw-semibold">{{ group.label }}</td>
                 </tr>
                     {% for meter in group.meters %}
                     <tr>
@@ -62,14 +61,25 @@
                             {% endif %}
                             {{ meter.get_meter_type_display }}
                         </td>
-                        <td>{{ meter.get_kind_display }}</td>
-                        <td class="fw-semibold">{{ meter.meter_number|default:"—" }}</td>
-                        <td>{% if meter.is_main_meter %}Ja{% else %}Nein{% endif %}</td>
+                        <td>
+                            {% if meter.kind == "reading" %}
+                                {{ meter.latest_reading_date|date:"d.m.Y"|default:"—" }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if meter.kind == "consumption" %}
+                                {{ meter.latest_reading_date|date:"d.m.Y"|default:"—" }}
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 {% empty %}
                 <tr>
-                    <td colspan="7" class="text-center py-5 text-muted">Keine Zähler gefunden.</td>
+                    <td colspan="6" class="text-center py-5 text-muted">Keine Zähler gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>

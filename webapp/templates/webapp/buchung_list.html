@@ -5,9 +5,19 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Buchungen</h3>
-    <a href="{% url 'buchung_create' %}" class="btn btn-primary shadow-sm">
-        <i class="bi bi-plus-lg me-1"></i> Neue Buchung
-    </a>
+    <div class="d-flex gap-2">
+        <a
+            id="buchungExportExcelButton"
+            data-base-url="{% url 'buchung_export_excel' %}"
+            href="{% if request.GET.urlencode %}{% url 'buchung_export_excel' %}?{{ request.GET.urlencode }}{% else %}{% url 'buchung_export_excel' %}{% endif %}"
+            class="btn btn-outline-success shadow-sm"
+        >
+            <i class="bi bi-file-earmark-excel me-1"></i> Excel
+        </a>
+        <a href="{% url 'buchung_create' %}" class="btn btn-primary shadow-sm">
+            <i class="bi bi-plus-lg me-1"></i> Neue Buchung
+        </a>
+    </div>
 </div>
 
 <div class="card border-0 shadow-sm mb-3">
@@ -21,11 +31,12 @@
                     class="form-control"
                     placeholder="Text, Vertrag, Kategorie, Typ"
                     autocomplete="off"
+                    value="{{ selected_search_query }}"
                 >
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="buchungKategorieFilter" class="form-label mb-1">Kategorie</label>
-                <select id="buchungKategorieFilter" class="form-select">
+                <select id="buchungKategorieFilter" class="form-select" data-initial="{{ selected_category_filter }}">
                     <option value="">Alle Kategorien</option>
                 </select>
             </div>
@@ -33,6 +44,12 @@
                 <form method="get" class="mb-0">
                     {% if bank_transaktion_id %}
                     <input type="hidden" name="bank_transaktion" value="{{ bank_transaktion_id }}">
+                    {% endif %}
+                    {% if selected_search_query %}
+                    <input type="hidden" name="q" value="{{ selected_search_query }}">
+                    {% endif %}
+                    {% if selected_category_filter %}
+                    <input type="hidden" name="kategorie" value="{{ selected_category_filter }}">
                     {% endif %}
                     <input type="hidden" name="jahr" value="{{ selected_year }}">
                     <label for="buchungPropertyFilter" class="form-label mb-1">Liegenschaft</label>
@@ -49,6 +66,12 @@
                     {% if bank_transaktion_id %}
                     <input type="hidden" name="bank_transaktion" value="{{ bank_transaktion_id }}">
                     {% endif %}
+                    {% if selected_search_query %}
+                    <input type="hidden" name="q" value="{{ selected_search_query }}">
+                    {% endif %}
+                    {% if selected_category_filter %}
+                    <input type="hidden" name="kategorie" value="{{ selected_category_filter }}">
+                    {% endif %}
                     {% if selected_property_filter_value %}
                     <input type="hidden" name="liegenschaft" value="{{ selected_property_filter_value }}">
                     {% endif %}
@@ -64,6 +87,13 @@
             </div>
             <div class="col-md-3 col-lg-2 text-lg-end">
                 <div id="buchungCount" class="small text-muted"></div>
+                <div class="small fw-semibold text-dark">Summe gefiltert:</div>
+                <div id="buchungFilteredSumNetto" class="small text-dark">
+                    Netto: € {{ filtered_sum_netto|floatformat:2 }}
+                </div>
+                <div id="buchungFilteredSumBrutto" class="small text-dark">
+                    Brutto: € {{ filtered_sum_brutto|floatformat:2 }}
+                </div>
             </div>
         </div>
     </div>
@@ -112,6 +142,7 @@
                     {% for buchung in buchungen %}
                     <tr
                         data-row="1"
+                        data-id="{{ buchung.pk }}"
                         data-search="{{ buchung.datum|date:'d.m.Y' }} {{ buchung.mietervertrag }} {{ buchung.get_kategorie_display }} {{ buchung.get_typ_display }} {{ buchung.buchungstext }}"
                         data-kategorie="{{ buchung.kategorie }}"
                         data-kategorie-label="{{ buchung.get_kategorie_display }}"
@@ -154,6 +185,13 @@
                     <tr id="buchungNoResults" class="d-none">
                         <td colspan="7" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
                     </tr>
+                    <tr id="buchungSummaryRow" class="table-light">
+                        <td colspan="7" class="text-end pe-4 fw-semibold">
+                            Summe gefiltert:
+                            Netto <span id="buchungFilteredNettoCell">€ {{ filtered_sum_netto|floatformat:2 }}</span>
+                            · Brutto <span id="buchungFilteredBruttoCell">€ {{ filtered_sum_brutto|floatformat:2 }}</span>
+                        </td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -170,15 +208,22 @@
     }
 
     const rows = Array.from(tableBody.querySelectorAll("tr[data-row='1']"));
-    if (!rows.length) {
-        return;
-    }
-
     const searchInput = document.getElementById("buchungSearch");
     const categoryFilter = document.getElementById("buchungKategorieFilter");
     const countElement = document.getElementById("buchungCount");
+    const sumNettoElement = document.getElementById("buchungFilteredSumNetto");
+    const sumBruttoElement = document.getElementById("buchungFilteredSumBrutto");
     const noResultsRow = document.getElementById("buchungNoResults");
+    const summaryRow = document.getElementById("buchungSummaryRow");
+    const summaryNettoCell = document.getElementById("buchungFilteredNettoCell");
+    const summaryBruttoCell = document.getElementById("buchungFilteredBruttoCell");
+    const exportButton = document.getElementById("buchungExportExcelButton");
+    const exportBaseUrl = exportButton ? exportButton.dataset.baseUrl : "";
     const sortButtons = Array.from(document.querySelectorAll(".table-sort"));
+    const currencyFormatter = new Intl.NumberFormat("de-AT", {
+        style: "currency",
+        currency: "EUR",
+    });
 
     const state = {
         sortKey: "datum",
@@ -272,6 +317,9 @@
         }
     }
     fillSelect(categoryFilter, categoryValues);
+    if (categoryFilter.dataset.initial) {
+        categoryFilter.value = categoryFilter.dataset.initial;
+    }
 
     function updateSortIndicators() {
         for (const button of sortButtons) {
@@ -312,9 +360,54 @@
             tableBody.appendChild(noResultsRow);
             noResultsRow.classList.toggle("d-none", visibleRows.length > 0);
         }
+        if (summaryRow) {
+            tableBody.appendChild(summaryRow);
+        }
 
         if (countElement) {
             countElement.textContent = `${visibleRows.length} von ${rows.length} Buchungen`;
+        }
+        const filteredSumNetto = visibleRows.reduce(
+            (sum, row) => sum + parseNumeric(row.dataset.netto),
+            0,
+        );
+        const filteredSumBrutto = visibleRows.reduce(
+            (sum, row) => sum + parseNumeric(row.dataset.brutto),
+            0,
+        );
+        if (sumNettoElement) {
+            sumNettoElement.textContent = `Netto: ${currencyFormatter.format(filteredSumNetto)}`;
+        }
+        if (sumBruttoElement) {
+            sumBruttoElement.textContent = `Brutto: ${currencyFormatter.format(filteredSumBrutto)}`;
+        }
+        if (summaryNettoCell) {
+            summaryNettoCell.textContent = currencyFormatter.format(filteredSumNetto);
+        }
+        if (summaryBruttoCell) {
+            summaryBruttoCell.textContent = currencyFormatter.format(filteredSumBrutto);
+        }
+        if (exportButton && exportBaseUrl) {
+            const params = new URLSearchParams(window.location.search);
+            params.delete("ids");
+            if (searchInput.value.trim()) {
+                params.set("q", searchInput.value.trim());
+            } else {
+                params.delete("q");
+            }
+            if (categoryFilter.value) {
+                params.set("kategorie", categoryFilter.value);
+            } else {
+                params.delete("kategorie");
+            }
+            const selectedIds = visibleRows.map((row) => row.dataset.id).filter((value) => Boolean(value));
+            if (selectedIds.length > 0) {
+                params.set("ids", selectedIds.join(","));
+            } else {
+                params.set("ids", "0");
+            }
+            const query = params.toString();
+            exportButton.href = query ? `${exportBaseUrl}?${query}` : exportBaseUrl;
         }
 
         updateSortIndicators();

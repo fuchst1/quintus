@@ -229,15 +229,9 @@ class VpiIndexValueForm(forms.ModelForm):
         fields = [
             "month",
             "index_value",
-            "is_released",
-            "released_at",
-            "note",
         ]
         widgets = {
             "index_value": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
-            "is_released": forms.CheckboxInput(attrs={"class": "form-check-input"}),
-            "released_at": forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
-            "note": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
         }
 
     def clean_month(self):

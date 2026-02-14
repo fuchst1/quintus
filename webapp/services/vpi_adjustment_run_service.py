@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import io
 import zipfile
 from calendar import monthrange
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Max
 from django.utils import timezone
@@ -25,6 +28,8 @@ ZERO = Decimal("0.00")
 
 
 class VpiAdjustmentRunService:
+    _sender_logo_data_uri_cache: str | None = None
+
     def __init__(self, *, run: VpiAdjustmentRun):
         self.run = run
         self.index_value = run.index_value
@@ -53,13 +58,43 @@ class VpiAdjustmentRunService:
         return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
     @staticmethod
+    def _format_percent_at(value: object) -> str:
+        amount = Decimal(str(value or "0.00")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    @staticmethod
     def _month_start(value: date) -> date:
         return date(value.year, value.month, 1)
+
+    @staticmethod
+    def _subtract_months(value: date, months: int) -> date:
+        if months < 0:
+            raise ValueError("months must be >= 0")
+        year = value.year + (value.month - 1 - months) // 12
+        month = (value.month - 1 - months) % 12 + 1
+        day = min(value.day, monthrange(year, month)[1])
+        return date(year, month, day)
 
     @staticmethod
     def _month_end(value: date) -> date:
         last_day = monthrange(value.year, value.month)[1]
         return date(value.year, value.month, last_day)
+
+    @staticmethod
+    def _tenant_factor_from_index_values(*, old_index_value: Decimal, new_index_value: Decimal) -> Decimal:
+        if old_index_value <= ZERO:
+            return Decimal("1.000000")
+        raw_change = (new_index_value / old_index_value) - Decimal("1.00")
+        if raw_change <= ZERO:
+            return Decimal("1.000000")
+
+        fixed_threshold = Decimal("0.03")
+        if raw_change <= fixed_threshold:
+            tenant_change = raw_change
+        else:
+            # Up to 3% is fully tenant-side, anything above is split 50/50.
+            tenant_change = fixed_threshold + ((raw_change - fixed_threshold) / Decimal("2.00"))
+        return (Decimal("1.00") + tenant_change).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
     @classmethod
     def _month_range(cls, start_month: date, end_month: date) -> list[date]:
@@ -95,6 +130,32 @@ class VpiAdjustmentRunService:
         ]
         tenant_names = [name for name in tenant_names if name]
         return ", ".join(tenant_names) if tenant_names else "—"
+
+    @classmethod
+    def _sender_logo_data_uri(cls) -> str:
+        if cls._sender_logo_data_uri_cache is not None:
+            return cls._sender_logo_data_uri_cache
+
+        upload_dir = Path(settings.MEDIA_ROOT) / "uploads"
+        logo_candidates = (
+            ("logo03.svg", "image/svg+xml"),
+            ("logo03.png", "image/png"),
+            ("logo03.jpg", "image/jpeg"),
+            ("logo03.jpeg", "image/jpeg"),
+        )
+        for file_name, mime_type in logo_candidates:
+            logo_path = upload_dir / file_name
+            if not logo_path.exists():
+                continue
+            try:
+                encoded = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            cls._sender_logo_data_uri_cache = f"data:{mime_type};base64,{encoded}"
+            return cls._sender_logo_data_uri_cache
+
+        cls._sender_logo_data_uri_cache = ""
+        return cls._sender_logo_data_uri_cache
 
     @classmethod
     def next_letter_number_suggestion(cls) -> int:
@@ -208,7 +269,8 @@ class VpiAdjustmentRunService:
             }
 
         effective_date = add_months(lease.last_index_adjustment, 12)
-        if effective_date > self.run_date:
+        preview_allowed_from = self._subtract_months(effective_date, 1)
+        if self.run_date < preview_allowed_from:
             return None
 
         old_index_value = self._to_money_decimal(lease.index_base_value)
@@ -232,7 +294,10 @@ class VpiAdjustmentRunService:
                 "skip_reason": "Index-Basiswert fehlt oder ist ungültig.",
             }
 
-        factor = (self.new_index_value / old_index_value).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        factor = self._tenant_factor_from_index_values(
+            old_index_value=old_index_value,
+            new_index_value=self.new_index_value,
+        )
         new_hmz_net = (old_hmz_net * factor).quantize(CENT, rounding=ROUND_HALF_UP)
         delta_hmz_net = (new_hmz_net - old_hmz_net).quantize(CENT, rounding=ROUND_HALF_UP)
 
@@ -306,7 +371,7 @@ class VpiAdjustmentRunService:
         if not self.run.brief_nummer_start or int(self.run.brief_nummer_start) <= 0:
             return False, "Bitte zuerst eine gültige Startnummer für den Brieflauf speichern."
 
-        letters = list(self.run.letters.only("id", "skip_reason", "pdf_datei_id"))
+        letters = list(self.run.letters.only("id", "skip_reason", "pdf_datei_id", "effective_date"))
         if not letters:
             return False, "Für diesen Lauf sind keine fälligen VPI-Verträge vorhanden."
 
@@ -314,6 +379,16 @@ class VpiAdjustmentRunService:
         missing_pdfs = [letter for letter in actionable_letters if letter.pdf_datei_id is None]
         if missing_pdfs:
             return False, "Bitte zuerst die Briefe erzeugen, bevor die Anpassung angewendet wird."
+
+        today = timezone.localdate()
+        future_effective_dates = [
+            letter.effective_date
+            for letter in actionable_letters
+            if letter.effective_date and letter.effective_date > today
+        ]
+        if future_effective_dates:
+            earliest = min(future_effective_dates)
+            return False, f"Anpassung kann erst ab {earliest:%d.%m.%Y} angewendet werden."
         return True, ""
 
     @staticmethod
@@ -334,6 +409,47 @@ class VpiAdjustmentRunService:
         if tenant.salutation == tenant.Salutation.HERR and last_name:
             return f"Sehr geehrter Herr {last_name},"
         return "Sehr geehrte Damen und Herren,"
+
+    @staticmethod
+    def _unit_label(*, lease: LeaseAgreement) -> str:
+        unit = lease.unit
+        property_obj = unit.property if unit else None
+        street = ((property_obj.street_address or "").strip() if property_obj else "")
+        door = ((unit.door_number or "").strip() if unit else "")
+        if street and door:
+            return f"{street}, Top {door}"
+        if street:
+            return street
+        if door:
+            return f"Top {door}"
+        return (unit.name or "Einheit").strip() if unit else "Einheit"
+
+    @staticmethod
+    def _recipient_street(*, lease: LeaseAgreement) -> str:
+        unit = lease.unit
+        property_obj = unit.property if unit else None
+        street = ((property_obj.street_address or "").strip() if property_obj else "")
+        door = ((unit.door_number or "").strip() if unit else "")
+        if street and door:
+            return f"{street} / Top {door}"
+        if street:
+            return street
+        if door:
+            return f"Top {door}"
+        return ""
+
+    def _old_index_reference_year(self, *, old_index_value: Decimal, fallback_year: int) -> int:
+        reference = (
+            VpiIndexValue.objects.filter(
+                index_value=old_index_value,
+                month__lt=self._month_start(self.index_value.month),
+            )
+            .order_by("-month", "-id")
+            .first()
+        )
+        if reference is not None:
+            return int(reference.month.year)
+        return int(fallback_year)
 
     def _catchup_period_text(self, *, letter: VpiAdjustmentLetter) -> str:
         start = self._month_start(letter.effective_date)
@@ -360,11 +476,51 @@ class VpiAdjustmentRunService:
         manager = lease.manager or (property_obj.manager if property_obj else None)
         issue_date = timezone.localdate()
         sender_name = (manager.company_name if manager else "") or (property_obj.name if property_obj else "Verwaltung")
+        sender_website = (manager.website if manager else "") or ""
+        if sender_website:
+            sender_website = (
+                sender_website.removeprefix("https://")
+                .removeprefix("http://")
+                .rstrip("/")
+            )
+        sender_street = (property_obj.street_address if property_obj else "") or ""
+        sender_zip_city = " ".join(
+            part
+            for part in [
+                ((property_obj.zip_code or "").strip() if property_obj else ""),
+                ((property_obj.city or "").strip() if property_obj else ""),
+            ]
+            if part
+        )
+        recipient_name = self._tenant_names(lease)
+        recipient_street = self._recipient_street(lease=lease)
+        recipient_zip_city = sender_zip_city
 
         old_hmz_gross = self._gross_from_net(self._to_money_decimal(letter.old_hmz_net), letter.catchup_tax_percent)
         new_hmz_gross = self._gross_from_net(self._to_money_decimal(letter.new_hmz_net), letter.catchup_tax_percent)
         delta_hmz_gross = (new_hmz_gross - old_hmz_gross).quantize(CENT, rounding=ROUND_HALF_UP)
+        bk_gross = self._gross_from_net(self._to_money_decimal(lease.operating_costs_net), Decimal("10.00"))
+        hz_gross = self._gross_from_net(self._to_money_decimal(lease.heating_costs_net), Decimal("20.00"))
+        monthly_total_gross = (new_hmz_gross + bk_gross + hz_gross).quantize(CENT, rounding=ROUND_HALF_UP)
+        old_index_value = self._to_money_decimal(letter.old_index_value)
+        new_index_value = self._to_money_decimal(letter.new_index_value)
+        factor = self._to_ratio_decimal(letter.factor)
+        adjustment_percent = ((factor - Decimal("1.00")) * Decimal("100.00")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if adjustment_percent < ZERO:
+            adjustment_percent = ZERO
         has_catchup = self._to_money_decimal(letter.catchup_gross_total) > ZERO
+        old_index_year = self._old_index_reference_year(
+            old_index_value=old_index_value,
+            fallback_year=(
+                int(lease.last_index_adjustment.year)
+                if lease.last_index_adjustment
+                else int(self.index_value.month.year) - 1
+            ),
+        )
+        new_index_year = int(self.index_value.month.year)
 
         return {
             "document_number": sequence_number,
@@ -378,22 +534,35 @@ class VpiAdjustmentRunService:
             "run_date": self._date_str(self.run_date),
             "effective_date": self._date_str(letter.effective_date),
             "property_name": property_obj.name if property_obj else "—",
-            "unit_label": lease.unit.name if lease.unit else "—",
+            "unit_label": self._unit_label(lease=lease),
             "tenant_names": self._tenant_names(lease),
+            "recipient_name": recipient_name,
+            "recipient_street": recipient_street,
+            "recipient_zip_city": recipient_zip_city,
             "greeting_text": self._greeting(letter=letter),
             "sender_name": sender_name,
+            "sender_logo_data_uri": self._sender_logo_data_uri(),
+            "sender_street": sender_street,
+            "sender_zip_city": sender_zip_city,
             "sender_contact": (manager.contact_person if manager else "") or "",
             "sender_email": (manager.email if manager else "") or "",
             "sender_phone": (manager.phone if manager else "") or "",
-            "old_index_value": self._to_money_decimal(letter.old_index_value),
-            "new_index_value": self._to_money_decimal(letter.new_index_value),
-            "factor": self._to_ratio_decimal(letter.factor),
+            "sender_website": sender_website,
+            "old_index_value": old_index_value,
+            "new_index_value": new_index_value,
+            "old_index_year": old_index_year,
+            "new_index_year": new_index_year,
+            "adjustment_percent": adjustment_percent,
+            "factor": factor,
             "old_hmz_net": self._to_money_decimal(letter.old_hmz_net),
             "new_hmz_net": self._to_money_decimal(letter.new_hmz_net),
             "delta_hmz_net": self._to_money_decimal(letter.delta_hmz_net),
             "old_hmz_gross": old_hmz_gross,
             "new_hmz_gross": new_hmz_gross,
             "delta_hmz_gross": delta_hmz_gross,
+            "bk_gross": bk_gross,
+            "hz_gross": hz_gross,
+            "monthly_total_gross": monthly_total_gross,
             "catchup_months": int(letter.catchup_months or 0),
             "catchup_period_text": self._catchup_period_text(letter=letter),
             "catchup_net_total": self._to_money_decimal(letter.catchup_net_total),
@@ -403,12 +572,17 @@ class VpiAdjustmentRunService:
             "payment_due_date": self._date_str(issue_date + timedelta(days=14)),
             "skip_reason": (letter.skip_reason or "").strip(),
             "free_text": (self.run.brief_freitext or "").strip(),
+            "closing_text": "Mit freundlichen Grüßen",
             "old_hmz_net_display": self._format_money_at(letter.old_hmz_net),
             "new_hmz_net_display": self._format_money_at(letter.new_hmz_net),
             "delta_hmz_net_display": self._format_money_at(letter.delta_hmz_net),
             "old_hmz_gross_display": self._format_money_at(old_hmz_gross),
             "new_hmz_gross_display": self._format_money_at(new_hmz_gross),
             "delta_hmz_gross_display": self._format_money_at(delta_hmz_gross),
+            "adjustment_percent_display": self._format_percent_at(adjustment_percent),
+            "bk_gross_display": self._format_money_at(bk_gross),
+            "hz_gross_display": self._format_money_at(hz_gross),
+            "monthly_total_gross_display": self._format_money_at(monthly_total_gross),
             "catchup_gross_display": self._format_money_at(letter.catchup_gross_total),
             "catchup_net_display": self._format_money_at(letter.catchup_net_total),
         }
@@ -421,10 +595,14 @@ class VpiAdjustmentRunService:
     ) -> str:
         if sequence_number is None:
             sequence_number = letter.laufende_nummer
-        unit_source = letter.unit.door_number or letter.unit.name or f"einheit-{letter.unit_id}"
-        unit_slug = slugify(unit_source) or f"einheit-{letter.unit_id}"
-        number_prefix = f"{int(sequence_number):06d}_" if sequence_number else ""
-        return f"{number_prefix}VPI-Anpassung_{self.index_value.month:%Y%m}_{unit_slug}_{letter.lease_id}.pdf"
+        number_part = f"{int(sequence_number):02d}" if sequence_number else "00"
+        property_obj = letter.lease.unit.property if letter.lease and letter.lease.unit else None
+        property_name = (property_obj.name or "").strip() if property_obj else ""
+        property_part = (slugify(property_name) or "LIEGENSCHAFT").replace("-", "").upper()
+        issue_date = timezone.localdate()
+        return (
+            f"{number_part}_{issue_date.year}_{property_part}_Wertsicherung_{issue_date:%Y%m%d}.pdf"
+        )
 
     def build_zip_filename(self) -> str:
         return f"VPI-Briefe_{self.index_value.month:%Y%m}.zip"

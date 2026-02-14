@@ -595,19 +595,6 @@ class VpiIndexValue(models.Model):
         validators=[MinValueValidator(0)],
         verbose_name=_("VPI 2020"),
     )
-    is_released = models.BooleanField(
-        default=False,
-        verbose_name=_("Veröffentlicht"),
-    )
-    released_at = models.DateField(
-        null=True,
-        blank=True,
-        verbose_name=_("Veröffentlicht am"),
-    )
-    note = models.TextField(
-        blank=True,
-        verbose_name=_("Notiz"),
-    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Erstellt am"))
     updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Aktualisiert am"))
 

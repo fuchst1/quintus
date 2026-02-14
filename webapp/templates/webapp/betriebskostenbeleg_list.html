@@ -6,6 +6,24 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Betriebskosten</h3>
     <div class="d-flex gap-2">
+        <button
+            type="button"
+            class="btn btn-light shadow-sm"
+            data-bs-toggle="collapse"
+            data-bs-target="#belegBulkPanel"
+            aria-expanded="false"
+            aria-controls="belegBulkPanel"
+        >
+            <i class="bi bi-list-check me-1"></i> Bulk-Aktion
+        </button>
+        <a
+            id="belegExportExcelButton"
+            data-base-url="{% url 'betriebskostenbeleg_export_excel' %}"
+            href="{% if request.GET.urlencode %}{% url 'betriebskostenbeleg_export_excel' %}?{{ request.GET.urlencode }}{% else %}{% url 'betriebskostenbeleg_export_excel' %}{% endif %}"
+            class="btn btn-outline-success shadow-sm"
+        >
+            <i class="bi bi-file-earmark-excel me-1"></i> Excel
+        </a>
         <a href="{% url 'betriebskosten_gruppe_list' %}" class="btn btn-light shadow-sm">
             <i class="bi bi-collection me-1"></i> BK-Gruppen
         </a>
@@ -26,28 +44,41 @@
                     class="form-control"
                     placeholder="Text, Referenz, Liegenschaft, Art"
                     autocomplete="off"
+                    value="{{ selected_search_query }}"
                 >
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="belegPropertyFilter" class="form-label mb-1">Liegenschaft</label>
-                <select id="belegPropertyFilter" class="form-select">
+                <select id="belegPropertyFilter" class="form-select" data-initial="{{ selected_property_filter }}">
                     <option value="">Alle Liegenschaften</option>
                 </select>
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="belegGroupFilter" class="form-label mb-1">Gruppe</label>
-                <select id="belegGroupFilter" class="form-select">
+                <select id="belegGroupFilter" class="form-select" data-initial="{{ selected_group_filter }}">
                     <option value="">Alle Gruppen</option>
                 </select>
             </div>
             <div class="col-sm-6 col-md-3 col-lg-2">
                 <label for="belegArtFilter" class="form-label mb-1">Art</label>
-                <select id="belegArtFilter" class="form-select">
+                <select id="belegArtFilter" class="form-select" data-initial="{{ selected_art_filter }}">
                     <option value="">Alle Arten</option>
                 </select>
             </div>
             <div class="col-sm-6 col-md-3 col-lg-1">
                 <form method="get">
+                    {% if selected_search_query %}
+                    <input type="hidden" name="suche" value="{{ selected_search_query }}">
+                    {% endif %}
+                    {% if selected_property_filter %}
+                    <input type="hidden" name="liegenschaft" value="{{ selected_property_filter }}">
+                    {% endif %}
+                    {% if selected_group_filter %}
+                    <input type="hidden" name="gruppe" value="{{ selected_group_filter }}">
+                    {% endif %}
+                    {% if selected_art_filter %}
+                    <input type="hidden" name="art" value="{{ selected_art_filter }}">
+                    {% endif %}
                     <label for="belegYearFilter" class="form-label mb-1">Jahr</label>
                     <select id="belegYearFilter" name="jahr" class="form-select" onchange="this.form.submit()">
                         {% for year in year_choices %}
@@ -60,6 +91,13 @@
             </div>
             <div class="col-md-12 col-lg-2 text-lg-end">
                 <div id="belegCount" class="small text-muted"></div>
+                <div class="small fw-semibold text-dark">Summe gefiltert:</div>
+                <div id="belegFilteredSumNetto" class="small text-dark">
+                    Netto: € {{ filtered_sum_netto|floatformat:2 }}
+                </div>
+                <div id="belegFilteredSumBrutto" class="small text-dark">
+                    Brutto: € {{ filtered_sum_brutto|floatformat:2 }}
+                </div>
             </div>
         </div>
     </div>
@@ -69,23 +107,34 @@
     {% csrf_token %}
     <input type="hidden" name="next" id="belegBulkNext" value="{% url 'betriebskostenbeleg_list' %}">
 
-    <div class="card border-0 shadow-sm mb-3">
-        <div class="card-body">
-            <div class="row g-2 align-items-end">
-                <div class="col-md-6 col-lg-4">
-                    <label for="bulkGroupSelect" class="form-label mb-1">Bulk-Aktion: Ausgabengruppe</label>
-                    <select id="bulkGroupSelect" name="bulk_group_id" class="form-select">
-                        <option value="">Bitte auswählen</option>
-                        {% for group in bulk_group_choices %}
-                        <option value="{{ group.pk }}">{{ group.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-md-6 col-lg-3 d-grid">
-                    <button type="submit" class="btn btn-outline-primary">Gruppe zuweisen</button>
-                </div>
-                <div class="col-lg-5 text-muted small">
-                    Mehrfachauswahl über die Checkboxen in der Tabelle.
+    <div id="belegBulkPanel" class="collapse mb-3">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-lg-8">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-8">
+                                <label for="bulkGroupSelect" class="form-label mb-1">Bulk-Aktion: Ausgabengruppe</label>
+                                <select id="bulkGroupSelect" name="bulk_group_id" class="form-select">
+                                    <option value="">Bitte auswählen</option>
+                                    {% for group in bulk_group_choices %}
+                                    <option value="{{ group.pk }}">{{ group.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-4 d-grid">
+                                <button type="submit" name="bulk_action" value="assign_group" class="btn btn-outline-primary">Gruppe zuweisen</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-4">
+                        <div class="d-grid">
+                            <button type="submit" name="bulk_action" value="delete" class="btn btn-outline-danger">Ausgewählte löschen</button>
+                        </div>
+                    </div>
+                    <div class="col-12 text-muted small">
+                        Mehrfachauswahl über die Checkboxen in der Tabelle.
+                    </div>
                 </div>
             </div>
         </div>
@@ -97,7 +146,7 @@
                 <table class="table table-hover mb-0">
                     <thead class="table-light">
                         <tr>
-                            <th class="text-center" style="width: 42px;">
+                            <th class="text-center beleg-bulk-checkbox-cell d-none" style="width: 42px;">
                                 <input type="checkbox" id="selectAllBelege" class="form-check-input" aria-label="Alle auswählen">
                             </th>
                             <th class="text-center">Aktion</th>
@@ -152,6 +201,7 @@
                         {% for beleg in belege %}
                         <tr
                             data-row="1"
+                            data-id="{{ beleg.pk }}"
                             data-search="{{ beleg.datum|date:'d.m.Y' }} {{ beleg.liegenschaft.name }} {{ beleg.ausgabengruppe.name }} {{ beleg.get_bk_art_display }} {{ beleg.buchungstext|default:'' }} {{ beleg.import_referenz|default:'' }}"
                             data-datum="{{ beleg.datum|date:'Y-m-d' }}"
                             data-liegenschaft="{{ beleg.liegenschaft.name }}"
@@ -165,7 +215,7 @@
                             data-text="{{ beleg.buchungstext|default:'' }}"
                             data-referenz="{{ beleg.import_referenz|default:'' }}"
                         >
-                            <td class="text-center">
+                            <td class="text-center beleg-bulk-checkbox-cell d-none">
                                 <input type="checkbox" class="form-check-input beleg-select" name="selected_belege" value="{{ beleg.pk }}" aria-label="Beleg {{ beleg.pk }} auswählen">
                             </td>
                             <td class="text-center">
@@ -198,6 +248,13 @@
                         <tr id="belegNoResults" class="d-none">
                             <td colspan="11" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
                         </tr>
+                        <tr id="belegSummaryRow" class="table-light">
+                            <td colspan="11" class="text-end pe-3 fw-semibold">
+                                Summe gefiltert:
+                                Netto <span id="belegFilteredNettoCell">€ {{ filtered_sum_netto|floatformat:2 }}</span>
+                                · Brutto <span id="belegFilteredBruttoCell">€ {{ filtered_sum_brutto|floatformat:2 }}</span>
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
@@ -215,22 +272,31 @@
     }
 
     const rows = Array.from(tableBody.querySelectorAll("tr[data-row='1']"));
-    if (!rows.length) {
-        return;
-    }
-
     const searchInput = document.getElementById("belegSearch");
     const propertyFilter = document.getElementById("belegPropertyFilter");
     const groupFilter = document.getElementById("belegGroupFilter");
     const artFilter = document.getElementById("belegArtFilter");
     const countElement = document.getElementById("belegCount");
+    const sumNettoElement = document.getElementById("belegFilteredSumNetto");
+    const sumBruttoElement = document.getElementById("belegFilteredSumBrutto");
     const noResultsRow = document.getElementById("belegNoResults");
+    const summaryRow = document.getElementById("belegSummaryRow");
+    const summaryNettoCell = document.getElementById("belegFilteredNettoCell");
+    const summaryBruttoCell = document.getElementById("belegFilteredBruttoCell");
+    const exportButton = document.getElementById("belegExportExcelButton");
+    const exportBaseUrl = exportButton ? exportButton.dataset.baseUrl : "";
     const sortButtons = Array.from(document.querySelectorAll(".beleg-sort"));
     const editLinks = Array.from(document.querySelectorAll(".beleg-edit-link"));
     const bulkForm = document.getElementById("belegBulkForm");
+    const bulkPanel = document.getElementById("belegBulkPanel");
     const bulkNextInput = document.getElementById("belegBulkNext");
     const selectAllCheckbox = document.getElementById("selectAllBelege");
     const rowCheckboxes = Array.from(document.querySelectorAll(".beleg-select"));
+    const bulkCheckboxCells = Array.from(document.querySelectorAll(".beleg-bulk-checkbox-cell"));
+    const currencyFormatter = new Intl.NumberFormat("de-AT", {
+        style: "currency",
+        currency: "EUR",
+    });
 
     const DEFAULT_SORT_KEY = "datum";
     const DEFAULT_SORT_DIRECTION = "desc";
@@ -362,6 +428,15 @@
     fillSelect(propertyFilter, propertyValues);
     fillSelect(groupFilter, groupValues);
     fillSelect(artFilter, artValues);
+    if (propertyFilter.dataset.initial && propertyValues.has(propertyFilter.dataset.initial)) {
+        propertyFilter.value = propertyFilter.dataset.initial;
+    }
+    if (groupFilter.dataset.initial && groupValues.has(groupFilter.dataset.initial)) {
+        groupFilter.value = groupFilter.dataset.initial;
+    }
+    if (artFilter.dataset.initial && artValues.has(artFilter.dataset.initial)) {
+        artFilter.value = artFilter.dataset.initial;
+    }
 
     function applyStateFromQueryParams() {
         const params = new URLSearchParams(window.location.search);
@@ -463,6 +538,23 @@
         selectAllCheckbox.indeterminate = true;
     }
 
+    function setBulkSelectionVisible(isVisible) {
+        for (const cell of bulkCheckboxCells) {
+            cell.classList.toggle("d-none", !isVisible);
+        }
+        if (isVisible) {
+            updateSelectionIndicators();
+            return;
+        }
+        for (const checkbox of rowCheckboxes) {
+            checkbox.checked = false;
+        }
+        if (selectAllCheckbox) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        }
+    }
+
     function updateEditLinksWithNext() {
         if (!editLinks.length) {
             return;
@@ -525,13 +617,48 @@
             tableBody.appendChild(noResultsRow);
             noResultsRow.classList.toggle("d-none", visibleRows.length > 0);
         }
+        if (summaryRow) {
+            tableBody.appendChild(summaryRow);
+        }
 
         if (countElement) {
             countElement.textContent = `${visibleRows.length} von ${rows.length} Belegen`;
         }
+        const filteredSumNetto = visibleRows.reduce(
+            (sum, row) => sum + parseNumeric(row.dataset.netto),
+            0,
+        );
+        const filteredSumBrutto = visibleRows.reduce(
+            (sum, row) => sum + parseNumeric(row.dataset.brutto),
+            0,
+        );
+        if (sumNettoElement) {
+            sumNettoElement.textContent = `Netto: ${currencyFormatter.format(filteredSumNetto)}`;
+        }
+        if (sumBruttoElement) {
+            sumBruttoElement.textContent = `Brutto: ${currencyFormatter.format(filteredSumBrutto)}`;
+        }
+        if (summaryNettoCell) {
+            summaryNettoCell.textContent = currencyFormatter.format(filteredSumNetto);
+        }
+        if (summaryBruttoCell) {
+            summaryBruttoCell.textContent = currencyFormatter.format(filteredSumBrutto);
+        }
 
         updateSortIndicators();
         syncStateToQueryParams();
+        if (exportButton && exportBaseUrl) {
+            const params = new URLSearchParams(window.location.search);
+            params.delete("ids");
+            const selectedIds = visibleRows.map((row) => row.dataset.id).filter((value) => Boolean(value));
+            if (selectedIds.length > 0) {
+                params.set("ids", selectedIds.join(","));
+            } else {
+                params.set("ids", "0");
+            }
+            const query = params.toString();
+            exportButton.href = query ? `${exportBaseUrl}?${query}` : exportBaseUrl;
+        }
         updateEditLinksWithNext();
         updateSelectionIndicators();
     }
@@ -595,11 +722,29 @@
             if (!hasSelection) {
                 event.preventDefault();
                 window.alert("Bitte mindestens einen Beleg auswählen.");
+                return;
+            }
+            const submitter = event.submitter;
+            if (submitter && submitter.value === "delete") {
+                const confirmed = window.confirm("Ausgewählte Belege wirklich löschen?");
+                if (!confirmed) {
+                    event.preventDefault();
+                }
             }
         });
     }
 
+    if (bulkPanel) {
+        bulkPanel.addEventListener("show.bs.collapse", () => {
+            setBulkSelectionVisible(true);
+        });
+        bulkPanel.addEventListener("hide.bs.collapse", () => {
+            setBulkSelectionVisible(false);
+        });
+    }
+
     applyStateFromQueryParams();
+    setBulkSelectionVisible(Boolean(bulkPanel && bulkPanel.classList.contains("show")));
     applyFiltersAndSorting();
 })();
 </script>

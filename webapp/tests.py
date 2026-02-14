@@ -743,6 +743,92 @@ class BuchungListViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["year_choices"], [2024, 2025, 2026])
 
+    def test_list_renders_filtered_sum_summary_row(self):
+        current_year = date.today().year
+        Buchung.objects.create(
+            mietervertrag=self.bhg14_lease,
+            einheit=self.bhg14_unit,
+            typ=Buchung.Typ.IST,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext="Summenzeile 1",
+            datum=date(current_year, 2, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("110.00"),
+        )
+        Buchung.objects.create(
+            mietervertrag=self.bhg14_lease,
+            einheit=self.bhg14_unit,
+            typ=Buchung.Typ.IST,
+            kategorie=Buchung.Kategorie.BK,
+            buchungstext="Summenzeile 2",
+            datum=date(current_year, 2, 11),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("55.00"),
+        )
+
+        response = self.client.get(
+            reverse("buchung_list"),
+            {"liegenschaft": str(self.bhg14_property.pk), "jahr": str(current_year)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["filtered_sum_netto"], Decimal("150"))
+        self.assertEqual(response.context["filtered_sum_brutto"], Decimal("165"))
+        self.assertContains(response, "Summe gefiltert:")
+        self.assertContains(response, "Netto")
+        self.assertContains(response, "Brutto")
+
+    def test_excel_export_download_contains_selected_rows(self):
+        current_year = date.today().year
+        included_booking = Buchung.objects.create(
+            mietervertrag=self.bhg14_lease,
+            einheit=self.bhg14_unit,
+            typ=Buchung.Typ.IST,
+            kategorie=Buchung.Kategorie.HMZ,
+            buchungstext="Export Zeile Sichtbar",
+            datum=date(current_year, 3, 1),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("110.00"),
+        )
+        _hidden_booking = Buchung.objects.create(
+            mietervertrag=self.bhg14_lease,
+            einheit=self.bhg14_unit,
+            typ=Buchung.Typ.IST,
+            kategorie=Buchung.Kategorie.BK,
+            buchungstext="Export Zeile Versteckt",
+            datum=date(current_year, 3, 2),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("55.00"),
+        )
+
+        response = self.client.get(
+            reverse("buchung_export_excel"),
+            {
+                "liegenschaft": str(self.bhg14_property.pk),
+                "jahr": str(current_year),
+                "ids": str(included_booking.pk),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            worksheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+        self.assertIn("Export Zeile Sichtbar", worksheet_xml)
+        self.assertNotIn("Export Zeile Versteckt", worksheet_xml)
+        self.assertIn("<v>100.00</v>", worksheet_xml)
+        self.assertIn("<v>110.00</v>", worksheet_xml)
+
 
 class LeaseDetailViewTests(TestCase):
     def setUp(self):
@@ -832,6 +918,28 @@ class LeaseDetailViewTests(TestCase):
         self.assertEqual(february_summary["offen"], Decimal("40.00"))
         self.assertEqual(rows[1]["buchung"].buchungstext, "Zahlung 02/2026")
         self.assertEqual(rows[2]["buchung"].buchungstext, "SOLL 02/2026")
+
+    def test_lease_detail_shows_wertsicherung_instead_of_vpi_title(self):
+        ReminderRuleConfig.objects.update_or_create(
+            code="vpi_indexation",
+            defaults={
+                "title": "VPI-Erinnerung",
+                "lead_months": 24,
+                "is_active": True,
+                "sort_order": 10,
+            },
+        )
+        self.lease.index_type = LeaseAgreement.IndexType.VPI
+        self.lease.last_index_adjustment = timezone.localdate()
+        self.lease.save(update_fields=["index_type", "last_index_adjustment"])
+
+        response = self.client.get(reverse("lease_detail", args=[self.lease.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("lease_reminder_items", response.context)
+        self.assertTrue(response.context["lease_reminder_items"])
+        self.assertContains(response, "Wertsicherung")
+        self.assertNotContains(response, "VPI-Erinnerung")
 
     def test_lease_update_contains_attachments_panel(self):
         response = self.client.get(reverse("lease_update", args=[self.lease.pk]))
@@ -1104,6 +1212,122 @@ class BetriebskostenBelegListViewTests(TestCase):
         beleg_two.refresh_from_db()
         self.assertEqual(beleg_one.ausgabengruppe_id, self.custom_group.pk)
         self.assertEqual(beleg_two.ausgabengruppe_id, self.custom_group.pk)
+
+    def test_bulk_delete_removes_selected_rows(self):
+        beleg_one = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 8, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+        _beleg_two = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.WASSER,
+            datum=date(2026, 8, 11),
+            netto=Decimal("20.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("24.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+
+        response = self.client.post(
+            reverse("betriebskostenbeleg_bulk_group_update"),
+            {
+                "selected_belege": [str(beleg_one.pk)],
+                "bulk_action": "delete",
+                "next": reverse("betriebskostenbeleg_list"),
+            },
+            follow=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(BetriebskostenBeleg.objects.filter(pk=beleg_one.pk).exists())
+        self.assertEqual(BetriebskostenBeleg.objects.count(), 1)
+
+    def test_list_hides_bulk_checkboxes_by_default(self):
+        response = self.client.get(reverse("betriebskostenbeleg_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "beleg-bulk-checkbox-cell d-none")
+        self.assertContains(response, "bulk_action")
+
+    def test_list_renders_filtered_netto_and_brutto_sums(self):
+        current_year = date.today().year
+        BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(current_year, 6, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            buchungstext="Summe 1",
+        )
+        BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.STROM,
+            datum=date(current_year, 6, 11),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("60.00"),
+            buchungstext="Summe 2",
+        )
+
+        response = self.client.get(reverse("betriebskostenbeleg_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["filtered_sum_netto"], Decimal("150"))
+        self.assertEqual(response.context["filtered_sum_brutto"], Decimal("180"))
+        self.assertContains(response, "Summe gefiltert:")
+        self.assertContains(response, "Netto")
+        self.assertContains(response, "Brutto")
+
+    def test_excel_export_download_contains_selected_rows(self):
+        current_year = date.today().year
+        included_beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.STROM,
+            datum=date(current_year, 7, 1),
+            netto=Decimal("80.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("96.00"),
+            buchungstext="Excel Sichtbar",
+            import_referenz="BK-EXCEL-1",
+        )
+        _hidden_beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.WASSER,
+            datum=date(current_year, 7, 2),
+            netto=Decimal("20.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("24.00"),
+            buchungstext="Excel Versteckt",
+            import_referenz="BK-EXCEL-2",
+        )
+
+        response = self.client.get(
+            reverse("betriebskostenbeleg_export_excel"),
+            {
+                "jahr": str(current_year),
+                "ids": str(included_beleg.pk),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            worksheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+        self.assertIn("Excel Sichtbar", worksheet_xml)
+        self.assertNotIn("Excel Versteckt", worksheet_xml)
+        self.assertIn("<v>80.00</v>", worksheet_xml)
+        self.assertIn("<v>96.00</v>", worksheet_xml)
 
 
 class BetriebskostenBelegUpdateViewTests(TestCase):
@@ -4215,6 +4439,26 @@ class ReminderUiIntegrationTests(TestCase):
         self.assertContains(response, "lease-row-has-reminders")
         self.assertContains(response, "Vertragsende")
 
+    def test_lease_list_shows_wertsicherung_label_for_vpi_rule(self):
+        ReminderRuleConfig.objects.update_or_create(
+            code="vpi_indexation",
+            defaults={
+                "title": "VPI-Erinnerung",
+                "lead_months": 24,
+                "is_active": True,
+                "sort_order": 10,
+            },
+        )
+        self.lease.index_type = LeaseAgreement.IndexType.VPI
+        self.lease.last_index_adjustment = timezone.localdate()
+        self.lease.save(update_fields=["index_type", "last_index_adjustment"])
+
+        response = self.client.get(reverse("lease_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Wertsicherung")
+        self.assertNotContains(response, "VPI-Erinnerung")
+
     def test_reminder_settings_can_update_lead_months(self):
         configs = list(ReminderRuleConfig.objects.order_by("sort_order", "code"))
         post_data = {
@@ -4309,7 +4553,6 @@ class VpiAdjustmentModelTests(TestCase):
         invalid = VpiIndexValue(
             month=date(2026, 2, 2),
             index_value=Decimal("123.45"),
-            is_released=False,
         )
         with self.assertRaises(ValidationError):
             invalid.full_clean()
@@ -4318,12 +4561,10 @@ class VpiAdjustmentModelTests(TestCase):
         VpiIndexValue.objects.create(
             month=date(2026, 2, 1),
             index_value=Decimal("123.45"),
-            is_released=True,
         )
         duplicate = VpiIndexValue(
             month=date(2026, 2, 1),
             index_value=Decimal("124.10"),
-            is_released=True,
         )
         with self.assertRaises(ValidationError):
             duplicate.full_clean()
@@ -4332,7 +4573,6 @@ class VpiAdjustmentModelTests(TestCase):
         index_value = VpiIndexValue.objects.create(
             month=date(2026, 2, 1),
             index_value=Decimal("110.00"),
-            is_released=True,
         )
         run = VpiAdjustmentRun.objects.create(
             index_value=index_value,
@@ -4481,8 +4721,6 @@ class VpiAdjustmentRunServiceTests(TestCase):
         self.index_value = VpiIndexValue.objects.create(
             month=date(2026, 2, 1),
             index_value=Decimal("110.00"),
-            is_released=True,
-            released_at=date(2026, 2, 20),
         )
         self.run = VpiAdjustmentRun.objects.create(
             index_value=self.index_value,
@@ -4522,9 +4760,71 @@ class VpiAdjustmentRunServiceTests(TestCase):
 
         due_letter = letters_by_lease[self.due_lease.pk]
         self.assertEqual(due_letter.effective_date, date(2026, 3, 1))
-        self.assertEqual(due_letter.factor, Decimal("1.100000"))
-        self.assertEqual(due_letter.new_hmz_net, Decimal("550.00"))
-        self.assertEqual(due_letter.delta_hmz_net, Decimal("50.00"))
+        self.assertEqual(due_letter.factor, Decimal("1.065000"))
+        self.assertEqual(due_letter.new_hmz_net, Decimal("532.50"))
+        self.assertEqual(due_letter.delta_hmz_net, Decimal("32.50"))
+
+    def test_payload_adjustment_percent_uses_effective_factor(self):
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+
+        payload = service.payload_for_letter(letter=letter, sequence_number=100)
+
+        self.assertEqual(payload["factor"], Decimal("1.065000"))
+        self.assertEqual(payload["adjustment_percent"], Decimal("6.50"))
+        self.assertEqual(payload["adjustment_percent_display"], "6,50")
+        self.assertEqual(payload["old_index_year"], 2025)
+        self.assertEqual(payload["new_index_year"], 2026)
+
+    def test_payload_old_index_year_prefers_configured_index_table_entry(self):
+        VpiIndexValue.objects.create(
+            month=date(2024, 12, 1),
+            index_value=Decimal("100.00"),
+        )
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+
+        payload = service.payload_for_letter(letter=letter, sequence_number=100)
+
+        self.assertEqual(payload["old_index_year"], 2024)
+        self.assertEqual(payload["new_index_year"], 2026)
+
+    def test_factor_above_three_percent_is_split_between_tenant_and_owner(self):
+        split_index = VpiIndexValue.objects.create(
+            month=date(2026, 1, 1),
+            index_value=Decimal("105.00"),
+        )
+        split_run = VpiAdjustmentRun.objects.create(
+            index_value=split_index,
+            run_date=date(2026, 4, 15),
+        )
+        letters = VpiAdjustmentRunService(run=split_run).ensure_letters()
+        letter = next(item for item in letters if item.lease_id == self.due_lease.pk)
+
+        self.assertEqual(letter.factor, Decimal("1.040000"))
+        self.assertEqual(letter.new_hmz_net, Decimal("520.00"))
+        self.assertEqual(letter.delta_hmz_net, Decimal("20.00"))
+
+    def test_ensure_letters_includes_contracts_one_month_before_effective_date(self):
+        early_index = VpiIndexValue.objects.create(
+            month=date(2026, 1, 1),
+            index_value=Decimal("110.00"),
+        )
+        early_run = VpiAdjustmentRun.objects.create(
+            index_value=early_index,
+            run_date=date(2026, 2, 14),
+        )
+
+        letters = VpiAdjustmentRunService(run=early_run).ensure_letters()
+        letters_by_lease = {letter.lease_id: letter for letter in letters}
+
+        self.assertIn(self.due_lease.pk, letters_by_lease)
+        self.assertIn(self.missing_base_lease.pk, letters_by_lease)
+        self.assertIn(self.non_increase_lease.pk, letters_by_lease)
+        self.assertNotIn(self.future_lease.pk, letters_by_lease)
+        self.assertEqual(letters_by_lease[self.due_lease.pk].effective_date, date(2026, 3, 1))
 
     def test_ensure_letters_marks_skip_reasons(self):
         letters = self._service().ensure_letters()
@@ -4542,8 +4842,8 @@ class VpiAdjustmentRunServiceTests(TestCase):
         letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
 
         self.assertEqual(letter.catchup_months, 1)
-        self.assertEqual(letter.catchup_net_total, Decimal("50.00"))
-        self.assertEqual(letter.catchup_gross_total, Decimal("55.00"))
+        self.assertEqual(letter.catchup_net_total, Decimal("32.50"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("35.75"))
 
         Buchung.objects.create(
             mietervertrag=self.due_lease,
@@ -4560,8 +4860,8 @@ class VpiAdjustmentRunServiceTests(TestCase):
         letter.refresh_from_db()
 
         self.assertEqual(letter.catchup_months, 2)
-        self.assertEqual(letter.catchup_net_total, Decimal("100.00"))
-        self.assertEqual(letter.catchup_gross_total, Decimal("110.00"))
+        self.assertEqual(letter.catchup_net_total, Decimal("65.00"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("71.50"))
 
     def test_apply_run_is_idempotent(self):
         service = self._service()
@@ -4573,12 +4873,13 @@ class VpiAdjustmentRunServiceTests(TestCase):
         actionable_letter.pdf_datei = self._create_pdf_datei()
         actionable_letter.save(update_fields=["pdf_datei", "updated_at"])
 
-        result_first = service.apply_run()
+        with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 4, 15)):
+            result_first = service.apply_run()
         self.assertEqual(result_first["updated_leases"], 1)
         self.assertEqual(result_first["catchup_bookings"], 1)
 
         self.due_lease.refresh_from_db()
-        self.assertEqual(self.due_lease.net_rent, Decimal("550.00"))
+        self.assertEqual(self.due_lease.net_rent, Decimal("532.50"))
         self.assertEqual(self.due_lease.index_base_value, Decimal("110.00"))
         self.assertEqual(self.due_lease.last_index_adjustment, date(2026, 3, 1))
 
@@ -4590,10 +4891,48 @@ class VpiAdjustmentRunServiceTests(TestCase):
         )
         self.assertEqual(bookings.count(), 1)
 
-        result_second = service.apply_run()
+        with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 4, 15)):
+            result_second = service.apply_run()
         self.assertEqual(result_second["updated_leases"], 0)
         self.assertEqual(result_second["catchup_bookings"], 0)
         self.assertEqual(bookings.count(), 1)
+
+    def test_build_letter_filename_uses_requested_pattern(self):
+        self.property.name = "BHG14"
+        self.property.save(update_fields=["name"])
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+
+        with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 2, 14)):
+            filename = service.build_letter_filename(letter=letter, sequence_number=23)
+
+        self.assertEqual(filename, "23_2026_BHG14_Wertsicherung_20260214.pdf")
+
+    def test_apply_readiness_blocks_before_effective_date(self):
+        early_index = VpiIndexValue.objects.create(
+            month=date(2026, 1, 1),
+            index_value=Decimal("110.00"),
+        )
+        early_run = VpiAdjustmentRun.objects.create(
+            index_value=early_index,
+            run_date=date(2026, 2, 14),
+            brief_nummer_start=100,
+        )
+        service = VpiAdjustmentRunService(run=early_run)
+        letters = service.ensure_letters()
+        pdf = self._create_pdf_datei()
+        for letter in letters:
+            if (letter.skip_reason or "").strip():
+                continue
+            letter.pdf_datei = pdf
+            letter.save(update_fields=["pdf_datei", "updated_at"])
+
+        with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 2, 14)):
+            ready, reason = service.apply_readiness()
+
+        self.assertFalse(ready)
+        self.assertIn("Anpassung kann erst ab 01.03.2026 angewendet werden.", reason)
 
 
 class CheckVpiReleasesCommandTests(TestCase):
@@ -4640,14 +4979,10 @@ class CheckVpiReleasesCommandTests(TestCase):
         self.pending_index = VpiIndexValue.objects.create(
             month=date(2026, 2, 1),
             index_value=Decimal("110.00"),
-            is_released=True,
-            released_at=date(2026, 2, 20),
         )
         existing_run_index = VpiIndexValue.objects.create(
             month=date(2025, 2, 1),
             index_value=Decimal("106.00"),
-            is_released=True,
-            released_at=date(2025, 2, 20),
         )
         VpiAdjustmentRun.objects.create(
             index_value=existing_run_index,
@@ -4656,16 +4991,16 @@ class CheckVpiReleasesCommandTests(TestCase):
         VpiIndexValue.objects.create(
             month=date(2026, 1, 1),
             index_value=Decimal("109.00"),
-            is_released=False,
         )
 
-    def test_check_vpi_releases_reports_pending_released_values(self):
+    def test_check_vpi_releases_reports_pending_values(self):
         out = StringIO()
         call_command("check_vpi_releases", stdout=out)
         output = out.getvalue()
 
-        self.assertIn("freigegeben: 2", output)
-        self.assertIn("ohne Lauf: 1", output)
+        self.assertIn("indexwerte: 3", output)
+        self.assertIn("ohne Lauf: 2", output)
+        self.assertIn("- Offen: 01/2026", output)
         self.assertIn("- Offen: 02/2026", output)
 
     def test_check_vpi_releases_create_runs_is_idempotent(self):
@@ -4677,7 +5012,7 @@ class CheckVpiReleasesCommandTests(TestCase):
                 run_date=date(2026, 4, 10),
             ).exists()
         )
-        self.assertIn("Läufe erstellt: 1", out_first.getvalue())
+        self.assertIn("Läufe erstellt: 2", out_first.getvalue())
         self.assertIn("ohne Lauf: 0", out_first.getvalue())
 
         out_second = StringIO()
@@ -4727,19 +5062,21 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
             heating_costs_net=Decimal("50.00"),
         )
         self.lease.tenants.add(self.tenant)
-        self.index_value = VpiIndexValue.objects.create(
+        self.older_index_value = VpiIndexValue.objects.create(
+            month=date(2026, 1, 1),
+            index_value=Decimal("109.00"),
+        )
+        self.latest_index_value = VpiIndexValue.objects.create(
             month=date(2026, 2, 1),
             index_value=Decimal("110.00"),
-            is_released=True,
-            released_at=date(2026, 2, 20),
         )
 
-    def test_run_can_be_created_from_released_index(self):
+    def test_run_uses_latest_index_value_without_manual_selection(self):
         response = self.client.get(
             reverse("vpi_adjustment_run_ensure"),
-            {"index_id": str(self.index_value.pk), "run_date": "2026-04-15"},
+            {"run_date": "2026-04-15"},
         )
-        run = VpiAdjustmentRun.objects.get(index_value=self.index_value)
+        run = VpiAdjustmentRun.objects.get(index_value=self.latest_index_value)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
@@ -4747,9 +5084,10 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
             reverse("vpi_adjustment_run_detail", kwargs={"pk": run.pk}),
         )
         self.assertEqual(run.run_date, date(2026, 4, 15))
+        self.assertFalse(VpiAdjustmentRun.objects.filter(index_value=self.older_index_value).exists())
 
     def test_apply_endpoint_stays_blocked_until_letters_are_generated(self):
-        run = VpiAdjustmentRunService.ensure_run(index_value=self.index_value, run_date=date(2026, 4, 15))
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
         VpiAdjustmentRunService(run=run).ensure_letters()
         run.brief_nummer_start = 200
         run.save(update_fields=["brief_nummer_start"])
@@ -4759,3 +5097,35 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(run.status, VpiAdjustmentRun.Status.DRAFT)
+
+    def test_delete_draft_run_from_list(self):
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
+        VpiAdjustmentRunService(run=run).ensure_letters()
+        letter = run.letters.filter(skip_reason="").first()
+        self.assertIsNotNone(letter)
+        pdf = Datei.objects.create(
+            file=SimpleUploadedFile("vpi-delete.pdf", b"%PDF-1.4", content_type="application/pdf"),
+            kategorie=Datei.Kategorie.DOKUMENT,
+        )
+        letter.pdf_datei = pdf
+        letter.save(update_fields=["pdf_datei", "updated_at"])
+
+        response = self.client.post(reverse("vpi_adjustment_run_delete", kwargs={"pk": run.pk}))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("vpi_adjustment_run_list"))
+        self.assertFalse(VpiAdjustmentRun.objects.filter(pk=run.pk).exists())
+        self.assertFalse(VpiAdjustmentLetter.objects.filter(run_id=run.pk).exists())
+        pdf.refresh_from_db()
+        self.assertTrue(pdf.is_archived)
+
+    def test_delete_applied_run_is_blocked(self):
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
+        run.status = VpiAdjustmentRun.Status.APPLIED
+        run.save(update_fields=["status", "updated_at"])
+
+        response = self.client.post(reverse("vpi_adjustment_run_delete", kwargs={"pk": run.pk}))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("vpi_adjustment_run_list"))
+        self.assertTrue(VpiAdjustmentRun.objects.filter(pk=run.pk).exists())
