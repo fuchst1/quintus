@@ -28,13 +28,10 @@
                     <td colspan="6" class="ps-4 fw-semibold">{{ group.label }}</td>
                 </tr>
                     {% for meter in group.meters %}
-                    <tr>
+                    <tr class="meter-row-clickable" data-href="{% url 'meter_reading_by_meter_list' meter.pk %}">
                         <td class="text-center">
                             <a href="{% url 'meter_reading_create' %}?meter={{ meter.pk }}" class="btn btn-sm btn-outline-primary me-1" title="Zählerstand erfassen">
                                 <i class="bi bi-plus-circle"></i>
-                            </a>
-                            <a href="{% url 'meter_reading_by_meter_list' meter.pk %}" class="btn btn-sm btn-outline-info me-1" title="Ablesungen anzeigen">
-                                <i class="bi bi-list-ul"></i>
                             </a>
                             <a href="{% url 'meter_update' meter.pk %}" class="btn btn-sm btn-outline-secondary me-1" title="Zähler bearbeiten">
                                 <i class="bi bi-pencil"></i>
@@ -86,4 +83,17 @@
         </table>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll("tr.meter-row-clickable[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+            return;
+        }
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
 {% endblock %}

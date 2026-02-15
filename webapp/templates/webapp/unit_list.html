@@ -31,7 +31,7 @@
                     <td colspan="8" class="fw-semibold ps-4 small py-1">{{ group.grouper.name }}</td>
                 </tr>
                 {% for unit in group.list %}
-                <tr>
+                <tr class="unit-row-clickable" data-href="{% url 'unit_detail' unit.pk %}">
                     <td class="text-center">
                         <a href="{% url 'unit_update' unit.pk %}" class="btn btn-sm btn-outline-secondary me-1">
                             <i class="bi bi-pencil"></i>
@@ -64,4 +64,17 @@
         </table>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll("tr.unit-row-clickable[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+            return;
+        }
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
 {% endblock %}

@@ -77,11 +77,9 @@
                 </thead>
                 <tbody>
                     {% for row in rows %}
-                    <tr>
+                    <tr class="lease-row-clickable" data-href="{% url 'lease_detail' row.lease.pk %}">
                         <td class="ps-4">
-                            <a href="{% url 'lease_detail' row.lease.pk %}" class="text-decoration-none">
-                                {{ row.lease.unit.property.name }} · {{ row.lease.unit.name }}
-                            </a>
+                            {{ row.lease.unit.property.name }} · {{ row.lease.unit.name }}
                         </td>
                         <td>
                             {% for tenant in row.lease.tenants.all %}
@@ -115,4 +113,17 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll("tr.lease-row-clickable[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+            return;
+        }
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
 {% endblock %}

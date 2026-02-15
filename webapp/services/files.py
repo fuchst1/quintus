@@ -24,6 +24,7 @@ MAX_FILE_SIZE_BY_CATEGORY = {
     Datei.Kategorie.ZAEHLERFOTO: 5 * 1024 * 1024,
     Datei.Kategorie.BILD: 10 * 1024 * 1024,
     Datei.Kategorie.DOKUMENT: 15 * 1024 * 1024,
+    Datei.Kategorie.RECHNUNG: 15 * 1024 * 1024,
     Datei.Kategorie.BRIEF: 15 * 1024 * 1024,
     Datei.Kategorie.VERTRAG: 20 * 1024 * 1024,
     Datei.Kategorie.SONSTIGES: 10 * 1024 * 1024,
@@ -35,6 +36,8 @@ ALLOWED_TARGET_MODELS = {
     "tenant",
     "leaseagreement",
     "meter",
+    "meterreading",
+    "betriebskostenbeleg",
 }
 
 ATTACHMENT_FILTER_DEFINITIONS = (
@@ -48,7 +51,11 @@ ATTACHMENT_FILTER_DEFINITIONS = (
 ATTACHMENT_FILTER_CATEGORIES = {
     "alle": None,
     "bilder": (Datei.Kategorie.BILD,),
-    "dokumente": (Datei.Kategorie.DOKUMENT, Datei.Kategorie.VERTRAG),
+    "dokumente": (
+        Datei.Kategorie.DOKUMENT,
+        Datei.Kategorie.RECHNUNG,
+        Datei.Kategorie.VERTRAG,
+    ),
     "briefe": (Datei.Kategorie.BRIEF,),
     "zaehlerfotos": (Datei.Kategorie.ZAEHLERFOTO,),
 }

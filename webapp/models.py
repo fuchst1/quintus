@@ -800,6 +800,7 @@ class Datei(models.Model):
     class Kategorie(models.TextChoices):
         BILD = "bild", _("Bild")
         DOKUMENT = "dokument", _("Dokument")
+        RECHNUNG = "rechnung", _("Rechnung")
         BRIEF = "brief", _("Brief")
         ZAEHLERFOTO = "zaehlerfoto", _("Zählerfoto")
         VERTRAG = "vertrag", _("Vertrag")

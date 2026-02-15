@@ -25,7 +25,7 @@
             </thead>
             <tbody>
                 {% for prop in properties %}
-                <tr>
+                <tr class="property-row-clickable" data-href="{% url 'property_detail' prop.pk %}">
                     <td class="text-center">
                         <a href="{% url 'property_update' prop.pk %}" class="btn btn-sm btn-outline-secondary me-1">
                             <i class="bi bi-pencil"></i>
@@ -52,11 +52,24 @@
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="6" class="text-center py-5 text-muted">Keine Liegenschaften gefunden.</td>
+                    <td colspan="7" class="text-center py-5 text-muted">Keine Liegenschaften gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll("tr.property-row-clickable[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+            return;
+        }
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
 {% endblock %}

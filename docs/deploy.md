@@ -101,3 +101,37 @@ Optional mit automatischer Draft-Lauf-Erzeugung:
 ```bash
 python manage.py check_vpi_releases --create-runs
 ```
+
+## BK-Mieterportal (statischer Export + QR)
+
+### Umgebungsvariablen
+
+Für QR-Link und Portal-Export:
+
+- `BK_PORTAL_BASE_URL` (z. B. `https://belege.example.at/export`)
+- `BK_PORTAL_TOKEN_SECRET` (eigener geheimer Schlüssel, nicht öffentlich)
+- `BK_PORTAL_PATH_PREFIX` (Default `m`)
+
+### Export ausführen
+
+Im BK-Lauf:
+- Button `Portal-Export (ZIP)` erzeugt ein vollständiges statisches Paket.
+
+Per CLI:
+
+```bash
+python manage.py export_bk_portal --run-id 12 --output /home/quintus/exports/bk-portal.zip
+```
+
+Alternativ per Liegenschaft/Jahr:
+
+```bash
+python manage.py export_bk_portal --liegenschaft-id 3 --jahr 2025
+```
+
+### Webserver-Härtung für statisches Hosting
+
+- Directory Listing deaktivieren.
+- Indexierung deaktivieren (`robots.txt` + `X-Robots-Tag: noindex, nofollow`).
+- Token-URLs als geheim behandeln (nicht verlinken/teilen außerhalb der Briefe).
+- Bei vermutetem Leak: Export neu erzeugen und alte Exportdateien entfernen.

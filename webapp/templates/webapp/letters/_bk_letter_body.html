@@ -167,6 +167,20 @@
         </tbody>
     </table>
     <p class="bk-letter-text-small bk-letter-expense-hinweis">Auf Wunsch kann jederzeit Einsicht in die Originalbelege genommen werden.</p>
+    {% if payload.portal_enabled %}
+    <div class="bk-letter-portal-box">
+        {% if payload.portal_qr_data_uri %}
+        <div class="bk-letter-portal-qr">
+            <img src="{{ payload.portal_qr_data_uri }}" alt="QR-Code zum Belegportal">
+        </div>
+        {% endif %}
+        <div class="bk-letter-portal-text">
+            <div class="bk-letter-portal-title">Belege online</div>
+            <p class="bk-letter-text-small mb-1">Mit diesem QR-Code können Sie die Abrechnung und Belege online einsehen.</p>
+            <p class="bk-letter-text-small mb-0">{{ payload.portal_url }}</p>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="bk-letter-global-footer">Immo-Fuchs KG – IBAN: AT82 2011 1847 2203 9000 – UID: ATU78726489 – FB: FN 592404 h</div>
 </div>

@@ -96,6 +96,26 @@ body {
     padding-bottom: 0.2rem;
 }
 
+.lease-row-clickable {
+    cursor: pointer;
+}
+
+.property-row-clickable {
+    cursor: pointer;
+}
+
+.unit-row-clickable {
+    cursor: pointer;
+}
+
+.meter-row-clickable {
+    cursor: pointer;
+}
+
+.meter-reading-row-clickable {
+    cursor: pointer;
+}
+
 /* Karten-Effekte für das Dashboard */
 .card-box { 
     transition: all 0.3s ease; 

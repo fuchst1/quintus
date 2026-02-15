@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import io
 import zipfile
 from datetime import date, timedelta
@@ -27,6 +29,7 @@ from webapp.services.annual_statement_pdf_service import (
 )
 from webapp.services.annual_statement_storage_service import AnnualStatementStorageService
 from webapp.services.operating_cost_service import OperatingCostService
+from webapp.services.qr_code_service import QrCodeService
 
 
 class AnnualStatementRunService:
@@ -385,6 +388,51 @@ class AnnualStatementRunService:
             for index, letter in enumerate(letters)
         }
 
+    @staticmethod
+    def _portal_base_url(*, override: str | None = None) -> str:
+        if override is not None:
+            return str(override).strip().rstrip("/")
+        return str(getattr(settings, "BK_PORTAL_BASE_URL", "") or "").strip().rstrip("/")
+
+    @staticmethod
+    def portal_path_prefix() -> str:
+        raw_prefix = str(getattr(settings, "BK_PORTAL_PATH_PREFIX", "m") or "").strip().strip("/")
+        if not raw_prefix:
+            return "m"
+        cleaned = "".join(ch for ch in raw_prefix if ch.isalnum() or ch in {"-", "_"})
+        return cleaned or "m"
+
+    @staticmethod
+    def _portal_token_secret() -> str:
+        configured = str(getattr(settings, "BK_PORTAL_TOKEN_SECRET", "") or "").strip()
+        if configured:
+            return configured
+        return str(getattr(settings, "SECRET_KEY", "dev-only-dummy-token-secret"))
+
+    def build_portal_token(self, *, letter: Abrechnungsschreiben) -> str:
+        payload = f"{self.run.pk}:{letter.pk}:{letter.mietervertrag_id}:{self.year}:{self.property.pk}"
+        digest = hmac.new(
+            self._portal_token_secret().encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        return token[:32]
+
+    def build_portal_relative_path(self, *, letter: Abrechnungsschreiben) -> str:
+        return f"{self.portal_path_prefix()}/{self.build_portal_token(letter=letter)}/"
+
+    def build_portal_url(
+        self,
+        *,
+        letter: Abrechnungsschreiben,
+        base_url_override: str | None = None,
+    ) -> str:
+        base_url = self._portal_base_url(override=base_url_override)
+        if not base_url:
+            return ""
+        return f"{base_url}/{self.build_portal_relative_path(letter=letter)}"
+
     def _lease_for_unit(self, *, unit_id: int) -> LeaseAgreement | None:
         leases = (
             LeaseAgreement.objects.filter(unit_id=unit_id, entry_date__lte=self.period_end)
@@ -615,11 +663,16 @@ class AnnualStatementRunService:
         payload = self._base_payload(letter=letter)
         if sequence_number is None:
             sequence_number = letter.laufende_nummer
+        portal_url = self.build_portal_url(letter=letter)
+        portal_qr_data_uri = QrCodeService.qr_data_uri(portal_url=portal_url) if portal_url else ""
         payload["document_number"] = sequence_number
         payload["document_number_display"] = self._format_document_number(
             sequence_number=sequence_number,
             year=self.year,
         )
+        payload["portal_url"] = portal_url
+        payload["portal_qr_data_uri"] = portal_qr_data_uri
+        payload["portal_enabled"] = bool(portal_url)
         row = self._annual_rows_by_unit().get(letter.einheit_id)
         (
             expense_group_sections,

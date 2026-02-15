@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
 
 from django.contrib import messages
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.http import FileResponse, Http404, HttpResponse
 from django.db.models import Case, Count, DecimalField, IntegerField, Max, Prefetch, Q, Sum, Value, When
@@ -24,6 +25,7 @@ from .models import (
     BetriebskostenGruppe,
     Buchung,
     Datei,
+    DateiZuordnung,
     LeaseAgreement,
     Manager,
     Meter,
@@ -58,6 +60,7 @@ from .forms import (
 from .services.files import DateiService
 from .services.excel_export import ExcelColumn, ExcelExportService
 from .services.annual_statement_pdf_service import AnnualStatementPdfService
+from .services.annual_statement_portal_export_service import AnnualStatementPortalExportService
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.operating_cost_service import OperatingCostService
 from .services.settlement_adjustments import match_settlement_adjustment_text
@@ -104,12 +107,23 @@ def build_attachments_panel_context(request, target_object, *, title: str):
             }
         )
 
+    prefill_category = None
+    show_upload_toggle = True
+    upload_expanded = False
+    if target_object._meta.model_name == "betriebskostenbeleg":
+        prefill_category = Datei.Kategorie.RECHNUNG
+        show_upload_toggle = False
+        upload_expanded = True
+
     return {
         "title": title,
         "target_app_label": target_object._meta.app_label,
         "target_model": target_object._meta.model_name,
         "target_object_id": target_object.pk,
         "category_choices": DateiService.category_choices(),
+        "prefill_category": prefill_category,
+        "show_upload_toggle": show_upload_toggle,
+        "upload_expanded": upload_expanded,
         "rows": rows,
         "filters": filters,
         "selected_filter": selected_filter,
@@ -275,6 +289,34 @@ class DateiDownloadView(View):
         return response
 
 
+class DateiOpenView(View):
+    http_method_names = ["get"]
+
+    def get(self, request, pk, *args, **kwargs):
+        datei = get_object_or_404(
+            Datei.objects.prefetch_related("zuordnungen__content_type"),
+            pk=pk,
+        )
+        open_target = datei
+        replacement = DateiService.replacement_for_archived_download(datei=datei)
+        if replacement is not None:
+            open_target = replacement
+
+        DateiService.prepare_download(user=None, datei=open_target)
+        if not open_target.file:
+            raise Http404("Datei wurde nicht gefunden.")
+
+        mime_type = (open_target.mime_type or "").strip().lower() or "application/octet-stream"
+        response = FileResponse(
+            open_target.file.open("rb"),
+            as_attachment=False,
+            filename=open_target.original_name or os.path.basename(open_target.file.name or ""),
+        )
+        response["Content-Type"] = mime_type
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
 class DateiPreviewView(View):
     http_method_names = ["get"]
 
@@ -317,6 +359,41 @@ class PropertyListView(ListView):
     template_name = "webapp/property_list.html"
     context_object_name = "properties"
     queryset = Property.objects.prefetch_related("ownerships__owner")
+
+
+class PropertyDetailView(DetailView):
+    model = Property
+    template_name = "webapp/property_detail.html"
+    context_object_name = "property_obj"
+    queryset = Property.objects.select_related("manager").prefetch_related(
+        "ownerships__owner",
+        Prefetch("units", queryset=Unit.objects.prefetch_related("leases").order_by("name", "door_number")),
+    )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        units = list(self.object.units.all())
+        rented_unit_count = 0
+
+        for unit in units:
+            active_lease_count = sum(
+                1 for lease in unit.leases.all() if lease.status == LeaseAgreement.Status.AKTIV
+            )
+            unit.active_lease_count = active_lease_count
+            if active_lease_count:
+                rented_unit_count += 1
+
+        context["units"] = units
+        context["unit_count"] = len(units)
+        context["rented_unit_count"] = rented_unit_count
+        context["vacant_unit_count"] = max(len(units) - rented_unit_count, 0)
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zur Liegenschaft",
+        )
+        return context
+
 
 class PropertyCreateView(CreateView):
     model = Property
@@ -727,6 +804,47 @@ class MeterReadingByMeterListView(ListView):
         context["meter"] = meter
 
         readings = list(context["readings"])
+        reading_ids = [reading.pk for reading in readings if reading.pk]
+        attachment_count_by_reading_id: dict[int, int] = {}
+        first_image_id_by_reading_id: dict[int, int] = {}
+        if reading_ids:
+            reading_content_type = ContentType.objects.get_for_model(MeterReading)
+            attachment_rows = (
+                DateiZuordnung.objects.filter(
+                    content_type=reading_content_type,
+                    object_id__in=reading_ids,
+                    datei__is_archived=False,
+                )
+                .values("object_id")
+                .annotate(total=Count("id"))
+            )
+            attachment_count_by_reading_id = {
+                int(row["object_id"]): int(row["total"]) for row in attachment_rows
+            }
+            image_rows = (
+                DateiZuordnung.objects.filter(
+                    content_type=reading_content_type,
+                    object_id__in=reading_ids,
+                    datei__is_archived=False,
+                )
+                .filter(
+                    Q(
+                        datei__kategorie__in=[
+                            Datei.Kategorie.BILD,
+                            Datei.Kategorie.ZAEHLERFOTO,
+                        ]
+                    )
+                    | Q(datei__mime_type__istartswith="image/")
+                )
+                .select_related("datei")
+                .order_by("object_id", "-datei__created_at", "-id")
+            )
+            for image_row in image_rows:
+                object_id = int(image_row.object_id)
+                if object_id in first_image_id_by_reading_id:
+                    continue
+                first_image_id_by_reading_id[object_id] = int(image_row.datei_id)
+
         last_reading_by_year: dict[int, MeterReading] = {}
         for index, reading in enumerate(readings):
             previous_reading = readings[index + 1] if index + 1 < len(readings) else None
@@ -745,11 +863,10 @@ class MeterReadingByMeterListView(ListView):
                 reading.yearly_consumption = yearly_map.get(reading.date.year)
             else:
                 reading.yearly_consumption = None
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            meter,
-            title="Dateien zum Verbrauchszähler",
-        )
+            reading.attachment_count = attachment_count_by_reading_id.get(reading.pk, 0)
+            reading.first_image_id = first_image_id_by_reading_id.get(reading.pk)
+            # Backward-compatible alias for templates during rollout.
+            reading.first_photo_id = reading.first_image_id
         return context
 
 
@@ -759,31 +876,6 @@ class MeterReadingCreateView(CreateView):
     template_name = "webapp/meter_reading_form.html"
     success_url = reverse_lazy("meter_list")
 
-    def _selected_meter(self):
-        meter_id = self.request.GET.get("meter") or self.request.POST.get("meter")
-        if not meter_id:
-            return None
-        try:
-            meter_pk = int(meter_id)
-        except (TypeError, ValueError):
-            return None
-        return (
-            Meter.objects.select_related("unit", "property")
-            .filter(pk=meter_pk)
-            .first()
-        )
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        meter = self._selected_meter()
-        if meter:
-            context["attachments_panel"] = build_attachments_panel_context(
-                self.request,
-                meter,
-                title="Dateien zum Verbrauchszähler",
-            )
-        return context
-
     def get_initial(self):
         initial = super().get_initial()
         meter_id = self.request.GET.get("meter")
@@ -792,9 +884,7 @@ class MeterReadingCreateView(CreateView):
         return initial
 
     def get_success_url(self):
-        if self.request.GET.get("meter"):
-            return reverse_lazy("meter_list")
-        return reverse_lazy("meter_list")
+        return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
 
 
 class MeterReadingUpdateView(UpdateView):
@@ -806,8 +896,8 @@ class MeterReadingUpdateView(UpdateView):
         context = super().get_context_data(**kwargs)
         context["attachments_panel"] = build_attachments_panel_context(
             self.request,
-            self.object.meter,
-            title="Dateien zum Verbrauchszähler",
+            self.object,
+            title="Dateien zum Zählerstand",
         )
         return context
 
@@ -2231,11 +2321,50 @@ class BetriebskostenBelegListView(ListView):
                 output_field=DecimalField(max_digits=12, decimal_places=2),
             ),
         )
+        attachment_count_by_beleg_id: dict[int, int] = {}
+        first_attachment_id_by_beleg_id: dict[int, int] = {}
+        belege = list(context["belege"])
+        beleg_ids = [beleg.pk for beleg in belege]
+        if beleg_ids:
+            beleg_content_type = ContentType.objects.get_for_model(BetriebskostenBeleg)
+            count_rows = (
+                DateiZuordnung.objects.filter(
+                    content_type=beleg_content_type,
+                    object_id__in=beleg_ids,
+                    datei__is_archived=False,
+                )
+                .values("object_id")
+                .annotate(total=Count("id"))
+            )
+            attachment_count_by_beleg_id = {
+                int(row["object_id"]): int(row["total"])
+                for row in count_rows
+            }
+            first_attachment_rows = (
+                DateiZuordnung.objects.filter(
+                    content_type=beleg_content_type,
+                    object_id__in=beleg_ids,
+                    datei__is_archived=False,
+                )
+                .order_by("object_id", "-datei__created_at", "-id")
+            )
+            for assignment in first_attachment_rows:
+                object_id = int(assignment.object_id)
+                if object_id in first_attachment_id_by_beleg_id:
+                    continue
+                first_attachment_id_by_beleg_id[object_id] = int(assignment.datei_id)
+        for beleg in belege:
+            beleg.attachment_count = attachment_count_by_beleg_id.get(beleg.pk, 0)
+            beleg.first_attachment_id = first_attachment_id_by_beleg_id.get(beleg.pk)
+
         ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
         context["bulk_group_choices"] = (
             BetriebskostenGruppe.objects.filter(Q(is_active=True) | Q(pk=ungrouped_group.pk))
             .order_by("sort_order", "name", "id")
         )
+        context["bulk_file_category_choices"] = DateiService.category_choices()
+        context["bulk_file_prefill_category"] = Datei.Kategorie.RECHNUNG
+        context["attachment_count_by_beleg_id"] = attachment_count_by_beleg_id
         context["year_choices"] = getattr(self, "year_choices", [])
         context["selected_year"] = getattr(self, "selected_year", timezone.localdate().year)
         context["selected_search_query"] = getattr(self, "selected_search_query", "")
@@ -2385,6 +2514,11 @@ class BetriebskostenBelegUpdateView(UpdateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["next_url"] = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zum Betriebskostenbeleg",
+        )
         return context
 
     def get_success_url(self):
@@ -2429,6 +2563,76 @@ class BetriebskostenBelegBulkGroupUpdateView(View):
         queryset = BetriebskostenBeleg.objects.filter(pk__in=selected_ids)
         if not queryset.exists():
             messages.warning(request, "Die ausgewählten Belege konnten nicht gefunden werden.")
+            return redirect(next_url)
+
+        if bulk_action == "attach_file":
+            bulk_file = request.FILES.get("bulk_file")
+            selected_category = (request.POST.get("bulk_file_kategorie") or "").strip()
+            selected_description = (request.POST.get("bulk_file_beschreibung") or "").strip()
+
+            if bulk_file is None:
+                messages.warning(request, "Bitte eine Datei für die Bulk-Zuweisung auswählen.")
+                return redirect(next_url)
+
+            valid_categories = {choice for choice, _label in Datei.Kategorie.choices}
+            if selected_category not in valid_categories:
+                messages.warning(request, "Bitte eine gültige Dateikategorie auswählen.")
+                return redirect(next_url)
+
+            ordered_belege = list(queryset.order_by("id"))
+            anchor_beleg = ordered_belege[0]
+
+            try:
+                with transaction.atomic():
+                    uploaded_datei = DateiService.upload(
+                        user=request.user if request.user.is_authenticated else None,
+                        uploaded_file=bulk_file,
+                        kategorie=selected_category,
+                        target_object=anchor_beleg,
+                        beschreibung=selected_description,
+                    )
+
+                    beleg_content_type = ContentType.objects.get_for_model(BetriebskostenBeleg)
+                    remaining_ids = [
+                        beleg.pk
+                        for beleg in ordered_belege
+                        if beleg.pk != anchor_beleg.pk
+                    ]
+                    existing_object_ids = set(
+                        DateiZuordnung.objects.filter(
+                            datei=uploaded_datei,
+                            content_type=beleg_content_type,
+                            object_id__in=remaining_ids,
+                        ).values_list("object_id", flat=True)
+                    )
+                    new_assignments = [
+                        DateiZuordnung(
+                            datei=uploaded_datei,
+                            content_type=beleg_content_type,
+                            object_id=beleg_id,
+                            created_by=request.user if request.user.is_authenticated else None,
+                        )
+                        for beleg_id in remaining_ids
+                        if beleg_id not in existing_object_ids
+                    ]
+                    if new_assignments:
+                        DateiZuordnung.objects.bulk_create(new_assignments)
+            except ValidationError as exc:
+                messages.warning(request, " ".join(exc.messages))
+                return redirect(next_url)
+
+            created_assignment_count = len(new_assignments)
+            total_linked_count = created_assignment_count + 1
+            skipped_assignment_count = len(ordered_belege) - total_linked_count
+            messages.success(
+                request,
+                f"Datei wurde {total_linked_count} Beleg(en) zugeordnet.",
+            )
+            if skipped_assignment_count > 0:
+                messages.info(
+                    request,
+                    f"{skipped_assignment_count} Zuordnung(en) waren bereits vorhanden.",
+                )
             return redirect(next_url)
 
         if bulk_action == "delete":
@@ -3156,6 +3360,10 @@ class AnnualStatementRunDetailView(DetailView):
             "annual_statement_run_generate_letters",
             kwargs={"pk": self.object.pk},
         )
+        context["export_portal_url"] = reverse(
+            "annual_statement_run_export_portal",
+            kwargs={"pk": self.object.pk},
+        )
         context["delete_url"] = reverse(
             "annual_statement_run_delete",
             kwargs={"pk": self.object.pk},
@@ -3312,6 +3520,30 @@ class AnnualStatementRunGenerateLettersView(View):
         return response
 
 
+class AnnualStatementRunExportPortalView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, *args, **kwargs):
+        run = get_object_or_404(
+            Abrechnungslauf.objects.select_related("liegenschaft"),
+            pk=kwargs["pk"],
+        )
+        service = AnnualStatementPortalExportService(run=run)
+        base_url_override = (request.POST.get("base_url") or "").strip() or None
+        try:
+            zip_bytes, summary = service.build_zip(base_url_override=base_url_override)
+        except RuntimeError as exc:
+            messages.error(request, str(exc))
+            return redirect("annual_statement_run_detail", pk=run.pk)
+
+        response = HttpResponse(zip_bytes, content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="{service.build_zip_filename()}"'
+        response["Content-Length"] = str(len(zip_bytes))
+        response["X-Tenant-Count"] = str(summary.get("tenant_count", 0))
+        response["X-Attachment-Count"] = str(summary.get("attachment_count", 0))
+        return response
+
+
 class AnnualStatementRunApplyView(View):
     http_method_names = ["post"]
 
@@ -3349,6 +3581,57 @@ class AnnualStatementRunApplyView(View):
 
 class VpiAdjustmentRunListView(TemplateView):
     template_name = "webapp/vpi_adjustment_run_list.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        runs = (
+            VpiAdjustmentRun.objects.select_related("index_value")
+            .annotate(letter_count=Count("letters"))
+            .order_by("-run_date", "-id")
+        )
+        latest_values = list(VpiIndexValue.objects.order_by("-month", "-id")[:2])
+        latest_index_value = latest_values[0] if latest_values else None
+        reference_index_value = latest_values[1] if len(latest_values) > 1 else None
+
+        vpi_change_percent_raw = None
+        vpi_change_percent_tenant = None
+        if (
+            latest_index_value is not None
+            and reference_index_value is not None
+            and Decimal(reference_index_value.index_value) > Decimal("0.00")
+        ):
+            new_index = Decimal(latest_index_value.index_value)
+            old_index = Decimal(reference_index_value.index_value)
+            raw_change_ratio = (new_index / old_index) - Decimal("1.00")
+            vpi_change_percent_raw = (raw_change_ratio * Decimal("100.00")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            tenant_factor = VpiAdjustmentRunService._tenant_factor_from_index_values(
+                old_index_value=old_index,
+                new_index_value=new_index,
+            )
+            vpi_change_percent_tenant = (
+                (tenant_factor - Decimal("1.00")) * Decimal("100.00")
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+        latest_run = None
+        if latest_index_value is not None:
+            latest_run = VpiAdjustmentRun.objects.filter(index_value=latest_index_value).first()
+        context["runs"] = list(runs)
+        context["latest_index_value"] = latest_index_value
+        context["reference_index_value"] = reference_index_value
+        context["vpi_change_percent_raw"] = vpi_change_percent_raw
+        context["vpi_change_percent_tenant"] = vpi_change_percent_tenant
+        context["latest_run"] = latest_run
+        context["today"] = timezone.localdate()
+        return context
+
+class VpiIndexValueSettingsView(TemplateView):
+    template_name = "webapp/vpi_index_value_settings.html"
     formset_prefix = "index"
 
     def _build_formset(self, *, data=None):
@@ -3359,21 +3642,7 @@ class VpiAdjustmentRunListView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        formset = kwargs.get("formset") or self._build_formset()
-        runs = (
-            VpiAdjustmentRun.objects.select_related("index_value")
-            .annotate(letter_count=Count("letters"))
-            .order_by("-run_date", "-id")
-        )
-        latest_index_value = VpiIndexValue.objects.order_by("-month", "-id").first()
-        latest_run = None
-        if latest_index_value is not None:
-            latest_run = VpiAdjustmentRun.objects.filter(index_value=latest_index_value).first()
-        context["formset"] = formset
-        context["runs"] = list(runs)
-        context["latest_index_value"] = latest_index_value
-        context["latest_run"] = latest_run
-        context["today"] = timezone.localdate()
+        context["formset"] = kwargs.get("formset") or self._build_formset()
         return context
 
     def post(self, request, *args, **kwargs):
@@ -3384,7 +3653,7 @@ class VpiAdjustmentRunListView(TemplateView):
                 instance.full_clean()
                 instance.save()
             messages.success(request, "VPI-Indexwerte wurden gespeichert.")
-            return redirect("vpi_adjustment_run_list")
+            return redirect("vpi_index_value_settings")
         messages.error(request, "Bitte prüfen Sie die Eingaben der VPI-Indexwerte.")
         return self.render_to_response(self.get_context_data(formset=formset))
 
@@ -3397,7 +3666,7 @@ class VpiAdjustmentRunEnsureView(View):
         index_value = VpiIndexValue.objects.order_by("-month", "-id").first()
         if index_value is None:
             messages.error(request, "Bitte zuerst mindestens einen VPI-Indexwert speichern.")
-            return redirect("vpi_adjustment_run_list")
+            return redirect("vpi_index_value_settings")
 
         run_date = timezone.localdate()
         if run_date_raw:
@@ -3627,6 +3896,33 @@ class UnitListView(ListView):
     template_name = "webapp/unit_list.html"
     context_object_name = "units"
     queryset = Unit.objects.select_related("property").order_by("property__name", "door_number", "name")
+
+
+class UnitDetailView(DetailView):
+    model = Unit
+    template_name = "webapp/unit_detail.html"
+    context_object_name = "unit_obj"
+    queryset = Unit.objects.select_related("property").prefetch_related(
+        Prefetch(
+            "leases",
+            queryset=LeaseAgreement.objects.select_related("manager").prefetch_related("tenants").order_by(
+                "-entry_date",
+                "-id",
+            ),
+        )
+    )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        leases = list(self.object.leases.all())
+        context["active_leases"] = [lease for lease in leases if lease.status == LeaseAgreement.Status.AKTIV]
+        context["ended_leases"] = [lease for lease in leases if lease.status == LeaseAgreement.Status.BEENDET]
+        context["attachments_panel"] = build_attachments_panel_context(
+            self.request,
+            self.object,
+            title="Dateien zur Einheit",
+        )
+        return context
 
 
 class UnitCreateView(CreateView):

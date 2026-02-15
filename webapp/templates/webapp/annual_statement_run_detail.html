@@ -28,6 +28,13 @@
                     Briefe erstellen (Download + Ablage)
                 </button>
             </form>
+            <form method="post" action="{{ export_portal_url }}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="bi bi-globe2 me-1"></i>
+                    Portal-Export (ZIP)
+                </button>
+            </form>
             <form method="post" action="{{ apply_url }}">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-success" {% if not can_apply %}disabled{% endif %}>

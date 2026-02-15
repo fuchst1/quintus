@@ -151,6 +151,17 @@
     line-height: 1.14;
 }
 
+.bk-letter-table-vpi {
+    margin: 0.72rem 0 0.8rem;
+    font-size: 0.592rem;
+}
+
+.bk-letter-table-vpi th,
+.bk-letter-table-vpi td {
+    padding: 0.32rem 0.36rem;
+    line-height: 1.16;
+}
+
 .bk-letter-table th {
     background: #eef2f8;
     font-weight: 700;
@@ -205,6 +216,36 @@
 
 .bk-letter-expense-hinweis {
     margin-top: 0.75rem;
+}
+
+.bk-letter-portal-box {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    border: 1px solid #c6cfdd;
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+    margin-top: 0.5rem;
+}
+
+.bk-letter-portal-qr img {
+    display: block;
+    width: 18mm;
+    height: 18mm;
+}
+
+.bk-letter-portal-title {
+    font-size: 0.74rem;
+    font-weight: 700;
+    margin-bottom: 0.06rem;
+}
+
+.bk-letter-portal-text {
+    min-width: 0;
+}
+
+.bk-letter-portal-text p {
+    word-break: break-word;
 }
 
 .bk-letter-global-footer {

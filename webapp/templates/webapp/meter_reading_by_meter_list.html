@@ -19,7 +19,7 @@
 </div>
 
 <div class="row g-4">
-    <div class="col-12 col-xl-8">
+    <div class="col-12">
         <div class="card border-0 shadow-sm">
             <div class="card-body p-0">
                 <table class="table table-hover mb-0">
@@ -31,11 +31,12 @@
                             <th>Letzter Verbrauch</th>
                             <th>Jahresverbrauch</th>
                             <th>Notiz</th>
+                            <th class="text-center">Fotos</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for reading in readings %}
-                        <tr>
+                        <tr class="meter-reading-row-clickable" data-href="{% url 'meter_reading_update' reading.pk %}">
                             <td class="text-center">
                                 <a href="{% url 'meter_reading_update' reading.pk %}" class="btn btn-sm btn-outline-secondary me-1">
                                     <i class="bi bi-pencil"></i>
@@ -61,10 +62,25 @@
                                 {% endif %}
                             </td>
                             <td>{{ reading.note|default:"—" }}</td>
+                            <td class="text-center">
+                                {% if reading.first_image_id %}
+                                <a
+                                    href="{% url 'datei_preview' reading.first_image_id %}"
+                                    class="btn btn-sm btn-outline-primary me-1"
+                                    target="_blank"
+                                    rel="noopener"
+                                >
+                                    Bild anzeigen
+                                </a>
+                                {% endif %}
+                                <a href="{% url 'meter_reading_update' reading.pk %}" class="btn btn-sm btn-outline-primary">
+                                    Fotos ({{ reading.attachment_count }})
+                                </a>
+                            </td>
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="6" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
+                            <td colspan="7" class="text-center py-5 text-muted">Keine Ablesungen gefunden.</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -72,8 +88,18 @@
             </div>
         </div>
     </div>
-    <div class="col-12 col-xl-4">
-        {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel attachments_panel_inline=True %}
-    </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll("tr.meter-reading-row-clickable[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+            return;
+        }
+        window.location.href = row.dataset.href;
+    });
+});
+</script>
 {% endblock %}

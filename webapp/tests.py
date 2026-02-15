@@ -2,6 +2,7 @@ import io
 import json
 import os
 import re
+import tempfile
 import zipfile
 from io import StringIO
 from datetime import date, timedelta
@@ -45,6 +46,7 @@ from .services.annual_statement_pdf_service import (
     AnnualStatementPdfGenerationError,
     AnnualStatementPdfService,
 )
+from .services.annual_statement_portal_export_service import AnnualStatementPortalExportService
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.files import MAX_FILE_SIZE_BY_CATEGORY, DateiService
 from .services.operating_cost_service import OperatingCostService
@@ -209,32 +211,129 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             kind=Meter.CalculationKind.READING,
         )
 
-    def test_create_view_with_meter_query_contains_attachments_panel(self):
+    def test_create_view_with_meter_query_does_not_show_attachments_panel(self):
         response = self.client.get(
             reverse("meter_reading_create"),
             {"meter": self.meter.pk},
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("attachments_panel", response.context)
-        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Verbrauchszähler")
-        self.assertContains(response, "Dateien zum Verbrauchszähler")
-        self.assertContains(response, "col-12 col-xl-5")
+        self.assertNotIn("attachments_panel", response.context)
+        self.assertNotContains(response, "Dateien zum Verbrauchszähler")
 
-    def test_by_meter_list_contains_inline_attachments_panel(self):
-        MeterReading.objects.create(
+    def test_update_view_contains_reading_attachments_panel(self):
+        reading = MeterReading.objects.create(
             meter=self.meter,
             date=date(2026, 2, 1),
             value=Decimal("123.000"),
         )
 
-        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+        response = self.client.get(reverse("meter_reading_update", args=[reading.pk]))
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachments_panel", response.context)
-        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Verbrauchszähler")
-        self.assertContains(response, "Dateien zum Verbrauchszähler")
-        self.assertContains(response, "col-12 col-xl-4")
+        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Zählerstand")
+        self.assertEqual(response.context["attachments_panel"]["target_model"], "meterreading")
+        self.assertTrue(response.context["attachments_panel"]["show_upload_toggle"])
+        self.assertContains(response, "Dateien zum Zählerstand")
+        self.assertContains(response, "Datei hochladen")
+        self.assertContains(response, "col-12 col-xl-5")
+
+    def test_by_meter_list_shows_image_action_and_count_without_inline_panel(self):
+        reading = MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+        uploaded_datei = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "zaehlerstand.jpg",
+                b"img",
+                content_type="image/jpeg",
+            ),
+            kategorie=Datei.Kategorie.ZAEHLERFOTO,
+            target_object=reading,
+        )
+
+        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("attachments_panel", response.context)
+        self.assertContains(response, "Fotos (1)")
+        self.assertContains(response, "Bild anzeigen")
+        self.assertContains(response, reverse("datei_preview", args=[uploaded_datei.pk]))
+        self.assertContains(response, reverse("meter_reading_update", args=[reading.pk]))
+        self.assertNotContains(response, "Dateien zum Verbrauchszähler")
+
+    def test_by_meter_list_shows_image_action_for_category_bild(self):
+        reading = MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 3, 1),
+            value=Decimal("150.000"),
+        )
+        uploaded_datei = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "beleg-bild.jpg",
+                b"image-content",
+                content_type="image/jpeg",
+            ),
+            kategorie=Datei.Kategorie.BILD,
+            target_object=reading,
+        )
+
+        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bild anzeigen")
+        self.assertContains(response, reverse("datei_preview", args=[uploaded_datei.pk]))
+
+    def test_by_meter_list_shows_image_action_for_duplicate_upload_on_other_meter(self):
+        meter_two = Meter.objects.create(
+            property=self.property,
+            meter_type=Meter.MeterType.WATER_COLD,
+            meter_number="W-1051",
+            kind=Meter.CalculationKind.READING,
+        )
+        reading_one = MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 4, 1),
+            value=Decimal("200.000"),
+        )
+        reading_two = MeterReading.objects.create(
+            meter=meter_two,
+            date=date(2026, 4, 1),
+            value=Decimal("220.000"),
+        )
+
+        shared_bytes = b"same-image-bytes"
+        DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "dup-one.jpg",
+                shared_bytes,
+                content_type="image/jpeg",
+            ),
+            kategorie=Datei.Kategorie.BILD,
+            target_object=reading_one,
+        )
+        uploaded_duplicate = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "dup-two.jpg",
+                shared_bytes,
+                content_type="image/jpeg",
+            ),
+            kategorie=Datei.Kategorie.BILD,
+            target_object=reading_two,
+        )
+
+        response = self.client.get(reverse("meter_reading_by_meter_list", args=[meter_two.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bild anzeigen")
+        self.assertContains(response, reverse("datei_preview", args=[uploaded_duplicate.pk]))
 
 
 class LeaseAgreementHistoryTests(TestCase):
@@ -1253,6 +1352,124 @@ class BetriebskostenBelegListViewTests(TestCase):
         self.assertContains(response, "beleg-bulk-checkbox-cell d-none")
         self.assertContains(response, "bulk_action")
 
+    def test_list_prefills_bulk_file_category_with_rechnung(self):
+        response = self.client.get(reverse("betriebskostenbeleg_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="bulkFileCategoryInput"')
+        self.assertContains(response, 'option value="rechnung" selected')
+
+    def test_list_shows_attachment_status_per_row(self):
+        current_year = date.today().year
+        beleg_with_file = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(current_year, 9, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+        BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.WASSER,
+            datum=date(current_year, 9, 11),
+            netto=Decimal("20.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("24.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+        uploaded_datei = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "bk-beleg.pdf",
+                b"%PDF",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.DOKUMENT,
+            target_object=beleg_with_file,
+        )
+
+        response = self.client.get(reverse("betriebskostenbeleg_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Beleg öffnen")
+        self.assertNotContains(response, "Dateien (1)")
+        self.assertContains(response, reverse("datei_open", args=[uploaded_datei.pk]))
+        self.assertNotContains(response, "Datei hinzufügen")
+
+    def test_bulk_attach_file_assigns_one_upload_to_multiple_belege(self):
+        beleg_one = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 10, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+        beleg_two = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.WASSER,
+            datum=date(2026, 10, 11),
+            netto=Decimal("20.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("24.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+
+        response = self.client.post(
+            reverse("betriebskostenbeleg_bulk_group_update"),
+            data={
+                "selected_belege": [str(beleg_one.pk), str(beleg_two.pk)],
+                "bulk_action": "attach_file",
+                "bulk_file_kategorie": Datei.Kategorie.DOKUMENT,
+                "bulk_file_beschreibung": "Gemeinsamer BK-Beleg",
+                "next": reverse("betriebskostenbeleg_list"),
+                "bulk_file": SimpleUploadedFile(
+                    "bulk-beleg.pdf",
+                    b"%PDF",
+                    content_type="application/pdf",
+                ),
+            },
+            follow=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Datei.objects.count(), 1)
+        beleg_content_type = ContentType.objects.get_for_model(BetriebskostenBeleg)
+        assignments = DateiZuordnung.objects.filter(
+            content_type=beleg_content_type,
+            object_id__in=[beleg_one.pk, beleg_two.pk],
+        )
+        self.assertEqual(assignments.count(), 2)
+        self.assertEqual(assignments.values("datei_id").distinct().count(), 1)
+
+    def test_bulk_attach_file_requires_file(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 11, 10),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("60.00"),
+            ausgabengruppe=self.ungrouped_group,
+        )
+
+        response = self.client.post(
+            reverse("betriebskostenbeleg_bulk_group_update"),
+            {
+                "selected_belege": [str(beleg.pk)],
+                "bulk_action": "attach_file",
+                "bulk_file_kategorie": Datei.Kategorie.DOKUMENT,
+                "next": reverse("betriebskostenbeleg_list"),
+            },
+            follow=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Datei.objects.count(), 0)
+
     def test_list_renders_filtered_netto_and_brutto_sums(self):
         current_year = date.today().year
         BetriebskostenBeleg.objects.create(
@@ -1399,6 +1616,22 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             reverse("betriebskostenbeleg_list"),
             fetch_redirect_response=False,
         )
+
+    def test_update_view_contains_attachments_panel(self):
+        response = self.client.get(reverse("betriebskostenbeleg_update", args=[self.beleg.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachments_panel", response.context)
+        self.assertEqual(
+            response.context["attachments_panel"]["title"],
+            "Dateien zum Betriebskostenbeleg",
+        )
+        self.assertEqual(response.context["attachments_panel"]["target_model"], "betriebskostenbeleg")
+        self.assertFalse(response.context["attachments_panel"]["show_upload_toggle"])
+        self.assertTrue(response.context["attachments_panel"]["upload_expanded"])
+        self.assertContains(response, "Dateien zum Betriebskostenbeleg")
+        self.assertContains(response, 'option value="rechnung" selected')
+        self.assertNotContains(response, "Datei hochladen")
 
 
 class BankImportWorkflowTests(TestCase):
@@ -2627,6 +2860,30 @@ class AnnualStatementLetterRunTests(TestCase):
             letter.pdf_datei = self._create_pdf_datei()
             letter.save(update_fields=["pdf_datei", "updated_at"])
 
+    def _create_second_lease(self) -> LeaseAgreement:
+        second_unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="3",
+            name="Top 3",
+            operating_cost_share=Decimal("30.00"),
+        )
+        second_tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Bernd",
+            last_name="Testmieter",
+        )
+        second_lease = LeaseAgreement.objects.create(
+            unit=second_unit,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2025, 1, 1),
+            net_rent=Decimal("650.00"),
+            operating_costs_net=Decimal("140.00"),
+            heating_costs_net=Decimal("60.00"),
+        )
+        second_lease.tenants.add(second_tenant)
+        return second_lease
+
     def test_ensure_view_creates_run_and_letter_rows(self):
         run = self._ensure_run()
         self.assertEqual(run.schreiben.count(), 1)
@@ -2658,6 +2915,154 @@ class AnnualStatementLetterRunTests(TestCase):
         self.assertContains(response, "Summe der Kosten")
         self.assertContains(response, "Originalbelege")
         self.assertContains(response, "Immo-Fuchs KG")
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+        BK_PORTAL_PATH_PREFIX="m",
+    )
+    def test_portal_token_is_deterministic_and_unique_per_letter(self):
+        self._create_second_lease()
+        run = self._ensure_run()
+        service = AnnualStatementRunService(run=run)
+        letters = list(run.schreiben.order_by("id"))
+        self.assertEqual(len(letters), 2)
+
+        first_token = service.build_portal_token(letter=letters[0])
+        second_token = service.build_portal_token(letter=letters[1])
+
+        self.assertEqual(first_token, service.build_portal_token(letter=letters[0]))
+        self.assertEqual(len(first_token), 32)
+        self.assertEqual(len(second_token), 32)
+        self.assertNotEqual(first_token, second_token)
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+    )
+    def test_payload_contains_portal_fields_when_base_url_is_set(self):
+        run = self._ensure_run()
+        letter = run.schreiben.first()
+        service = AnnualStatementRunService(run=run)
+
+        with patch(
+            "webapp.services.annual_statement_run_service.QrCodeService.qr_data_uri",
+            return_value="data:image/svg+xml;base64,AAAA",
+        ):
+            payload = service.payload_for_letter(letter=letter, sequence_number=1200)
+
+        self.assertTrue(payload["portal_enabled"])
+        self.assertIn("/m/", payload["portal_url"])
+        self.assertEqual(payload["portal_qr_data_uri"], "data:image/svg+xml;base64,AAAA")
+
+    @override_settings(BK_PORTAL_BASE_URL="")
+    def test_payload_disables_portal_fields_without_base_url(self):
+        run = self._ensure_run()
+        letter = run.schreiben.first()
+        payload = AnnualStatementRunService(run=run).payload_for_letter(letter=letter, sequence_number=1200)
+
+        self.assertFalse(payload["portal_enabled"])
+        self.assertEqual(payload["portal_url"], "")
+        self.assertEqual(payload["portal_qr_data_uri"], "")
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+        BK_PORTAL_PATH_PREFIX="m",
+    )
+    def test_portal_export_endpoint_returns_zip_with_token_folders(self):
+        self._create_second_lease()
+        run = self._ensure_run()
+        run.brief_nummer_start = 700
+        run.save(update_fields=["brief_nummer_start", "updated_at"])
+
+        beleg = BetriebskostenBeleg.objects.filter(liegenschaft=self.property, datum__year=2026).first()
+        self.assertIsNotNone(beleg)
+        exported_file = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "rechnung-energie.pdf",
+                b"%PDF-1.4 test-beleg",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.RECHNUNG,
+            target_object=beleg,
+            beschreibung="Energie Rechnung",
+        )
+        archived_file = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "archiviert.pdf",
+                b"%PDF-1.4 archived",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.DOKUMENT,
+            target_object=beleg,
+            beschreibung="Archiviert",
+        )
+        DateiService.archive(user=None, datei=archived_file)
+
+        response = self.client.post(reverse("annual_statement_run_export_portal", kwargs={"pk": run.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = archive.namelist()
+        self.assertIn("index.html", names)
+        self.assertIn("robots.txt", names)
+        self.assertIn("README_DEPLOY.txt", names)
+        self.assertIn("manifest.csv", names)
+
+        letters = list(run.schreiben.order_by("id"))
+        service = AnnualStatementRunService(run=run)
+        first_token = service.build_portal_token(letter=letters[0])
+        second_token = service.build_portal_token(letter=letters[1])
+
+        first_prefix = f"m/{first_token}"
+        second_prefix = f"m/{second_token}"
+        self.assertIn(f"{first_prefix}/index.html", names)
+        self.assertIn(f"{first_prefix}/abrechnung.pdf", names)
+        self.assertIn(f"{second_prefix}/index.html", names)
+        self.assertIn(f"{second_prefix}/abrechnung.pdf", names)
+
+        expected_attachment_name = AnnualStatementPortalExportService._safe_attachment_name(exported_file)
+        archived_attachment_name = AnnualStatementPortalExportService._safe_attachment_name(archived_file)
+        self.assertIn(f"{first_prefix}/belege/{expected_attachment_name}", names)
+        self.assertIn(f"{second_prefix}/belege/{expected_attachment_name}", names)
+        self.assertNotIn(f"{first_prefix}/belege/{archived_attachment_name}", names)
+        self.assertNotIn(f"{second_prefix}/belege/{archived_attachment_name}", names)
+
+        first_index_html = archive.read(f"{first_prefix}/index.html").decode("utf-8")
+        self.assertIn(first_token, first_index_html)
+        self.assertNotIn(second_token, first_index_html)
+
+        manifest_csv = archive.read("manifest.csv").decode("utf-8")
+        self.assertIn(first_token, manifest_csv)
+        self.assertIn(second_token, manifest_csv)
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+    )
+    def test_export_bk_portal_command_writes_zip_file(self):
+        run = self._ensure_run()
+        run.brief_nummer_start = 701
+        run.save(update_fields=["brief_nummer_start", "updated_at"])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = os.path.join(tmp_dir, "bk-portal.zip")
+            stdout = StringIO()
+            call_command(
+                "export_bk_portal",
+                "--run-id",
+                str(run.pk),
+                "--output",
+                output_path,
+                stdout=stdout,
+            )
+            self.assertTrue(os.path.exists(output_path))
+            with zipfile.ZipFile(output_path) as archive:
+                self.assertIn("index.html", archive.namelist())
+                self.assertIn("manifest.csv", archive.namelist())
+            self.assertIn("Portal-Export erstellt", stdout.getvalue())
 
     def test_preview_shows_grouped_expenses_with_ungrouped_warning(self):
         cleaning_group = BetriebskostenGruppe.objects.create(
@@ -3790,6 +4195,85 @@ class DateiUploadFormValidationTests(TestCase):
             ).exists()
         )
 
+    def test_valid_form_accepts_meterreading_as_target_object(self):
+        meter = Meter.objects.create(
+            property=self.property,
+            meter_type=Meter.MeterType.WATER_COLD,
+            meter_number="W-1020",
+            kind=Meter.CalculationKind.READING,
+        )
+        reading = MeterReading.objects.create(
+            meter=meter,
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+        form = DateiUploadForm(
+            data={
+                "target_app_label": "webapp",
+                "target_model": "meterreading",
+                "target_object_id": reading.pk,
+                "kategorie": Datei.Kategorie.ZAEHLERFOTO,
+                "beschreibung": "Foto zum Zählerstand",
+            },
+            files={
+                "file": SimpleUploadedFile(
+                    "zaehlerstand.jpg",
+                    b"img",
+                    content_type="image/jpeg",
+                )
+            },
+            user=self.user,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        datei = form.save()
+        zuordnung = datei.zuordnungen.get()
+        self.assertEqual(zuordnung.content_object, reading)
+
+    def test_valid_form_accepts_betriebskostenbeleg_as_target_object(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 2, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+        )
+        form = DateiUploadForm(
+            data={
+                "target_app_label": "webapp",
+                "target_model": "betriebskostenbeleg",
+                "target_object_id": beleg.pk,
+                "kategorie": Datei.Kategorie.DOKUMENT,
+                "beschreibung": "BK-Rechnung",
+            },
+            files={
+                "file": SimpleUploadedFile(
+                    "bk-rechnung.pdf",
+                    b"%PDF",
+                    content_type="application/pdf",
+                )
+            },
+            user=self.user,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        datei = form.save()
+        zuordnung = datei.zuordnungen.get()
+        self.assertEqual(zuordnung.content_object, beleg)
+
+    def test_valid_form_accepts_rechnung_category(self):
+        form = self._build_form(
+            SimpleUploadedFile(
+                "rechnung.pdf",
+                b"%PDF",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.RECHNUNG,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
 
 class DateiServicePermissionAndAuditTests(TestCase):
     def setUp(self):
@@ -3915,6 +4399,11 @@ class DateiDownloadViewTests(TestCase):
         DateiService.archive(user=None, datei=self.datei)
         response = self.client.get(reverse("datei_download", kwargs={"pk": self.datei.pk}))
         self.assertEqual(response.status_code, 403)
+
+    def test_open_returns_inline_response(self):
+        response = self.client.get(reverse("datei_open", kwargs={"pk": self.datei.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
 
 
 class DateiUploadViewAnonymousTests(TestCase):
@@ -5071,6 +5560,58 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
             index_value=Decimal("110.00"),
         )
 
+    def test_vpi_index_values_are_maintained_on_settings_page(self):
+        response = self.client.get(reverse("vpi_index_value_settings"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "VPI-Indexwerte pflegen")
+
+        formset = response.context["formset"]
+        prefix = formset.prefix
+        management = formset.management_form.initial
+        post_data = {
+            f"{prefix}-TOTAL_FORMS": str(management["TOTAL_FORMS"]),
+            f"{prefix}-INITIAL_FORMS": str(management["INITIAL_FORMS"]),
+            f"{prefix}-MIN_NUM_FORMS": str(management["MIN_NUM_FORMS"]),
+            f"{prefix}-MAX_NUM_FORMS": str(management["MAX_NUM_FORMS"]),
+        }
+
+        for index, form in enumerate(formset.forms):
+            instance = form.instance
+            post_data[f"{prefix}-{index}-id"] = str(instance.pk) if instance.pk else ""
+            if instance.pk:
+                post_data[f"{prefix}-{index}-month"] = instance.month.strftime("%Y-%m-%d")
+                if instance.pk == self.latest_index_value.pk:
+                    post_data[f"{prefix}-{index}-index_value"] = "111.11"
+                else:
+                    post_data[f"{prefix}-{index}-index_value"] = f"{Decimal(instance.index_value):.2f}"
+            else:
+                post_data[f"{prefix}-{index}-month"] = ""
+                post_data[f"{prefix}-{index}-index_value"] = ""
+
+        response = self.client.post(reverse("vpi_index_value_settings"), data=post_data)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("vpi_index_value_settings"))
+        self.latest_index_value.refresh_from_db()
+        self.assertEqual(self.latest_index_value.index_value, Decimal("111.11"))
+
+    def test_run_list_shows_latest_vpi_and_percentages_with_and_without_rule(self):
+        self.older_index_value.index_value = Decimal("123.80")
+        self.older_index_value.save(update_fields=["index_value", "updated_at"])
+        self.latest_index_value.index_value = Decimal("128.20")
+        self.latest_index_value.save(update_fields=["index_value", "updated_at"])
+
+        response = self.client.get(reverse("vpi_adjustment_run_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Aktueller VPI-Stand")
+        self.assertContains(response, "Änderung ohne 3%-Regel")
+        self.assertContains(response, "Änderung mit 3%-50/50-Regel")
+        self.assertNotContains(response, "Indexwerte speichern")
+        self.assertEqual(response.context["latest_index_value"].pk, self.latest_index_value.pk)
+        self.assertEqual(response.context["reference_index_value"].pk, self.older_index_value.pk)
+        self.assertEqual(response.context["vpi_change_percent_raw"], Decimal("3.55"))
+        self.assertEqual(response.context["vpi_change_percent_tenant"], Decimal("3.28"))
+
     def test_run_uses_latest_index_value_without_manual_selection(self):
         response = self.client.get(
             reverse("vpi_adjustment_run_ensure"),
@@ -5129,3 +5670,14 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, reverse("vpi_adjustment_run_list"))
         self.assertTrue(VpiAdjustmentRun.objects.filter(pk=run.pk).exists())
+
+    def test_run_without_index_redirects_to_index_settings(self):
+        VpiIndexValue.objects.all().delete()
+
+        response = self.client.get(
+            reverse("vpi_adjustment_run_ensure"),
+            {"run_date": "2026-04-15"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("vpi_index_value_settings"))

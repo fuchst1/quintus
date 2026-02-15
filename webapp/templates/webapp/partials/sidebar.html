@@ -63,13 +63,14 @@
         </li>
 
         <li class="sidebar-section">
-            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% endif %}" data-sidebar-section="einstellungen" aria-expanded="false">
+            <button type="button" class="nav-link text-white opacity-75 hover-light w-100 sidebar-section-toggle {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' or request.resolver_match.url_name == 'vpi_index_value_settings' %}active-quintus{% endif %}" data-sidebar-section="einstellungen" aria-expanded="false">
                 <span><i class="bi bi-sliders me-2"></i>Einstellungen</span>
                 <i class="bi bi-chevron-down sidebar-section-toggle-caret"></i>
             </button>
-            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' %}is-open{% endif %}" data-sidebar-panel="einstellungen">
+            <ul class="sidebar-subnav list-unstyled {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' or request.resolver_match.url_name == 'vpi_index_value_settings' %}is-open{% endif %}" data-sidebar-panel="einstellungen">
                 <li><a href="{% url 'betriebskosten_gruppe_list' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">BK-Gruppen</a></li>
                 <li><a href="{% url 'reminder_settings' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'reminder_settings' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">Erinnerungen</a></li>
+                <li><a href="{% url 'vpi_index_value_settings' %}" class="nav-link text-white sidebar-subnav-link {% if request.resolver_match.url_name == 'vpi_index_value_settings' %}active-quintus{% else %}opacity-75 hover-light{% endif %}">VPI pflegen</a></li>
             </ul>
         </li>
     </ul>

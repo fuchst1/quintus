@@ -1,0 +1,152 @@
+{% extends "webapp/base.html" %}
+{% block page_title %}Einheit{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold">Einheit – Details</h3>
+    <div class="d-flex gap-2">
+        <a href="{% url 'unit_list' %}" class="btn btn-light">Zurück</a>
+        <a href="{% url 'unit_update' unit_obj.pk %}" class="btn btn-primary">Bearbeiten</a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-12 col-xl-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-4">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="text-muted small">Liegenschaft</div>
+                        <div class="fw-semibold">{{ unit_obj.property.name }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Status</div>
+                        <div class="fw-semibold">
+                            {% if active_leases %}
+                                <span class="badge bg-success-subtle text-success">Vermietet</span>
+                            {% else %}
+                                <span class="badge bg-danger-subtle text-danger">Frei</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Bezeichnung</div>
+                        <div class="fw-semibold">{{ unit_obj.name }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Türnummer</div>
+                        <div class="fw-semibold">{{ unit_obj.door_number }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Typ</div>
+                        <div class="fw-semibold">{{ unit_obj.get_unit_type_display }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Nutzfläche (m²)</div>
+                        <div class="fw-semibold">{{ unit_obj.usable_area|default:"—" }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Betriebskostenanteil</div>
+                        <div class="fw-semibold">{{ unit_obj.operating_cost_share|default:"—" }}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Mietverträge</div>
+                        <div class="fw-semibold">{{ active_leases|length }} aktiv, {{ ended_leases|length }} beendet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-body p-4">
+                <h5 class="mb-3">Aktive Mietverträge</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Einzug</th>
+                                <th>Auszug</th>
+                                <th>Mieter</th>
+                                <th>Verwalter</th>
+                                <th class="text-end">HMZ Netto</th>
+                                <th class="text-center">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lease in active_leases %}
+                            <tr>
+                                <td>{{ lease.entry_date|date:"d.m.Y" }}</td>
+                                <td>{{ lease.exit_date|date:"d.m.Y"|default:"—" }}</td>
+                                <td>
+                                    {% for tenant in lease.tenants.all %}
+                                        {{ tenant.first_name }} {{ tenant.last_name }}{% if not forloop.last %}<br>{% endif %}
+                                    {% empty %}
+                                        <span class="text-muted">—</span>
+                                    {% endfor %}
+                                </td>
+                                <td>{{ lease.manager|default:"—" }}</td>
+                                <td class="text-end">{{ lease.net_rent }}</td>
+                                <td class="text-center">
+                                    <a href="{% url 'lease_detail' lease.pk %}" class="btn btn-sm btn-outline-primary">
+                                        Öffnen
+                                    </a>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="6" class="text-center py-3 text-muted">Keine aktiven Mietverträge vorhanden.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-body p-4">
+                <h5 class="mb-3">Beendete Mietverträge</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Einzug</th>
+                                <th>Auszug</th>
+                                <th>Mieter</th>
+                                <th class="text-center">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lease in ended_leases %}
+                            <tr>
+                                <td>{{ lease.entry_date|date:"d.m.Y" }}</td>
+                                <td>{{ lease.exit_date|date:"d.m.Y"|default:"—" }}</td>
+                                <td>
+                                    {% for tenant in lease.tenants.all %}
+                                        {{ tenant.first_name }} {{ tenant.last_name }}{% if not forloop.last %}<br>{% endif %}
+                                    {% empty %}
+                                        <span class="text-muted">—</span>
+                                    {% endfor %}
+                                </td>
+                                <td class="text-center">
+                                    <a href="{% url 'lease_detail' lease.pk %}" class="btn btn-sm btn-outline-primary">
+                                        Öffnen
+                                    </a>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="4" class="text-center py-3 text-muted">Keine beendeten Mietverträge vorhanden.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-4">
+        {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel attachments_panel_inline=True %}
+    </div>
+</div>
+{% endblock %}

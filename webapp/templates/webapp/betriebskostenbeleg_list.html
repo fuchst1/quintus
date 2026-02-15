@@ -103,7 +103,7 @@
     </div>
 </div>
 
-<form method="post" action="{% url 'betriebskostenbeleg_bulk_group_update' %}" id="belegBulkForm">
+<form method="post" action="{% url 'betriebskostenbeleg_bulk_group_update' %}" id="belegBulkForm" enctype="multipart/form-data">
     {% csrf_token %}
     <input type="hidden" name="next" id="belegBulkNext" value="{% url 'betriebskostenbeleg_list' %}">
 
@@ -132,6 +132,31 @@
                             <button type="submit" name="bulk_action" value="delete" class="btn btn-outline-danger">Ausgewählte löschen</button>
                         </div>
                     </div>
+                    <div class="col-12"><hr class="my-1"></div>
+                    <div class="col-12">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-4">
+                                <label for="bulkFileInput" class="form-label mb-1">Datei in Bulk zuweisen</label>
+                                <input id="bulkFileInput" type="file" name="bulk_file" class="form-control" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="bulkFileCategoryInput" class="form-label mb-1">Kategorie</label>
+                                <select id="bulkFileCategoryInput" name="bulk_file_kategorie" class="form-select">
+                                    <option value="">Bitte auswählen</option>
+                                    {% for value, label in bulk_file_category_choices %}
+                                    <option value="{{ value }}" {% if value == bulk_file_prefill_category %}selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="bulkFileDescriptionInput" class="form-label mb-1">Beschreibung</label>
+                                <input id="bulkFileDescriptionInput" type="text" name="bulk_file_beschreibung" class="form-control" maxlength="255">
+                            </div>
+                            <div class="col-md-2 d-grid">
+                                <button type="submit" name="bulk_action" value="attach_file" class="btn btn-outline-primary">Datei zuweisen</button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="col-12 text-muted small">
                         Mehrfachauswahl über die Checkboxen in der Tabelle.
                     </div>
@@ -150,6 +175,7 @@
                                 <input type="checkbox" id="selectAllBelege" class="form-check-input" aria-label="Alle auswählen">
                             </th>
                             <th class="text-center">Aktion</th>
+                            <th class="text-center">Dateien</th>
                             <th class="ps-2">
                                 <button type="button" class="btn btn-link p-0 text-decoration-none text-dark beleg-sort fw-semibold" data-sort-key="datum">
                                     Datum <span class="sort-indicator" aria-hidden="true"></span>
@@ -230,6 +256,22 @@
                                     <i class="bi bi-trash"></i>
                                 </a>
                             </td>
+                            <td class="text-center">
+                                {% if beleg.attachment_count %}
+                                {% if beleg.first_attachment_id %}
+                                <a
+                                    href="{% url 'datei_open' beleg.first_attachment_id %}"
+                                    class="btn btn-sm btn-outline-primary"
+                                    target="_blank"
+                                    rel="noopener"
+                                >
+                                    Beleg öffnen
+                                </a>
+                                {% endif %}
+                                {% else %}
+                                <span class="text-muted small">—</span>
+                                {% endif %}
+                            </td>
                             <td class="ps-2">{{ beleg.datum|date:"d.m.Y" }}</td>
                             <td>{{ beleg.liegenschaft.name }}</td>
                             <td>{{ beleg.ausgabengruppe.name }}</td>
@@ -242,14 +284,14 @@
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="11" class="text-center py-5 text-muted">Keine Betriebskostenbelege gefunden.</td>
+                            <td colspan="12" class="text-center py-5 text-muted">Keine Betriebskostenbelege gefunden.</td>
                         </tr>
                         {% endfor %}
                         <tr id="belegNoResults" class="d-none">
-                            <td colspan="11" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
+                            <td colspan="12" class="text-center py-5 text-muted">Keine Treffer für den aktuellen Filter.</td>
                         </tr>
                         <tr id="belegSummaryRow" class="table-light">
-                            <td colspan="11" class="text-end pe-3 fw-semibold">
+                            <td colspan="12" class="text-end pe-3 fw-semibold">
                                 Summe gefiltert:
                                 Netto <span id="belegFilteredNettoCell">€ {{ filtered_sum_netto|floatformat:2 }}</span>
                                 · Brutto <span id="belegFilteredBruttoCell">€ {{ filtered_sum_brutto|floatformat:2 }}</span>
@@ -290,6 +332,7 @@
     const bulkForm = document.getElementById("belegBulkForm");
     const bulkPanel = document.getElementById("belegBulkPanel");
     const bulkNextInput = document.getElementById("belegBulkNext");
+    const bulkFileInput = document.getElementById("bulkFileInput");
     const selectAllCheckbox = document.getElementById("selectAllBelege");
     const rowCheckboxes = Array.from(document.querySelectorAll(".beleg-select"));
     const bulkCheckboxCells = Array.from(document.querySelectorAll(".beleg-bulk-checkbox-cell"));
@@ -725,6 +768,11 @@
                 return;
             }
             const submitter = event.submitter;
+            if (submitter && submitter.value === "attach_file" && bulkFileInput && !bulkFileInput.files.length) {
+                event.preventDefault();
+                window.alert("Bitte eine Datei für die Bulk-Zuweisung auswählen.");
+                return;
+            }
             if (submitter && submitter.value === "delete") {
                 const confirmed = window.confirm("Ausgewählte Belege wirklich löschen?");
                 if (!confirmed) {

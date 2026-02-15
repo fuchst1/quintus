@@ -175,6 +175,12 @@ SERVE_MEDIA_IN_DEBUG = False
 # True = Hard-Dedup (Duplikat wird mit Validierungsfehler abgelehnt)
 DATEI_HARD_DEDUP = False
 
+# Statisches BK-Mieterportal (Token-Link Export)
+BK_PORTAL_BASE_URL = os.getenv("BK_PORTAL_BASE_URL", "").strip().rstrip("/")
+# Dev/Test-Fallback auf SECRET_KEY; in Produktion separat setzen.
+BK_PORTAL_TOKEN_SECRET = os.getenv("BK_PORTAL_TOKEN_SECRET", "").strip() or SECRET_KEY
+BK_PORTAL_PATH_PREFIX = os.getenv("BK_PORTAL_PATH_PREFIX", "m").strip() or "m"
+
 # E-Mail
 # Standard: direkter SMTP-Versand über den Provider (ohne lokalen Postfix).
 # Für Produktivbetrieb bitte die Werte in .env setzen.

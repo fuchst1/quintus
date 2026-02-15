@@ -7,110 +7,119 @@
     <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}" class="btn btn-light">Zurück</a>
 </div>
 
-<div class="card border-0 shadow-sm">
-    <div class="card-body p-4">
-        <form method="post">
-            {% csrf_token %}
-            <input type="hidden" name="next" value="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}">
-            {% if form.errors %}
-                <div class="alert alert-danger">
-                    Bitte korrigiere die markierten Felder.
-                </div>
-            {% endif %}
-            {% if form.non_field_errors %}
-                <div class="alert alert-danger">
-                    {{ form.non_field_errors }}
-                </div>
-            {% endif %}
-            <div class="row g-3">
-                <div class="col-md-4">
-                    <label class="form-label">Liegenschaft</label>
-                    {{ form.liegenschaft }}
-                    {% if form.liegenschaft.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.liegenschaft.errors|striptags }}
+<div class="row g-4 {% if not attachments_panel %}justify-content-center{% endif %}">
+    <div class="{% if attachments_panel %}col-12 col-xl-7{% else %}col-12 col-xl-8{% endif %}">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-4">
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}">
+                    {% if form.errors %}
+                        <div class="alert alert-danger">
+                            Bitte korrigiere die markierten Felder.
                         </div>
                     {% endif %}
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Art</label>
-                    {{ form.bk_art }}
-                    {% if form.bk_art.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.bk_art.errors|striptags }}
+                    {% if form.non_field_errors %}
+                        <div class="alert alert-danger">
+                            {{ form.non_field_errors }}
                         </div>
                     {% endif %}
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Ausgabengruppe</label>
-                    {{ form.ausgabengruppe }}
-                    {% if form.ausgabengruppe.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.ausgabengruppe.errors|striptags }}
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Liegenschaft</label>
+                            {{ form.liegenschaft }}
+                            {% if form.liegenschaft.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.liegenschaft.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Datum</label>
-                    {{ form.datum }}
-                    {% if form.datum.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.datum.errors|striptags }}
+                        <div class="col-md-4">
+                            <label class="form-label">Art</label>
+                            {{ form.bk_art }}
+                            {% if form.bk_art.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.bk_art.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Netto</label>
-                    {{ form.netto }}
-                    {% if form.netto.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.netto.errors|striptags }}
+                        <div class="col-md-4">
+                            <label class="form-label">Ausgabengruppe</label>
+                            {{ form.ausgabengruppe }}
+                            {% if form.ausgabengruppe.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.ausgabengruppe.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">USt (%)</label>
-                    {{ form.ust_prozent }}
-                    {% if form.ust_prozent.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.ust_prozent.errors|striptags }}
+                        <div class="col-md-3">
+                            <label class="form-label">Datum</label>
+                            {{ form.datum }}
+                            {% if form.datum.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.datum.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">USt-Betrag (berechnet)</label>
-                    {{ form.ust_betrag }}
-                    {% if form.ust_betrag.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.ust_betrag.errors|striptags }}
+                        <div class="col-md-3">
+                            <label class="form-label">Netto</label>
+                            {{ form.netto }}
+                            {% if form.netto.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.netto.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Brutto</label>
-                    {{ form.brutto }}
-                    {% if form.brutto.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.brutto.errors|striptags }}
+                        <div class="col-md-3">
+                            <label class="form-label">USt (%)</label>
+                            {{ form.ust_prozent }}
+                            {% if form.ust_prozent.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.ust_prozent.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
-                <div class="col-md-8">
-                    <label class="form-label">Buchungstext</label>
-                    {{ form.buchungstext }}
-                    {% if form.buchungstext.errors %}
-                        <div class="invalid-feedback d-block">
-                            {{ form.buchungstext.errors|striptags }}
+                        <div class="col-md-3">
+                            <label class="form-label">USt-Betrag (berechnet)</label>
+                            {{ form.ust_betrag }}
+                            {% if form.ust_betrag.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.ust_betrag.errors|striptags }}
+                                </div>
+                            {% endif %}
                         </div>
-                    {% endif %}
-                </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Brutto</label>
+                            {{ form.brutto }}
+                            {% if form.brutto.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.brutto.errors|striptags }}
+                                </div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label">Buchungstext</label>
+                            {{ form.buchungstext }}
+                            {% if form.buchungstext.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.buchungstext.errors|striptags }}
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="mt-4 d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">Speichern</button>
+                        <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}" class="btn btn-outline-secondary">Abbrechen</a>
+                    </div>
+                </form>
             </div>
-            <div class="mt-4 d-flex gap-2">
-                <button type="submit" class="btn btn-primary">Speichern</button>
-                <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}" class="btn btn-outline-secondary">Abbrechen</a>
-            </div>
-        </form>
+        </div>
     </div>
+    {% if attachments_panel %}
+        <div class="col-12 col-xl-5">
+            {% include "webapp/partials/_attachments_panel.html" with attachments_panel=attachments_panel attachments_panel_inline=True %}
+        </div>
+    {% endif %}
 </div>
 {% endblock %}
 
