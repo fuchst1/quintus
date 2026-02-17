@@ -25,6 +25,15 @@ from webapp.services.files import ALLOWED_MIME_BY_EXTENSION
 class PortalAttachment:
     file_name: str
     content: bytes
+    date_display: str
+    brutto_display: str
+    text_display: str
+
+
+@dataclass(frozen=True)
+class PortalAttachmentSource:
+    beleg: BetriebskostenBeleg
+    datei: Datei
 
 
 class AnnualStatementPortalExportService:
@@ -49,11 +58,18 @@ class AnnualStatementPortalExportService:
 
         attachments = self._collect_relevant_attachments()
         attachment_payloads = [
-            PortalAttachment(file_name=self._safe_attachment_name(datei), content=self._read_file_bytes(datei))
-            for datei in attachments
+            PortalAttachment(
+                file_name=self._safe_attachment_name(source.datei),
+                content=self._read_file_bytes(source.datei),
+                date_display=source.beleg.datum.strftime("%d.%m.%Y"),
+                brutto_display=self._format_brutto(source.beleg.brutto),
+                text_display=self._attachment_text(beleg=source.beleg, datei=source.datei),
+            )
+            for source in attachments
         ]
 
         manifest_rows: list[dict[str, str]] = []
+
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("index.html", self._root_index_html())
@@ -75,7 +91,6 @@ class AnnualStatementPortalExportService:
                     self._tenant_index_html(
                         tenant_label=tenant_label,
                         unit_label=unit_label,
-                        portal_url=portal_url,
                         attachment_payloads=attachment_payloads,
                     ),
                 )
@@ -88,6 +103,7 @@ class AnnualStatementPortalExportService:
                     {
                         "token": token,
                         "portal_url": portal_url,
+                        "relative_path": rel_path,
                         "lauf_id": str(self.run.pk),
                         "jahr": str(self.run.jahr),
                         "liegenschaft": self.run.liegenschaft.name,
@@ -97,7 +113,6 @@ class AnnualStatementPortalExportService:
                         "beleg_count": str(len(attachment_payloads)),
                     }
                 )
-
             archive.writestr("manifest.csv", self._manifest_csv(manifest_rows))
 
         summary = {
@@ -144,17 +159,19 @@ class AnnualStatementPortalExportService:
 
         return letters
 
-    def _collect_relevant_attachments(self) -> list[Datei]:
-        beleg_ids = list(
+    def _collect_relevant_attachments(self) -> list[PortalAttachmentSource]:
+        belege = list(
             BetriebskostenBeleg.objects.filter(
                 liegenschaft=self.run.liegenschaft,
                 datum__gte=self.period_start,
                 datum__lte=self.period_end,
-            ).values_list("id", flat=True)
+            ).order_by("-datum", "-id")
         )
-        if not beleg_ids:
+        if not belege:
             return []
 
+        beleg_ids = [beleg.id for beleg in belege]
+        beleg_id_set = set(beleg_ids)
         beleg_content_type = ContentType.objects.get_for_model(BetriebskostenBeleg)
         assignments = (
             DateiZuordnung.objects.filter(
@@ -166,16 +183,23 @@ class AnnualStatementPortalExportService:
             .order_by("-datei__created_at", "-id")
         )
 
-        result: list[Datei] = []
+        attachments_by_beleg: dict[int, list[Datei]] = {}
         seen_ids: set[int] = set()
         for assignment in assignments:
+            if assignment.object_id not in beleg_id_set:
+                continue
             datei = assignment.datei
             if datei is None or datei.pk in seen_ids:
                 continue
             if not self._is_allowed_attachment(datei):
                 continue
             seen_ids.add(datei.pk)
-            result.append(datei)
+            attachments_by_beleg.setdefault(int(assignment.object_id), []).append(datei)
+
+        result: list[PortalAttachmentSource] = []
+        for beleg in belege:
+            for datei in attachments_by_beleg.get(int(beleg.id), []):
+                result.append(PortalAttachmentSource(beleg=beleg, datei=datei))
         return result
 
     @staticmethod
@@ -198,6 +222,24 @@ class AnnualStatementPortalExportService:
             extension = ".pdf"
         base_name = slugify(Path(original_name).stem) or f"beleg-{datei.pk}"
         return f"{base_name}-{datei.pk}{extension}"
+
+    @staticmethod
+    def _format_brutto(value) -> str:
+        display = f"{value:.2f}".replace(".", ",")
+        return f"{display} EUR"
+
+    @staticmethod
+    def _attachment_text(*, beleg: BetriebskostenBeleg, datei: Datei) -> str:
+        buchungstext = str(beleg.buchungstext or "").strip()
+        if buchungstext:
+            return buchungstext
+        lieferant = str(beleg.lieferant_name or "").strip()
+        if lieferant:
+            return lieferant
+        beschreibung = str(datei.beschreibung or "").strip()
+        if beschreibung:
+            return beschreibung
+        return "—"
 
     @staticmethod
     def _read_file_bytes(datei: Datei) -> bytes:
@@ -236,21 +278,21 @@ class AnnualStatementPortalExportService:
         *,
         tenant_label: str,
         unit_label: str,
-        portal_url: str,
         attachment_payloads: list[PortalAttachment],
     ) -> str:
-        beleg_links = "".join(
-            f'<li><a href="belege/{item.file_name}" target="_blank" rel="noopener">{item.file_name}</a></li>'
+        beleg_rows = "".join(
+            (
+                "<tr>"
+                f"<td>{AnnualStatementPortalExportService._escape_html(item.date_display)}</td>"
+                f"<td>{AnnualStatementPortalExportService._escape_html(item.brutto_display)}</td>"
+                f"<td>{AnnualStatementPortalExportService._escape_html(item.text_display)}</td>"
+                f"<td><a href=\"belege/{AnnualStatementPortalExportService._escape_html(item.file_name)}\" target=\"_blank\" rel=\"noopener\">Dokument öffnen</a></td>"
+                "</tr>"
+            )
             for item in attachment_payloads
         )
-        if not beleg_links:
-            beleg_links = "<li>Keine Belege im Export enthalten.</li>"
-
-        url_hint = (
-            f"<p><small>Portal-Link: <a href=\"{portal_url}\">{portal_url}</a></small></p>"
-            if portal_url
-            else ""
-        )
+        if not beleg_rows:
+            beleg_rows = "<tr><td colspan=\"4\">Keine Belege im Export enthalten.</td></tr>"
 
         today_display = timezone.localdate().strftime("%d.%m.%Y")
         return f"""<!doctype html>
@@ -267,23 +309,34 @@ class AnnualStatementPortalExportService:
     .meta {{ color: #4b5563; margin-bottom: 1rem; }}
     .card {{ border: 1px solid #d1d5db; border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }}
     .btn {{ display: inline-block; padding: 0.5rem 0.9rem; border: 1px solid #1d4ed8; border-radius: 6px; color: #1d4ed8; text-decoration: none; }}
-    ul {{ margin-top: 0.75rem; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 0.75rem; }}
+    th, td {{ border-bottom: 1px solid #e5e7eb; padding: 0.6rem 0.5rem; text-align: left; vertical-align: top; }}
+    th {{ background: #f9fafb; color: #374151; font-weight: 600; }}
   </style>
 </head>
 <body>
   <div class=\"wrap\">
     <h1>Betriebskostenbelege</h1>
-    <div class=\"meta\">Einheit: {unit_label} · Mieter: {tenant_label} · Stand: {today_display}</div>
+    <div class=\"meta\">Einheit: {AnnualStatementPortalExportService._escape_html(unit_label)} · Mieter: {AnnualStatementPortalExportService._escape_html(tenant_label)} · Stand: {today_display}</div>
 
     <div class=\"card\">
       <h2>Ihre Abrechnung</h2>
       <p><a class=\"btn\" href=\"abrechnung.pdf\" target=\"_blank\" rel=\"noopener\">Abrechnung öffnen</a></p>
-      {url_hint}
     </div>
 
     <div class=\"card\">
       <h2>Belege</h2>
-      <ul>{beleg_links}</ul>
+      <table>
+        <thead>
+          <tr>
+            <th>Datum</th>
+            <th>Bruttobetrag</th>
+            <th>Text</th>
+            <th>Dokument</th>
+          </tr>
+        </thead>
+        <tbody>{beleg_rows}</tbody>
+      </table>
     </div>
   </div>
 </body>
@@ -296,6 +349,7 @@ class AnnualStatementPortalExportService:
         fieldnames = [
             "token",
             "portal_url",
+            "relative_path",
             "lauf_id",
             "jahr",
             "liegenschaft",
@@ -311,6 +365,15 @@ class AnnualStatementPortalExportService:
         return output.getvalue()
 
     @staticmethod
+    def _escape_html(value: str) -> str:
+        return (
+            value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    @staticmethod
     def _deploy_readme() -> str:
         return (
             "BK-Portal Export\n"
@@ -318,6 +381,7 @@ class AnnualStatementPortalExportService:
             "Sicherheitshinweise:\n"
             "- Verzeichnislisting am Webserver deaktivieren.\n"
             "- Suchmaschinenindexierung deaktivieren (robots + Server-Header).\n"
+            "- URL-Schema: <Basis-URL>/<Liegenschaft>/<Jahr>/<Token>/\n"
             "- Token-URLs als geheim behandeln und nicht öffentlich veröffentlichen.\n"
-            "- Bei Verdacht auf Leak: neuen Export erzeugen und alte Dateien entfernen.\n"
+            "- Bei vermutetem Leak: Export neu erzeugen und alte Exportdateien entfernen.\n"
         )

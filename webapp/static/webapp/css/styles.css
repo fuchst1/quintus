@@ -11,6 +11,33 @@ body {
 }
 
 /* Sidebar Styling */
+.sidebar-brand {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding-top: 0.45rem;
+    margin-bottom: 0.45rem;
+}
+
+.sidebar-brand-logo {
+    width: 88px;
+    height: auto;
+    filter: brightness(0) invert(1);
+}
+
+.sidebar-brand-title {
+    display: block;
+    width: 100%;
+    margin-top: 0.38rem;
+    text-align: center;
+    font-size: 2rem;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
 .active-quintus {
     background-color: rgba(255, 255, 255, 0.1) !important;
     border-left: 4px solid var(--quintus-active);
@@ -358,6 +385,87 @@ body {
     margin-bottom: 0.7rem;
 }
 
+.dashboard-chart-card {
+    border: 1px solid rgba(30, 58, 95, 0.12);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.dashboard-chart-card__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.85rem;
+}
+
+.dashboard-chart-card__subtitle {
+    font-size: 0.82rem;
+    color: #5f6f85;
+}
+
+.dashboard-chart-card__meta {
+    text-align: right;
+}
+
+.dashboard-chart-card__meta-label {
+    font-size: 0.75rem;
+    color: #66788f;
+    line-height: 1.15;
+}
+
+.dashboard-chart-card__meta-value {
+    font-size: 1.02rem;
+    font-weight: 700;
+    color: var(--quintus-navy);
+    line-height: 1.25;
+}
+
+.dashboard-chart-kpi-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.38rem;
+}
+
+.dashboard-chart-kpi-item {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    border: 1px solid rgba(30, 58, 95, 0.14);
+    border-radius: 0.62rem;
+    padding: 0.24rem 0.52rem;
+    background: #ffffff;
+    line-height: 1.2;
+}
+
+.dashboard-chart-kpi-item span {
+    font-size: 0.68rem;
+    color: #63758d;
+}
+
+.dashboard-chart-kpi-item strong {
+    font-size: 0.84rem;
+}
+
+.dashboard-chart-canvas-wrap {
+    position: relative;
+    height: 270px;
+}
+
+.dashboard-chart-canvas-wrap--wide {
+    height: 290px;
+}
+
+.dashboard-chart-empty {
+    border: 1px dashed rgba(30, 58, 95, 0.22);
+    border-radius: 0.62rem;
+    background: rgba(30, 58, 95, 0.02);
+    color: #5e7087;
+    text-align: center;
+    font-size: 0.87rem;
+    padding: 2rem 1rem;
+}
+
 .dashboard-property-card {
     border: 1px solid rgba(30, 58, 95, 0.12);
     background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
@@ -431,5 +539,17 @@ body {
 
     .bk-water-kpi-card__value {
         font-size: 1.45rem;
+    }
+
+    .dashboard-chart-canvas-wrap {
+        height: 230px;
+    }
+
+    .dashboard-chart-canvas-wrap--wide {
+        height: 240px;
+    }
+
+    .dashboard-chart-kpi-item {
+        align-items: flex-start;
     }
 }

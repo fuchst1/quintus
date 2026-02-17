@@ -8,6 +8,7 @@ import zipfile
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import quote
 
 from django.conf import settings
 from django.db import transaction
@@ -395,12 +396,23 @@ class AnnualStatementRunService:
         return str(getattr(settings, "BK_PORTAL_BASE_URL", "") or "").strip().rstrip("/")
 
     @staticmethod
-    def portal_path_prefix() -> str:
-        raw_prefix = str(getattr(settings, "BK_PORTAL_PATH_PREFIX", "m") or "").strip().strip("/")
-        if not raw_prefix:
-            return "m"
-        cleaned = "".join(ch for ch in raw_prefix if ch.isalnum() or ch in {"-", "_"})
-        return cleaned or "m"
+    def _portal_path_component(value: str, *, fallback: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value)
+        cleaned = cleaned.strip("-_")
+        while "--" in cleaned:
+            cleaned = cleaned.replace("--", "-")
+        return cleaned or fallback
+
+    def portal_path_prefix(self) -> str:
+        raw_prefix = str(getattr(settings, "BK_PORTAL_PATH_PREFIX", "") or "").strip().strip("/")
+        if raw_prefix:
+            return self._portal_path_component(
+                raw_prefix,
+                fallback=f"Liegenschaft-{self.property.pk}",
+            )
+        raw_name = str(self.property.name or "").strip()
+        fallback = f"Liegenschaft-{self.property.pk}"
+        return self._portal_path_component(raw_name, fallback=fallback)
 
     @staticmethod
     def _portal_token_secret() -> str:
@@ -420,7 +432,9 @@ class AnnualStatementRunService:
         return token[:32]
 
     def build_portal_relative_path(self, *, letter: Abrechnungsschreiben) -> str:
-        return f"{self.portal_path_prefix()}/{self.build_portal_token(letter=letter)}/"
+        path_prefix = self.portal_path_prefix()
+        token = self.build_portal_token(letter=letter)
+        return f"{path_prefix}/{self.year}/{token}/"
 
     def build_portal_url(
         self,
@@ -431,7 +445,9 @@ class AnnualStatementRunService:
         base_url = self._portal_base_url(override=base_url_override)
         if not base_url:
             return ""
-        return f"{base_url}/{self.build_portal_relative_path(letter=letter)}"
+        path_prefix = quote(self.portal_path_prefix(), safe="")
+        token = quote(self.build_portal_token(letter=letter), safe="")
+        return f"{base_url}/{path_prefix}/{self.year}/{token}/"
 
     def _lease_for_unit(self, *, unit_id: int) -> LeaseAgreement | None:
         leases = (

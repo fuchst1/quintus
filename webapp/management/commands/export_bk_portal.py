@@ -34,8 +34,8 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Portal-Export erstellt: {output_path}"))
         self.stdout.write(
-            f"Mieterseiten: {summary.get('tenant_count', 0)} | "
-            f"Belege pro Seite: {summary.get('attachment_count', 0)} | "
+            f"Mietverträge im Lauf: {summary.get('tenant_count', 0)} | "
+            f"Belege im Export: {summary.get('attachment_count', 0)} | "
             f"Kopierte Belegdateien gesamt: {summary.get('copied_attachment_files', 0)}"
         )
 

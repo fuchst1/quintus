@@ -135,6 +135,174 @@ def build_attachments_panel_context(request, target_object, *, title: str):
 class DashboardView(TemplateView):
     template_name = "webapp/home.html"
 
+    @staticmethod
+    def _to_money_decimal(value) -> Decimal:
+        return Decimal(value or Decimal("0.00")).quantize(Decimal("0.01"))
+
+    def _build_finance_charts_context(self, *, today: date) -> dict[str, object]:
+        sum_field = DecimalField(max_digits=14, decimal_places=2)
+        zero_money = Value(Decimal("0.00"), output_field=sum_field)
+
+        def build_period_map(rows, period_key: str) -> dict[int, Decimal]:
+            values: dict[int, Decimal] = {}
+            for row in rows:
+                period_value = row.get(period_key)
+                if period_value is None:
+                    continue
+                values[int(period_value)] = self._to_money_decimal(row.get("total"))
+            return values
+
+        rent_year_rows = (
+            Buchung.objects.filter(
+                typ=Buchung.Typ.IST,
+                kategorie=Buchung.Kategorie.HMZ,
+            )
+            .values("datum__year")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__year")
+        )
+        bk_income_year_rows = (
+            Buchung.objects.filter(
+                typ=Buchung.Typ.IST,
+                kategorie__in=[Buchung.Kategorie.BK, Buchung.Kategorie.HK],
+            )
+            .values("datum__year")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__year")
+        )
+        bk_expense_year_rows = (
+            BetriebskostenBeleg.objects.values("datum__year")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__year")
+        )
+
+        rent_year_map = build_period_map(rent_year_rows, "datum__year")
+        bk_income_year_map = build_period_map(bk_income_year_rows, "datum__year")
+        bk_expense_year_map = build_period_map(bk_expense_year_rows, "datum__year")
+
+        year_labels = sorted(
+            set(rent_year_map) | set(bk_income_year_map) | set(bk_expense_year_map)
+        )
+        if not year_labels:
+            year_labels = [today.year]
+        if len(year_labels) > 8:
+            year_labels = year_labels[-8:]
+
+        latest_year = year_labels[-1]
+        latest_rent_net = rent_year_map.get(latest_year, Decimal("0.00"))
+        latest_bk_income_net = bk_income_year_map.get(latest_year, Decimal("0.00"))
+        latest_bk_expense_net = bk_expense_year_map.get(latest_year, Decimal("0.00"))
+        latest_bk_balance_net = (latest_bk_income_net - latest_bk_expense_net).quantize(
+            Decimal("0.01")
+        )
+
+        current_year = today.year
+        rent_month_rows = (
+            Buchung.objects.filter(
+                typ=Buchung.Typ.IST,
+                kategorie=Buchung.Kategorie.HMZ,
+                datum__year=current_year,
+            )
+            .values("datum__month")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__month")
+        )
+        bk_income_month_rows = (
+            Buchung.objects.filter(
+                typ=Buchung.Typ.IST,
+                kategorie__in=[Buchung.Kategorie.BK, Buchung.Kategorie.HK],
+                datum__year=current_year,
+            )
+            .values("datum__month")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__month")
+        )
+        bk_expense_month_rows = (
+            BetriebskostenBeleg.objects.filter(datum__year=current_year)
+            .values("datum__month")
+            .annotate(
+                total=Coalesce(
+                    Sum("netto", output_field=sum_field),
+                    zero_money,
+                )
+            )
+            .order_by("datum__month")
+        )
+
+        rent_month_map = build_period_map(rent_month_rows, "datum__month")
+        bk_income_month_map = build_period_map(bk_income_month_rows, "datum__month")
+        bk_expense_month_map = build_period_map(bk_expense_month_rows, "datum__month")
+
+        month_numbers = list(range(1, 13))
+        month_labels = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+        current_year_rent_net = sum(rent_month_map.values(), Decimal("0.00")).quantize(
+            Decimal("0.01")
+        )
+        current_year_bk_income_net = sum(
+            bk_income_month_map.values(),
+            Decimal("0.00"),
+        ).quantize(Decimal("0.01"))
+        current_year_bk_expense_net = sum(
+            bk_expense_month_map.values(),
+            Decimal("0.00"),
+        ).quantize(Decimal("0.01"))
+        current_year_bk_balance_net = (
+            current_year_bk_income_net - current_year_bk_expense_net
+        ).quantize(Decimal("0.01"))
+
+        return {
+            "has_yearly_data": bool(rent_year_map or bk_income_year_map or bk_expense_year_map),
+            "has_monthly_data": bool(rent_month_map or bk_income_month_map or bk_expense_month_map),
+            "year_labels": [str(year) for year in year_labels],
+            "rent_net_yearly": [float(rent_year_map.get(year, Decimal("0.00"))) for year in year_labels],
+            "bk_income_net_yearly": [float(bk_income_year_map.get(year, Decimal("0.00"))) for year in year_labels],
+            "bk_expense_net_yearly": [float(bk_expense_year_map.get(year, Decimal("0.00"))) for year in year_labels],
+            "month_labels": month_labels,
+            "rent_net_monthly": [float(rent_month_map.get(month, Decimal("0.00"))) for month in month_numbers],
+            "bk_income_net_monthly": [
+                float(bk_income_month_map.get(month, Decimal("0.00"))) for month in month_numbers
+            ],
+            "bk_expense_net_monthly": [
+                float(bk_expense_month_map.get(month, Decimal("0.00"))) for month in month_numbers
+            ],
+            "latest_year": latest_year,
+            "latest_rent_net": latest_rent_net,
+            "latest_bk_income_net": latest_bk_income_net,
+            "latest_bk_expense_net": latest_bk_expense_net,
+            "latest_bk_balance_net": latest_bk_balance_net,
+            "current_year": current_year,
+            "current_year_rent_net": current_year_rent_net,
+            "current_year_bk_income_net": current_year_bk_income_net,
+            "current_year_bk_expense_net": current_year_bk_expense_net,
+            "current_year_bk_balance_net": current_year_bk_balance_net,
+        }
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         today = timezone.localdate()
@@ -216,6 +384,7 @@ class DashboardView(TemplateView):
         reminder_items = reminder_service.collect_items()
         context["reminder_summary"] = reminder_service.build_summary(reminder_items)
         context["upcoming_reminders"] = reminder_service.top_items(reminder_items, limit=8)
+        context["finance_charts"] = self._build_finance_charts_context(today=today)
         return context
 
 

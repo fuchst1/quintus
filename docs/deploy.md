@@ -108,9 +108,14 @@ python manage.py check_vpi_releases --create-runs
 
 Für QR-Link und Portal-Export:
 
-- `BK_PORTAL_BASE_URL` (z. B. `https://belege.example.at/export`)
+- `BK_PORTAL_BASE_URL` (z. B. `https://belege.example.at/belege`)
+- `BK_PORTAL_PATH_PREFIX` (optional, z. B. `BHG14`; sonst Ableitung aus Liegenschaftsname)
 - `BK_PORTAL_TOKEN_SECRET` (eigener geheimer Schlüssel, nicht öffentlich)
-- `BK_PORTAL_PATH_PREFIX` (Default `m`)
+
+Portal-Pfad wird automatisch erzeugt als:
+
+- `<BK_PORTAL_BASE_URL>/<Liegenschaft>/<Jahr>/<Token>/`
+- Beispiel: `https://belege.example.at/belege/BHG14/2026/abc123token.../`
 
 ### Export ausführen
 

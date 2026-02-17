@@ -2918,26 +2918,27 @@ class AnnualStatementLetterRunTests(TestCase):
 
     @override_settings(
         BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
         BK_PORTAL_TOKEN_SECRET="test-portal-secret",
-        BK_PORTAL_PATH_PREFIX="m",
     )
-    def test_portal_token_is_deterministic_and_unique_per_letter(self):
-        self._create_second_lease()
+    def test_portal_paths_use_prefix_year_and_token(self):
         run = self._ensure_run()
+        letter = run.schreiben.first()
         service = AnnualStatementRunService(run=run)
-        letters = list(run.schreiben.order_by("id"))
-        self.assertEqual(len(letters), 2)
+        token = service.build_portal_token(letter=letter)
 
-        first_token = service.build_portal_token(letter=letters[0])
-        second_token = service.build_portal_token(letter=letters[1])
-
-        self.assertEqual(first_token, service.build_portal_token(letter=letters[0]))
-        self.assertEqual(len(first_token), 32)
-        self.assertEqual(len(second_token), 32)
-        self.assertNotEqual(first_token, second_token)
+        self.assertEqual(
+            service.build_portal_relative_path(letter=letter),
+            f"BHG14/2026/{token}/",
+        )
+        self.assertEqual(
+            service.build_portal_url(letter=letter),
+            f"https://portal.example.invalid/belege/BHG14/2026/{token}/",
+        )
 
     @override_settings(
         BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
         BK_PORTAL_TOKEN_SECRET="test-portal-secret",
     )
     def test_payload_contains_portal_fields_when_base_url_is_set(self):
@@ -2952,7 +2953,8 @@ class AnnualStatementLetterRunTests(TestCase):
             payload = service.payload_for_letter(letter=letter, sequence_number=1200)
 
         self.assertTrue(payload["portal_enabled"])
-        self.assertIn("/m/", payload["portal_url"])
+        self.assertIn("/BHG14/2026/", payload["portal_url"])
+        self.assertIn(service.build_portal_token(letter=letter), payload["portal_url"])
         self.assertEqual(payload["portal_qr_data_uri"], "data:image/svg+xml;base64,AAAA")
 
     @override_settings(BK_PORTAL_BASE_URL="")
@@ -2967,10 +2969,10 @@ class AnnualStatementLetterRunTests(TestCase):
 
     @override_settings(
         BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
         BK_PORTAL_TOKEN_SECRET="test-portal-secret",
-        BK_PORTAL_PATH_PREFIX="m",
     )
-    def test_portal_export_endpoint_returns_zip_with_token_folders(self):
+    def test_portal_export_endpoint_returns_zip_with_prefix_year_token_folders(self):
         self._create_second_lease()
         run = self._ensure_run()
         run.brief_nummer_start = 700
@@ -3015,9 +3017,9 @@ class AnnualStatementLetterRunTests(TestCase):
         service = AnnualStatementRunService(run=run)
         first_token = service.build_portal_token(letter=letters[0])
         second_token = service.build_portal_token(letter=letters[1])
+        first_prefix = f"BHG14/2026/{first_token}"
+        second_prefix = f"BHG14/2026/{second_token}"
 
-        first_prefix = f"m/{first_token}"
-        second_prefix = f"m/{second_token}"
         self.assertIn(f"{first_prefix}/index.html", names)
         self.assertIn(f"{first_prefix}/abrechnung.pdf", names)
         self.assertIn(f"{second_prefix}/index.html", names)
@@ -3031,15 +3033,20 @@ class AnnualStatementLetterRunTests(TestCase):
         self.assertNotIn(f"{second_prefix}/belege/{archived_attachment_name}", names)
 
         first_index_html = archive.read(f"{first_prefix}/index.html").decode("utf-8")
-        self.assertIn(first_token, first_index_html)
+        self.assertNotIn("Portal-Link", first_index_html)
+        self.assertIn("<table>", first_index_html)
+        self.assertIn("Bruttobetrag", first_index_html)
+        self.assertIn("Dokument öffnen", first_index_html)
+        self.assertIn(expected_attachment_name, first_index_html)
+        self.assertNotIn(first_token, first_index_html)
         self.assertNotIn(second_token, first_index_html)
-
         manifest_csv = archive.read("manifest.csv").decode("utf-8")
         self.assertIn(first_token, manifest_csv)
         self.assertIn(second_token, manifest_csv)
 
     @override_settings(
         BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
         BK_PORTAL_TOKEN_SECRET="test-portal-secret",
     )
     def test_export_bk_portal_command_writes_zip_file(self):
@@ -4977,6 +4984,124 @@ class ReminderUiIntegrationTests(TestCase):
             ReminderRuleConfig.objects.get(code="lease_exit").lead_months,
             4,
         )
+
+
+class DashboardFinanceChartTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Chart Verwaltung",
+            contact_person="Cora Charts",
+            email="charts@example.at",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Charts",
+            zip_code="1050",
+            city="Wien",
+            street_address="Chartgasse 5",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="5",
+            name="Top 5",
+            usable_area=Decimal("60.00"),
+            operating_cost_share=Decimal("12.00"),
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.FIX,
+            net_rent=Decimal("700.00"),
+            operating_costs_net=Decimal("120.00"),
+            heating_costs_net=Decimal("60.00"),
+        )
+
+    def _create_ist_booking(
+        self,
+        *,
+        booking_date: date,
+        category: str,
+        net_amount: Decimal,
+    ):
+        gross_amount = (net_amount * Decimal("1.10")).quantize(Decimal("0.01"))
+        Buchung.objects.create(
+            mietervertrag=self.lease,
+            typ=Buchung.Typ.IST,
+            kategorie=category,
+            datum=booking_date,
+            buchungstext="Dashboard Test",
+            netto=net_amount,
+            ust_prozent=Decimal("10.00"),
+            brutto=gross_amount,
+        )
+
+    def _create_bk_expense(self, *, booking_date: date, net_amount: Decimal):
+        gross_amount = (net_amount * Decimal("1.20")).quantize(Decimal("0.01"))
+        BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=booking_date,
+            netto=net_amount,
+            ust_prozent=Decimal("20.00"),
+            brutto=gross_amount,
+            lieferant_name="Chart Lieferant",
+            buchungstext="Chart Ausgabe",
+        )
+
+    def test_dashboard_chart_context_contains_yearly_finance_series(self):
+        current_year = timezone.localdate().year
+        previous_year = current_year - 1
+
+        self._create_ist_booking(
+            booking_date=date(previous_year, 2, 15),
+            category=Buchung.Kategorie.HMZ,
+            net_amount=Decimal("1000.00"),
+        )
+        self._create_ist_booking(
+            booking_date=date(current_year, 1, 10),
+            category=Buchung.Kategorie.HMZ,
+            net_amount=Decimal("1200.00"),
+        )
+        self._create_ist_booking(
+            booking_date=date(previous_year, 6, 5),
+            category=Buchung.Kategorie.BK,
+            net_amount=Decimal("50.00"),
+        )
+        self._create_ist_booking(
+            booking_date=date(current_year, 3, 20),
+            category=Buchung.Kategorie.BK,
+            net_amount=Decimal("100.00"),
+        )
+        self._create_ist_booking(
+            booking_date=date(current_year, 3, 20),
+            category=Buchung.Kategorie.HK,
+            net_amount=Decimal("50.00"),
+        )
+        self._create_bk_expense(
+            booking_date=date(previous_year, 7, 15),
+            net_amount=Decimal("80.00"),
+        )
+        self._create_bk_expense(
+            booking_date=date(current_year, 4, 15),
+            net_amount=Decimal("220.00"),
+        )
+
+        response = self.client.get(reverse("dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Netto-Miete pro Jahr (IST)")
+        charts = response.context["finance_charts"]
+        self.assertTrue(charts["has_yearly_data"])
+        self.assertEqual(charts["year_labels"], [str(previous_year), str(current_year)])
+        self.assertEqual(charts["rent_net_yearly"], [1000.0, 1200.0])
+        self.assertEqual(charts["bk_income_net_yearly"], [50.0, 150.0])
+        self.assertEqual(charts["bk_expense_net_yearly"], [80.0, 220.0])
+        self.assertEqual(charts["latest_year"], current_year)
+        self.assertEqual(charts["latest_bk_balance_net"], Decimal("-70.00"))
+        self.assertEqual(len(charts["month_labels"]), 12)
 
 
 class VpiAdjustmentModelTests(TestCase):
