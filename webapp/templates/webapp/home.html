@@ -216,7 +216,87 @@
 </div>
 
 <div class="row g-3 mb-4">
-    <div class="col-12">
+    <div class="col-md-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <h3 class="h6 fw-bold mb-3">Schnellzugriff</h3>
+                <div class="d-grid gap-2">
+                    <a href="{% url 'property_create' %}" class="btn btn-light text-start">
+                        <i class="bi bi-plus-square me-2"></i> Neue Liegenschaft
+                    </a>
+                    <a href="{% url 'unit_create' %}" class="btn btn-light text-start">
+                        <i class="bi bi-plus-square-dotted me-2"></i> Neue Einheit
+                    </a>
+                    <a href="{% url 'lease_create' %}" class="btn btn-light text-start">
+                        <i class="bi bi-file-earmark-plus me-2"></i> Neuer Mietvertrag
+                    </a>
+                    <a href="{% url 'betriebskostenbeleg_create' %}" class="btn btn-light text-start">
+                        <i class="bi bi-receipt-cutoff me-2"></i> Neuer BK-Beleg
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h3 class="h6 fw-bold mb-0">Letzte Buchungen</h3>
+                    <a href="{% url 'buchung_list' %}" class="small text-decoration-none">Alle anzeigen</a>
+                </div>
+                {% if recent_bookings %}
+                    <div class="list-group list-group-flush">
+                        {% for booking in recent_bookings %}
+                            <div class="list-group-item px-0">
+                                <div class="d-flex justify-content-between">
+                                    <div class="fw-semibold">{{ booking.get_kategorie_display }}</div>
+                                    <div class="small text-muted">{{ booking.datum|date:"d.m.Y" }}</div>
+                                </div>
+                                <div class="small text-muted">{{ booking.buchungstext }}</div>
+                                <div class="small fw-semibold {% if booking.typ == 'soll' %}text-danger{% else %}text-success{% endif %}">
+                                    {% if booking.typ == 'soll' %}-{% else %}+{% endif %} € {{ booking.brutto|floatformat:2 }}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="text-muted small mb-0">Noch keine Buchungen vorhanden.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h3 class="h6 fw-bold mb-0">Demnächst endende Verträge</h3>
+                    <a href="{% url 'lease_list' %}" class="small text-decoration-none">Alle anzeigen</a>
+                </div>
+                {% if upcoming_exits %}
+                    <div class="list-group list-group-flush">
+                        {% for lease in upcoming_exits %}
+                            <div class="list-group-item px-0">
+                                <div class="fw-semibold">{{ lease.unit.property.name }} · {{ lease.unit.name }}</div>
+                                <div class="small text-muted">
+                                    {% for tenant in lease.tenants.all %}
+                                        {{ tenant }}{% if not forloop.last %}, {% endif %}
+                                    {% empty %}
+                                        Kein Mieter hinterlegt
+                                    {% endfor %}
+                                </div>
+                                <div class="small">
+                                    Auszug am <span class="fw-semibold">{{ lease.exit_date|date:"d.m.Y" }}</span>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="text-muted small mb-0">Keine angekündigten Auszüge.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
         <div class="card border-0 shadow-sm h-100 dashboard-reminder-card">
             <div class="card-body">
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
@@ -272,89 +352,6 @@
 </div>
 
 <div class="row g-3">
-    <div class="col-xl-4">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <h3 class="h6 fw-bold mb-3">Schnellzugriff</h3>
-                <div class="d-grid gap-2">
-                    <a href="{% url 'property_create' %}" class="btn btn-light text-start">
-                        <i class="bi bi-plus-square me-2"></i> Neue Liegenschaft
-                    </a>
-                    <a href="{% url 'unit_create' %}" class="btn btn-light text-start">
-                        <i class="bi bi-plus-square-dotted me-2"></i> Neue Einheit
-                    </a>
-                    <a href="{% url 'lease_create' %}" class="btn btn-light text-start">
-                        <i class="bi bi-file-earmark-plus me-2"></i> Neuer Mietvertrag
-                    </a>
-                    <a href="{% url 'betriebskostenbeleg_create' %}" class="btn btn-light text-start">
-                        <i class="bi bi-receipt-cutoff me-2"></i> Neuer BK-Beleg
-                    </a>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-xl-4">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h3 class="h6 fw-bold mb-0">Letzte Buchungen</h3>
-                    <a href="{% url 'buchung_list' %}" class="small text-decoration-none">Alle anzeigen</a>
-                </div>
-                {% if recent_bookings %}
-                    <div class="list-group list-group-flush">
-                        {% for booking in recent_bookings %}
-                            <div class="list-group-item px-0">
-                                <div class="d-flex justify-content-between">
-                                    <div class="fw-semibold">{{ booking.get_kategorie_display }}</div>
-                                    <div class="small text-muted">{{ booking.datum|date:"d.m.Y" }}</div>
-                                </div>
-                                <div class="small text-muted">{{ booking.buchungstext }}</div>
-                                <div class="small fw-semibold {% if booking.typ == 'soll' %}text-danger{% else %}text-success{% endif %}">
-                                    {% if booking.typ == 'soll' %}-{% else %}+{% endif %} € {{ booking.brutto|floatformat:2 }}
-                                </div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <p class="text-muted small mb-0">Noch keine Buchungen vorhanden.</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-    <div class="col-xl-4">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h3 class="h6 fw-bold mb-0">Demnächst endende Verträge</h3>
-                    <a href="{% url 'lease_list' %}" class="small text-decoration-none">Alle anzeigen</a>
-                </div>
-                {% if upcoming_exits %}
-                    <div class="list-group list-group-flush">
-                        {% for lease in upcoming_exits %}
-                            <div class="list-group-item px-0">
-                                <div class="fw-semibold">{{ lease.unit.property.name }} · {{ lease.unit.name }}</div>
-                                <div class="small text-muted">
-                                    {% for tenant in lease.tenants.all %}
-                                        {{ tenant }}{% if not forloop.last %}, {% endif %}
-                                    {% empty %}
-                                        Kein Mieter hinterlegt
-                                    {% endfor %}
-                                </div>
-                                <div class="small">
-                                    Auszug am <span class="fw-semibold">{{ lease.exit_date|date:"d.m.Y" }}</span>
-                                </div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <p class="text-muted small mb-0">Keine angekündigten Auszüge.</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row g-3 mt-1">
     <div class="col-12">
         <div class="card border-0 shadow-sm">
             <div class="card-body">

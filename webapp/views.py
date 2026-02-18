@@ -70,10 +70,9 @@ from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
 
 
 def build_attachments_panel_context(request, target_object, *, title: str):
-    selected_filter = DateiService.normalize_filter_key(request.GET.get("datei_filter"))
     assignments = DateiService.list_assignments_for_object(
         target_object=target_object,
-        filter_key=selected_filter,
+        filter_key="alle",
         include_archived=False,
     )
     rows = []
@@ -81,11 +80,7 @@ def build_attachments_panel_context(request, target_object, *, title: str):
         datei = assignment.datei
         if datei is None:
             continue
-        mime_type = (datei.mime_type or "").lower()
-        is_image = mime_type.startswith("image/") or datei.kategorie in {
-            Datei.Kategorie.BILD,
-            Datei.Kategorie.ZAEHLERFOTO,
-        }
+        is_image = DateiService.is_image_file(datei=datei)
         rows.append(
             {
                 "assignment": assignment,
@@ -96,22 +91,9 @@ def build_attachments_panel_context(request, target_object, *, title: str):
             }
         )
 
-    filters = []
-    for item in DateiService.filter_definitions():
-        filters.append(
-            {
-                "key": item["key"],
-                "label": item["label"],
-                "active": item["key"] == selected_filter,
-                "url": f"{request.path}?datei_filter={item['key']}",
-            }
-        )
-
-    prefill_category = None
     show_upload_toggle = True
     upload_expanded = False
     if target_object._meta.model_name == "betriebskostenbeleg":
-        prefill_category = Datei.Kategorie.RECHNUNG
         show_upload_toggle = False
         upload_expanded = True
 
@@ -120,13 +102,9 @@ def build_attachments_panel_context(request, target_object, *, title: str):
         "target_app_label": target_object._meta.app_label,
         "target_model": target_object._meta.model_name,
         "target_object_id": target_object.pk,
-        "category_choices": DateiService.category_choices(),
-        "prefill_category": prefill_category,
         "show_upload_toggle": show_upload_toggle,
         "upload_expanded": upload_expanded,
         "rows": rows,
-        "filters": filters,
-        "selected_filter": selected_filter,
         "can_upload": DateiService.can_upload(target_object=target_object),
         "next_url": request.get_full_path(),
     }
@@ -475,7 +453,7 @@ class DateiOpenView(View):
         if not open_target.file:
             raise Http404("Datei wurde nicht gefunden.")
 
-        mime_type = (open_target.mime_type or "").strip().lower() or "application/octet-stream"
+        mime_type = DateiService.effective_mime_type(datei=open_target)
         response = FileResponse(
             open_target.file.open("rb"),
             as_attachment=False,
@@ -498,9 +476,9 @@ class DateiPreviewView(View):
         if not datei.file:
             raise Http404("Datei wurde nicht gefunden.")
 
-        mime_type = (datei.mime_type or "").lower()
-        if not mime_type.startswith("image/"):
+        if not DateiService.is_image_file(datei=datei):
             raise Http404("Für diese Datei ist keine Vorschau verfügbar.")
+        mime_type = DateiService.image_mime_type(datei=datei)
 
         response = FileResponse(
             datei.file.open("rb"),
@@ -709,6 +687,36 @@ class TenantListView(ListView):
     template_name = "webapp/tenant_list.html"
     context_object_name = "tenants"
 
+    @staticmethod
+    def _normalize_state(value: str | None) -> str:
+        state = (value or "active").strip().lower()
+        if state not in {"active", "archived", "all"}:
+            return "active"
+        return state
+
+    def get_queryset(self):
+        state = self._normalize_state(self.request.GET.get("state"))
+        queryset = Tenant.objects.annotate(
+            active_lease_count=Count(
+                "leases",
+                filter=Q(leases__status=LeaseAgreement.Status.AKTIV),
+                distinct=True,
+            )
+        )
+        if state == "active":
+            queryset = queryset.filter(is_archived=False)
+        elif state == "archived":
+            queryset = queryset.filter(is_archived=True)
+        return queryset.order_by("last_name", "first_name")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["tenant_state"] = self._normalize_state(self.request.GET.get("state"))
+        context["tenant_count_active"] = Tenant.objects.filter(is_archived=False).count()
+        context["tenant_count_archived"] = Tenant.objects.filter(is_archived=True).count()
+        context["tenant_count_all"] = Tenant.objects.count()
+        return context
+
 
 class TenantCreateView(CreateView):
     model = Tenant
@@ -733,10 +741,70 @@ class TenantUpdateView(UpdateView):
         return context
 
 
-class TenantDeleteView(DeleteView):
-    model = Tenant
+class TenantDeleteView(View):
     template_name = "webapp/tenant_confirm_delete.html"
     success_url = reverse_lazy("tenant_list")
+
+    def get_object(self, pk: int) -> Tenant:
+        return get_object_or_404(Tenant, pk=pk)
+
+    def get(self, request, pk):
+        tenant = self.get_object(pk)
+        return render(request, self.template_name, {"object": tenant})
+
+    def post(self, request, pk):
+        tenant = self.get_object(pk)
+        if tenant.leases.filter(status=LeaseAgreement.Status.AKTIV).exists():
+            messages.error(
+                request,
+                "Der Mieter kann nicht archiviert werden, solange ein aktiver Mietvertrag zugeordnet ist.",
+            )
+            return redirect(self.success_url)
+
+        update_fields = []
+        if not tenant.is_archived:
+            tenant.is_archived = True
+            update_fields.append("is_archived")
+        if tenant.archived_at is None:
+            tenant.archived_at = timezone.now()
+            update_fields.append("archived_at")
+
+        if update_fields:
+            tenant.save(update_fields=update_fields)
+            messages.success(request, "Mieter wurde archiviert.")
+        else:
+            messages.info(request, "Mieter ist bereits archiviert.")
+        return redirect(self.success_url)
+
+
+class TenantRestoreView(View):
+    template_name = "webapp/tenant_confirm_restore.html"
+    success_url = reverse_lazy("tenant_list")
+
+    def get_object(self, pk: int) -> Tenant:
+        return get_object_or_404(Tenant, pk=pk)
+
+    def get(self, request, pk):
+        tenant = self.get_object(pk)
+        return render(request, self.template_name, {"object": tenant})
+
+    def post(self, request, pk):
+        tenant = self.get_object(pk)
+        if not tenant.leases.filter(status=LeaseAgreement.Status.AKTIV).exists():
+            messages.error(
+                request,
+                "Wiederherstellung ist nur möglich, wenn ein aktiver Mietvertrag zugeordnet ist.",
+            )
+            return redirect(self.success_url)
+
+        if tenant.is_archived:
+            tenant.is_archived = False
+            tenant.archived_at = None
+            tenant.save(update_fields=["is_archived", "archived_at"])
+            messages.success(request, "Mieter wurde wiederhergestellt.")
+        else:
+            messages.info(request, "Mieter ist bereits aktiv.")
+        return redirect(self.success_url)
 
 
 class LeaseAgreementListView(ListView):

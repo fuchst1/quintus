@@ -530,6 +530,31 @@ body {
 .lease-reminder-badge {
     white-space: normal;
     max-width: 280px;
+    border: 1px solid transparent;
+}
+
+.lease-reminder-badge--overdue {
+    background-color: #fbe1e4;
+    color: #812029;
+    border-color: #f2bcc2;
+}
+
+.lease-reminder-badge--vpi {
+    background-color: #e5f0ff;
+    color: #0f478f;
+    border-color: #bfd7ff;
+}
+
+.lease-reminder-badge--lease-exit {
+    background-color: #fff0e0;
+    color: #8f4a10;
+    border-color: #ffd1a8;
+}
+
+.lease-reminder-badge--default {
+    background-color: #fff6d7;
+    color: #7c5a00;
+    border-color: #ffe39b;
 }
 
 @media (max-width: 768px) {

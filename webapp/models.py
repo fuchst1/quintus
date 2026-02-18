@@ -240,6 +240,8 @@ class Tenant(models.Model):
     )
     iban = models.CharField(max_length=34, blank=True, verbose_name=_("IBAN / Bankkonto-ID"))
     notes = models.TextField(blank=True, verbose_name=_("Notizen"))
+    is_archived = models.BooleanField(default=False, db_index=True, verbose_name=_("Archiviert"))
+    archived_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Archiviert am"))
 
     class Meta:
         verbose_name = _("Mieter")

@@ -17,16 +17,6 @@
             {% endif %}
         </div>
 
-        <ul class="nav nav-tabs mb-3">
-            {% for filter_tab in attachments_panel.filters %}
-            <li class="nav-item">
-                <a class="nav-link {% if filter_tab.active %}active{% endif %}" href="{{ filter_tab.url }}">
-                    {{ filter_tab.label }}
-                </a>
-            </li>
-            {% endfor %}
-        </ul>
-
         {% if attachments_panel.can_upload %}
         <div
             class="{% if attachments_panel.show_upload_toggle %}collapse{% endif %} {% if attachments_panel.upload_expanded %}show{% endif %} mb-3"
@@ -39,19 +29,11 @@
                 <input type="hidden" name="target_model" value="{{ attachments_panel.target_model }}">
                 <input type="hidden" name="target_object_id" value="{{ attachments_panel.target_object_id }}">
 
-                <div class="col-md-4">
+                <div class="col-md-6">
                     <label class="form-label mb-1">Datei</label>
                     <input type="file" name="file" class="form-control" required accept=".pdf,.jpg,.jpeg,.png">
                 </div>
-                <div class="col-md-3">
-                    <label class="form-label mb-1">Kategorie</label>
-                    <select name="kategorie" class="form-select" required>
-                        {% for value, label in attachments_panel.category_choices %}
-                            <option value="{{ value }}" {% if attachments_panel.prefill_category == value %}selected{% endif %}>{{ label }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-md-5">
+                <div class="col-md-6">
                     <label class="form-label mb-1">Beschreibung</label>
                     <input type="text" name="beschreibung" class="form-control" maxlength="255">
                 </div>

@@ -59,7 +59,7 @@
                         {% if lease.reminder_items %}
                             <div class="d-flex flex-column gap-1">
                                 {% for reminder in lease.reminder_items %}
-                                    <span class="badge text-start lease-reminder-badge {% if reminder.is_overdue %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                                    <span class="badge text-start lease-reminder-badge {% if reminder.is_overdue %}lease-reminder-badge--overdue{% elif reminder.rule_code == 'vpi_indexation' %}lease-reminder-badge--vpi{% elif reminder.rule_code == 'lease_exit' %}lease-reminder-badge--lease-exit{% else %}lease-reminder-badge--default{% endif %}">
                                         {% if reminder.rule_code == "vpi_indexation" %}Wertsicherung{% else %}{{ reminder.rule_title }}{% endif %} · {{ reminder.due_date|date:"d.m.Y" }}
                                     </span>
                                 {% endfor %}

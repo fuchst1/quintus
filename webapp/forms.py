@@ -188,6 +188,16 @@ class LeaseAgreementForm(forms.ModelForm):
             "deposit": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        tenant_queryset = Tenant.objects.filter(is_archived=False)
+        if self.instance and self.instance.pk:
+            tenant_queryset = Tenant.objects.filter(
+                Q(is_archived=False) | Q(pk__in=self.instance.tenants.values_list("pk", flat=True))
+            )
+        self.fields["tenants"].queryset = tenant_queryset.order_by("last_name", "first_name").distinct()
+
     def clean(self):
         cleaned_data = super().clean()
         entry_date = cleaned_data.get("entry_date")
@@ -405,9 +415,9 @@ class DateiUploadForm(forms.Form):
         ),
     )
     kategorie = forms.ChoiceField(
-        label="Kategorie",
+        required=False,
         choices=Datei.Kategorie.choices,
-        widget=forms.Select(attrs={"class": "form-select"}),
+        widget=forms.HiddenInput(),
     )
     beschreibung = forms.CharField(
         required=False,
@@ -426,7 +436,7 @@ class DateiUploadForm(forms.Form):
         model_name = cleaned_data.get("target_model")
         object_id = cleaned_data.get("target_object_id")
         upload = cleaned_data.get("file")
-        kategorie = cleaned_data.get("kategorie")
+        provided_kategorie = cleaned_data.get("kategorie")
 
         if app_label and model_name and object_id:
             try:
@@ -440,9 +450,15 @@ class DateiUploadForm(forms.Form):
         else:
             raise forms.ValidationError("Bitte ein gültiges Zielobjekt angeben.")
 
-        if upload and kategorie:
+        if upload:
             try:
-                DateiService.validate_upload(uploaded_file=upload, kategorie=kategorie)
+                resolved_kategorie = DateiService.resolve_upload_category(
+                    provided_category=provided_kategorie,
+                    uploaded_file=upload,
+                    target_object=self.target_object,
+                )
+                cleaned_data["kategorie"] = resolved_kategorie
+                DateiService.validate_upload(uploaded_file=upload, kategorie=resolved_kategorie)
             except ValidationError as exc:
                 self.add_error("file", exc)
 

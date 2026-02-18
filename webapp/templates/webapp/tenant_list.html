@@ -2,11 +2,28 @@
 {% block page_title %}Mieter{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h3 class="fw-bold">Alle Mieter</h3>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+    <h3 class="fw-bold mb-0">Mieter</h3>
     <a href="{% url 'tenant_create' %}" class="btn btn-primary shadow-sm">
         <i class="bi bi-plus-lg me-1"></i> Neuer Mieter
     </a>
+</div>
+
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Mieterfilter">
+            <a href="{% url 'tenant_list' %}?state=active" class="btn {% if tenant_state == 'active' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                Aktiv ({{ tenant_count_active }})
+            </a>
+            <a href="{% url 'tenant_list' %}?state=archived" class="btn {% if tenant_state == 'archived' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                Archiv ({{ tenant_count_archived }})
+            </a>
+            <a href="{% url 'tenant_list' %}?state=all" class="btn {% if tenant_state == 'all' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                Alle ({{ tenant_count_all }})
+            </a>
+        </div>
+        <div class="small text-muted">Standardansicht: nur aktive Mieter</div>
+    </div>
 </div>
 
 <div class="card border-0 shadow-sm">
@@ -18,6 +35,8 @@
                     <th class="ps-4">Anrede</th>
                     <th>Vorname</th>
                     <th>Nachname</th>
+                    <th>Status</th>
+                    <th>Archiviert am</th>
                     <th>Geburtsdatum</th>
                     <th>E-Mail</th>
                     <th>Telefon</th>
@@ -32,13 +51,27 @@
                         <a href="{% url 'tenant_update' tenant.pk %}" class="btn btn-sm btn-outline-secondary me-1">
                             <i class="bi bi-pencil"></i>
                         </a>
-                        <a href="{% url 'tenant_delete' tenant.pk %}" class="btn btn-sm btn-outline-danger">
-                            <i class="bi bi-trash"></i>
-                        </a>
+                        {% if tenant.is_archived %}
+                            <a href="{% url 'tenant_restore' tenant.pk %}" class="btn btn-sm btn-outline-success" title="Wiederherstellen">
+                                <i class="bi bi-arrow-counterclockwise"></i>
+                            </a>
+                        {% else %}
+                            <a href="{% url 'tenant_delete' tenant.pk %}" class="btn btn-sm btn-outline-warning" title="Archivieren">
+                                <i class="bi bi-archive"></i>
+                            </a>
+                        {% endif %}
                     </td>
                     <td class="ps-4">{{ tenant.get_salutation_display }}</td>
                     <td>{{ tenant.first_name }}</td>
                     <td>{{ tenant.last_name }}</td>
+                    <td>
+                        {% if tenant.is_archived %}
+                            <span class="badge text-bg-secondary">Archiviert</span>
+                        {% else %}
+                            <span class="badge text-bg-success">Aktiv</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ tenant.archived_at|date:"d.m.Y H:i"|default:"—" }}</td>
                     <td>{{ tenant.date_of_birth|date:"d.m.Y"|default:"—" }}</td>
                     <td>{{ tenant.email }}</td>
                     <td>{{ tenant.phone|default:"—" }}</td>
@@ -47,7 +80,7 @@
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="9" class="text-center py-5 text-muted">Keine Mieter gefunden.</td>
+                    <td colspan="11" class="text-center py-5 text-muted">Keine Mieter gefunden.</td>
                 </tr>
                 {% endfor %}
             </tbody>

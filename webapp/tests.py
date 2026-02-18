@@ -19,7 +19,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .forms import BetriebskostenBelegForm, DateiUploadForm
+from .forms import BetriebskostenBelegForm, DateiUploadForm, LeaseAgreementForm
 from .models import (
     Abrechnungslauf,
     BetriebskostenBeleg,
@@ -393,6 +393,195 @@ class LeaseAgreementHistoryTests(TestCase):
         self.assertEqual(lease.history.count(), 1)
         history_entry = lease.history.first()
         self.assertEqual(history_entry.history_change_reason, "Initialer Stand")
+
+
+class TenantArchiveLifecycleTests(TestCase):
+    def setUp(self):
+        self.property = Property.objects.create(
+            name="Archiv Objekt",
+            zip_code="1090",
+            city="Wien",
+            street_address="Archivgasse 9",
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="1",
+            name="Top 1",
+        )
+        self.unit_two = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="2",
+            name="Top 2",
+        )
+
+    def _create_tenant(self, first_name="Anna", last_name="Archiv") -> Tenant:
+        return Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name=first_name,
+            last_name=last_name,
+        )
+
+    def _create_lease(self, *, unit: Unit, status=LeaseAgreement.Status.AKTIV) -> LeaseAgreement:
+        return LeaseAgreement.objects.create(
+            unit=unit,
+            status=status,
+            entry_date=date(2025, 1, 1),
+            net_rent=Decimal("600.00"),
+            operating_costs_net=Decimal("120.00"),
+            heating_costs_net=Decimal("80.00"),
+        )
+
+    def _run_callbacks(self):
+        return self.captureOnCommitCallbacks(execute=True)
+
+    def test_status_change_to_beendet_archives_tenant_without_other_active_lease(self):
+        tenant = self._create_tenant()
+        lease = self._create_lease(unit=self.unit)
+        with self._run_callbacks():
+            lease.tenants.add(tenant)
+
+        with self._run_callbacks():
+            lease.status = LeaseAgreement.Status.BEENDET
+            lease.save(update_fields=["status"])
+
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.is_archived)
+        self.assertIsNotNone(tenant.archived_at)
+
+    def test_status_change_to_beendet_keeps_tenant_active_with_second_active_lease(self):
+        tenant = self._create_tenant()
+        lease_one = self._create_lease(unit=self.unit)
+        lease_two = self._create_lease(unit=self.unit_two)
+        with self._run_callbacks():
+            lease_one.tenants.add(tenant)
+        with self._run_callbacks():
+            lease_two.tenants.add(tenant)
+
+        with self._run_callbacks():
+            lease_one.status = LeaseAgreement.Status.BEENDET
+            lease_one.save(update_fields=["status"])
+
+        tenant.refresh_from_db()
+        self.assertFalse(tenant.is_archived)
+        self.assertIsNone(tenant.archived_at)
+
+    def test_post_add_on_active_lease_reactivates_archived_tenant(self):
+        tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Greta",
+            last_name="Historie",
+            is_archived=True,
+            archived_at=timezone.now(),
+        )
+        lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.AKTIV)
+
+        with self._run_callbacks():
+            lease.tenants.add(tenant)
+
+        tenant.refresh_from_db()
+        self.assertFalse(tenant.is_archived)
+        self.assertIsNone(tenant.archived_at)
+
+    def test_post_remove_archives_tenant_when_last_active_lease_relation_is_removed(self):
+        tenant = self._create_tenant()
+        lease = self._create_lease(unit=self.unit)
+        with self._run_callbacks():
+            lease.tenants.add(tenant)
+
+        with self._run_callbacks():
+            lease.tenants.remove(tenant)
+
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.is_archived)
+        self.assertIsNotNone(tenant.archived_at)
+
+    def test_post_clear_archives_all_removed_tenants(self):
+        tenant = self._create_tenant(first_name="Mona", last_name="Clear")
+        lease = self._create_lease(unit=self.unit)
+        with self._run_callbacks():
+            lease.tenants.add(tenant)
+
+        with self._run_callbacks():
+            lease.tenants.clear()
+
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.is_archived)
+        self.assertIsNotNone(tenant.archived_at)
+
+    def test_tenant_list_filters_default_archived_and_all(self):
+        active_tenant = self._create_tenant(first_name="Aktiv", last_name="Mieter")
+        archived_tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Archiv",
+            last_name="Mieter",
+            is_archived=True,
+            archived_at=timezone.now(),
+        )
+
+        response_default = self.client.get(reverse("tenant_list"))
+        default_ids = set(response_default.context["tenants"].values_list("pk", flat=True))
+        self.assertIn(active_tenant.pk, default_ids)
+        self.assertNotIn(archived_tenant.pk, default_ids)
+
+        response_archived = self.client.get(reverse("tenant_list"), {"state": "archived"})
+        archived_ids = set(response_archived.context["tenants"].values_list("pk", flat=True))
+        self.assertNotIn(active_tenant.pk, archived_ids)
+        self.assertIn(archived_tenant.pk, archived_ids)
+
+        response_all = self.client.get(reverse("tenant_list"), {"state": "all"})
+        all_ids = set(response_all.context["tenants"].values_list("pk", flat=True))
+        self.assertIn(active_tenant.pk, all_ids)
+        self.assertIn(archived_tenant.pk, all_ids)
+
+    def test_tenant_delete_route_archives_without_deleting(self):
+        tenant = self._create_tenant()
+
+        response = self.client.post(reverse("tenant_delete", args=[tenant.pk]))
+        self.assertRedirects(response, reverse("tenant_list"))
+
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.is_archived)
+        self.assertIsNotNone(tenant.archived_at)
+        self.assertEqual(Tenant.objects.filter(pk=tenant.pk).count(), 1)
+
+    def test_tenant_restore_route_unarchives_when_active_lease_exists(self):
+        tenant = self._create_tenant(first_name="Lena", last_name="Restore")
+        lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.AKTIV)
+        with self._run_callbacks():
+            lease.tenants.add(tenant)
+
+        tenant.is_archived = True
+        tenant.archived_at = timezone.now()
+        tenant.save(update_fields=["is_archived", "archived_at"])
+
+        response = self.client.post(reverse("tenant_restore", args=[tenant.pk]))
+        self.assertRedirects(response, reverse("tenant_list"))
+
+        tenant.refresh_from_db()
+        self.assertFalse(tenant.is_archived)
+        self.assertIsNone(tenant.archived_at)
+
+    def test_lease_form_excludes_archived_tenants_but_keeps_archived_assignees_on_edit(self):
+        active_tenant = self._create_tenant(first_name="Mia", last_name="Aktiv")
+        archived_tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.HERR,
+            first_name="Karl",
+            last_name="Archiv",
+            is_archived=True,
+            archived_at=timezone.now(),
+        )
+        lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.BEENDET)
+        with self._run_callbacks():
+            lease.tenants.add(archived_tenant)
+
+        create_form = LeaseAgreementForm()
+        self.assertIn(active_tenant, create_form.fields["tenants"].queryset)
+        self.assertNotIn(archived_tenant, create_form.fields["tenants"].queryset)
+
+        edit_form = LeaseAgreementForm(instance=lease)
+        self.assertIn(archived_tenant, edit_form.fields["tenants"].queryset)
 
 
 class SollStellungCommandTests(TestCase):
@@ -1630,7 +1819,7 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
         self.assertFalse(response.context["attachments_panel"]["show_upload_toggle"])
         self.assertTrue(response.context["attachments_panel"]["upload_expanded"])
         self.assertContains(response, "Dateien zum Betriebskostenbeleg")
-        self.assertContains(response, 'option value="rechnung" selected')
+        self.assertNotContains(response, 'name="kategorie"')
         self.assertNotContains(response, "Datei hochladen")
 
 
@@ -4124,14 +4313,16 @@ class DateiUploadFormValidationTests(TestCase):
         )
 
     def _build_form(self, upload, *, kategorie=Datei.Kategorie.DOKUMENT):
+        data = {
+            "target_app_label": "webapp",
+            "target_model": "property",
+            "target_object_id": self.property.pk,
+            "beschreibung": "Testdatei",
+        }
+        if kategorie is not None:
+            data["kategorie"] = kategorie
         return DateiUploadForm(
-            data={
-                "target_app_label": "webapp",
-                "target_model": "property",
-                "target_object_id": self.property.pk,
-                "kategorie": kategorie,
-                "beschreibung": "Testdatei",
-            },
+            data=data,
             files={"file": upload},
             user=self.user,
         )
@@ -4201,6 +4392,19 @@ class DateiUploadFormValidationTests(TestCase):
                 success=True,
             ).exists()
         )
+
+    def test_valid_form_infers_category_when_not_provided(self):
+        form = self._build_form(
+            SimpleUploadedFile(
+                "beleg.pdf",
+                b"%PDF",
+                content_type="application/pdf",
+            ),
+            kategorie=None,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        datei = form.save()
+        self.assertEqual(datei.kategorie, Datei.Kategorie.DOKUMENT)
 
     def test_valid_form_accepts_meterreading_as_target_object(self):
         meter = Meter.objects.create(
@@ -4412,6 +4616,28 @@ class DateiDownloadViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
 
+    def test_open_uses_filename_mime_fallback_for_legacy_octet_stream(self):
+        Datei.objects.filter(pk=self.datei.pk).update(mime_type="application/octet-stream")
+        response = self.client.get(reverse("datei_open", kwargs={"pk": self.datei.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+
+    def test_preview_works_for_legacy_image_with_octet_stream_mime(self):
+        image_datei = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "legacy.jpg",
+                b"img",
+                content_type="image/jpeg",
+            ),
+            target_object=self.property,
+        )
+        Datei.objects.filter(pk=image_datei.pk).update(mime_type="application/octet-stream")
+
+        response = self.client.get(reverse("datei_preview", kwargs={"pk": image_datei.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+
 
 class DateiUploadViewAnonymousTests(TestCase):
     def setUp(self):
@@ -4444,6 +4670,27 @@ class DateiUploadViewAnonymousTests(TestCase):
         self.assertIsNotNone(created)
         self.assertEqual(created.original_name, "anonym.pdf")
         self.assertIsNone(created.uploaded_by_id)
+
+    def test_upload_without_category_works_with_inference(self):
+        response = self.client.post(
+            reverse("datei_upload"),
+            data={
+                "next": reverse("dashboard"),
+                "target_app_label": "webapp",
+                "target_model": "property",
+                "target_object_id": self.property.pk,
+                "beschreibung": "Upload ohne Auswahl",
+                "file": SimpleUploadedFile(
+                    "ohne-kategorie.pdf",
+                    b"%PDF",
+                    content_type="application/pdf",
+                ),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        created = Datei.objects.order_by("-id").first()
+        self.assertIsNotNone(created)
+        self.assertEqual(created.kategorie, Datei.Kategorie.DOKUMENT)
 
     def test_upload_invalid_shows_readable_error_message(self):
         response = self.client.post(
@@ -4954,6 +5201,26 @@ class ReminderUiIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Wertsicherung")
         self.assertNotContains(response, "VPI-Erinnerung")
+
+    def test_lease_list_uses_rule_specific_reminder_badge_classes(self):
+        ReminderRuleConfig.objects.update_or_create(
+            code="vpi_indexation",
+            defaults={
+                "title": "VPI-Erinnerung",
+                "lead_months": 24,
+                "is_active": True,
+                "sort_order": 10,
+            },
+        )
+        self.lease.index_type = LeaseAgreement.IndexType.VPI
+        self.lease.last_index_adjustment = timezone.localdate()
+        self.lease.save(update_fields=["index_type", "last_index_adjustment"])
+
+        response = self.client.get(reverse("lease_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "lease-reminder-badge--vpi")
+        self.assertContains(response, "lease-reminder-badge--lease-exit")
 
     def test_reminder_settings_can_update_lead_months(self):
         configs = list(ReminderRuleConfig.objects.order_by("sort_order", "code"))

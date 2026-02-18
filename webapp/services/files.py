@@ -1,3 +1,4 @@
+import mimetypes
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -93,6 +94,109 @@ class DateiService:
     @classmethod
     def category_choices(cls):
         return list(Datei.Kategorie.choices)
+
+    @classmethod
+    def resolve_upload_category(
+        cls,
+        *,
+        provided_category: str | None,
+        uploaded_file,
+        target_object: Any | None = None,
+    ) -> str:
+        valid_categories = {value for value, _label in Datei.Kategorie.choices}
+        normalized = str(provided_category or "").strip().lower()
+        if normalized:
+            if normalized in valid_categories:
+                return normalized
+            raise ValidationError("Bitte eine gültige Dateikategorie auswählen.")
+        return cls.infer_upload_category(uploaded_file=uploaded_file, target_object=target_object)
+
+    @classmethod
+    def infer_upload_category(cls, *, uploaded_file, target_object: Any | None = None) -> str:
+        target_model = (
+            str(getattr(getattr(target_object, "_meta", None), "model_name", "") or "")
+            .strip()
+            .lower()
+        )
+        file_name = os.path.basename(getattr(uploaded_file, "name", "") or "")
+        _, extension = os.path.splitext(file_name)
+        extension = extension.lower()
+        mime_type = str(getattr(uploaded_file, "content_type", "") or "").strip().lower()
+        is_image = extension in {".jpg", ".jpeg", ".png"} or mime_type.startswith("image/")
+
+        if target_model == "betriebskostenbeleg":
+            return Datei.Kategorie.RECHNUNG
+        if target_model == "meterreading" and is_image:
+            return Datei.Kategorie.ZAEHLERFOTO
+        if is_image:
+            return Datei.Kategorie.BILD
+        if extension == ".pdf" or mime_type == "application/pdf":
+            return Datei.Kategorie.DOKUMENT
+        return Datei.Kategorie.SONSTIGES
+
+    @classmethod
+    def effective_mime_type(cls, *, datei: Datei) -> str:
+        mime_type = str(datei.mime_type or "").strip().lower()
+        if mime_type and mime_type != "application/octet-stream":
+            return mime_type
+
+        candidate_names = [
+            str(datei.original_name or "").strip(),
+            os.path.basename(str(getattr(datei.file, "name", "") or "").strip()),
+        ]
+        for candidate in candidate_names:
+            if not candidate:
+                continue
+            guessed_type = mimetypes.guess_type(candidate)[0]
+            if guessed_type:
+                return guessed_type.lower()
+
+        if mime_type:
+            return mime_type
+        return "application/octet-stream"
+
+    @classmethod
+    def is_image_file(cls, *, datei: Datei) -> bool:
+        mime_type = cls.effective_mime_type(datei=datei)
+        if mime_type.startswith("image/"):
+            return True
+
+        candidate_name = str(datei.original_name or "").strip() or os.path.basename(
+            str(getattr(datei.file, "name", "") or "").strip()
+        )
+        _base, extension = os.path.splitext(candidate_name)
+        extension = extension.lower()
+        if extension in {".jpg", ".jpeg", ".png"}:
+            return True
+
+        if not extension and datei.kategorie in {
+            Datei.Kategorie.BILD,
+            Datei.Kategorie.ZAEHLERFOTO,
+        }:
+            return True
+
+        return False
+
+    @classmethod
+    def image_mime_type(cls, *, datei: Datei) -> str:
+        mime_type = cls.effective_mime_type(datei=datei)
+        if mime_type.startswith("image/"):
+            return mime_type
+
+        candidate_name = str(datei.original_name or "").strip() or os.path.basename(
+            str(getattr(datei.file, "name", "") or "").strip()
+        )
+        _base, extension = os.path.splitext(candidate_name)
+        extension = extension.lower()
+        if extension in {".jpg", ".jpeg"}:
+            return "image/jpeg"
+        if extension == ".png":
+            return "image/png"
+
+        if datei.kategorie in {Datei.Kategorie.BILD, Datei.Kategorie.ZAEHLERFOTO}:
+            return "image/jpeg"
+
+        return mime_type
 
     @classmethod
     def list_assignments_for_object(
@@ -243,13 +347,18 @@ class DateiService:
         *,
         user=None,
         uploaded_file,
-        kategorie: str,
+        kategorie: str | None = None,
         target_object: Any,
         beschreibung: str = "",
     ) -> Datei:
         try:
             cls.assert_can_upload(target_object=target_object, user=user)
-            cls.validate_upload(uploaded_file=uploaded_file, kategorie=kategorie)
+            resolved_kategorie = cls.resolve_upload_category(
+                provided_category=kategorie,
+                uploaded_file=uploaded_file,
+                target_object=target_object,
+            )
+            cls.validate_upload(uploaded_file=uploaded_file, kategorie=resolved_kategorie)
         except (ValidationError, PermissionDenied) as exc:
             cls.log_operation(
                 operation=DateiOperationLog.Operation.UPLOAD,
@@ -263,7 +372,7 @@ class DateiService:
         with transaction.atomic():
             datei = Datei(
                 file=uploaded_file,
-                kategorie=kategorie,
+                kategorie=resolved_kategorie,
                 beschreibung=(beschreibung or "").strip(),
                 uploaded_by=None,
             )
