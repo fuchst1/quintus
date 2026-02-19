@@ -62,6 +62,7 @@ from .services.excel_export import ExcelColumn, ExcelExportService
 from .services.annual_statement_pdf_service import AnnualStatementPdfService
 from .services.annual_statement_portal_export_service import AnnualStatementPortalExportService
 from .services.annual_statement_run_service import AnnualStatementRunService
+from .services.lease_history_package_service import LeaseHistoryPackageService
 from .services.operating_cost_service import OperatingCostService
 from .services.settlement_adjustments import match_settlement_adjustment_text
 from .services.reminders import ReminderService
@@ -687,36 +688,6 @@ class TenantListView(ListView):
     template_name = "webapp/tenant_list.html"
     context_object_name = "tenants"
 
-    @staticmethod
-    def _normalize_state(value: str | None) -> str:
-        state = (value or "active").strip().lower()
-        if state not in {"active", "archived", "all"}:
-            return "active"
-        return state
-
-    def get_queryset(self):
-        state = self._normalize_state(self.request.GET.get("state"))
-        queryset = Tenant.objects.annotate(
-            active_lease_count=Count(
-                "leases",
-                filter=Q(leases__status=LeaseAgreement.Status.AKTIV),
-                distinct=True,
-            )
-        )
-        if state == "active":
-            queryset = queryset.filter(is_archived=False)
-        elif state == "archived":
-            queryset = queryset.filter(is_archived=True)
-        return queryset.order_by("last_name", "first_name")
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["tenant_state"] = self._normalize_state(self.request.GET.get("state"))
-        context["tenant_count_active"] = Tenant.objects.filter(is_archived=False).count()
-        context["tenant_count_archived"] = Tenant.objects.filter(is_archived=True).count()
-        context["tenant_count_all"] = Tenant.objects.count()
-        return context
-
 
 class TenantCreateView(CreateView):
     model = Tenant
@@ -757,53 +728,11 @@ class TenantDeleteView(View):
         if tenant.leases.filter(status=LeaseAgreement.Status.AKTIV).exists():
             messages.error(
                 request,
-                "Der Mieter kann nicht archiviert werden, solange ein aktiver Mietvertrag zugeordnet ist.",
+                "Der Mieter kann nicht gelöscht werden, solange ein aktiver Mietvertrag zugeordnet ist.",
             )
             return redirect(self.success_url)
-
-        update_fields = []
-        if not tenant.is_archived:
-            tenant.is_archived = True
-            update_fields.append("is_archived")
-        if tenant.archived_at is None:
-            tenant.archived_at = timezone.now()
-            update_fields.append("archived_at")
-
-        if update_fields:
-            tenant.save(update_fields=update_fields)
-            messages.success(request, "Mieter wurde archiviert.")
-        else:
-            messages.info(request, "Mieter ist bereits archiviert.")
-        return redirect(self.success_url)
-
-
-class TenantRestoreView(View):
-    template_name = "webapp/tenant_confirm_restore.html"
-    success_url = reverse_lazy("tenant_list")
-
-    def get_object(self, pk: int) -> Tenant:
-        return get_object_or_404(Tenant, pk=pk)
-
-    def get(self, request, pk):
-        tenant = self.get_object(pk)
-        return render(request, self.template_name, {"object": tenant})
-
-    def post(self, request, pk):
-        tenant = self.get_object(pk)
-        if not tenant.leases.filter(status=LeaseAgreement.Status.AKTIV).exists():
-            messages.error(
-                request,
-                "Wiederherstellung ist nur möglich, wenn ein aktiver Mietvertrag zugeordnet ist.",
-            )
-            return redirect(self.success_url)
-
-        if tenant.is_archived:
-            tenant.is_archived = False
-            tenant.archived_at = None
-            tenant.save(update_fields=["is_archived", "archived_at"])
-            messages.success(request, "Mieter wurde wiederhergestellt.")
-        else:
-            messages.info(request, "Mieter ist bereits aktiv.")
+        tenant.delete()
+        messages.success(request, "Mieter wurde gelöscht.")
         return redirect(self.success_url)
 
 
@@ -850,6 +779,27 @@ class LeaseAgreementUpdateView(UpdateView):
     form_class = LeaseAgreementForm
     template_name = "webapp/lease_form.html"
     success_url = reverse_lazy("lease_list")
+
+    def form_valid(self, form):
+        previous_status = (
+            LeaseAgreement.objects.filter(pk=self.object.pk).values_list("status", flat=True).first()
+        )
+        response = super().form_valid(form)
+        if previous_status != LeaseAgreement.Status.BEENDET and self.object.status == LeaseAgreement.Status.BEENDET:
+            service = LeaseHistoryPackageService(lease=self.object)
+            try:
+                _datei, _zip_bytes, summary = service.generate_and_store_latest(trigger="auto")
+            except RuntimeError as exc:
+                messages.error(self.request, f"Historie-Paket konnte nicht erstellt werden: {exc}")
+            else:
+                messages.success(
+                    self.request,
+                    (
+                        "Historie-Paket wurde automatisch erstellt "
+                        f"({summary.get('document_count', 0)} Dokument(e))."
+                    ),
+                )
+        return response
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -968,7 +918,36 @@ class LeaseAgreementDetailView(DetailView):
             self.object,
             title="Dateien zum Mietverhältnis",
         )
+        context["can_generate_history_package"] = self.object.status == LeaseAgreement.Status.BEENDET
         return context
+
+
+class LeaseHistoryPackageDownloadView(View):
+    http_method_names = ["post"]
+
+    def post(self, request, pk, *args, **kwargs):
+        lease = get_object_or_404(
+            LeaseAgreement.objects.select_related("unit", "unit__property", "manager").prefetch_related("tenants"),
+            pk=pk,
+        )
+        if lease.status != LeaseAgreement.Status.BEENDET:
+            messages.error(request, "Historie-Paket kann nur für beendete Mietverträge erstellt werden.")
+            return redirect("lease_detail", pk=lease.pk)
+
+        service = LeaseHistoryPackageService(lease=lease)
+        try:
+            datei, zip_bytes, summary = service.generate_and_store_latest(trigger="manual")
+        except RuntimeError as exc:
+            messages.error(request, f"Historie-Paket konnte nicht erstellt werden: {exc}")
+            return redirect("lease_detail", pk=lease.pk)
+
+        filename = datei.original_name or service.build_zip_filename()
+        response = HttpResponse(zip_bytes, content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["Content-Length"] = str(len(zip_bytes))
+        response["X-History-Package-Datei-Id"] = str(datei.pk)
+        response["X-History-Package-Documents"] = str(summary.get("document_count", 0))
+        return response
 
 
 class MeterListView(ListView):

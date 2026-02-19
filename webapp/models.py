@@ -240,8 +240,6 @@ class Tenant(models.Model):
     )
     iban = models.CharField(max_length=34, blank=True, verbose_name=_("IBAN / Bankkonto-ID"))
     notes = models.TextField(blank=True, verbose_name=_("Notizen"))
-    is_archived = models.BooleanField(default=False, db_index=True, verbose_name=_("Archiviert"))
-    archived_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Archiviert am"))
 
     class Meta:
         verbose_name = _("Mieter")
@@ -359,8 +357,9 @@ class LeaseAgreement(models.Model):
 
     @property
     def rent_per_sqm(self):
-        if self.unit.usable_area > 0:
-            return self.net_rent / self.unit.usable_area
+        usable_area = self.unit.usable_area if self.unit and self.unit.usable_area is not None else Decimal("0.00")
+        if usable_area > 0:
+            return self.net_rent / usable_area
         return Decimal("0.00")
 
     @property

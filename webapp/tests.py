@@ -21,7 +21,9 @@ from django.utils import timezone
 
 from .forms import BetriebskostenBelegForm, DateiUploadForm, LeaseAgreementForm
 from .models import (
+    Abrechnungsschreiben,
     Abrechnungslauf,
+    BankTransaktion,
     BetriebskostenBeleg,
     BetriebskostenGruppe,
     Buchung,
@@ -49,6 +51,7 @@ from .services.annual_statement_pdf_service import (
 from .services.annual_statement_portal_export_service import AnnualStatementPortalExportService
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.files import MAX_FILE_SIZE_BY_CATEGORY, DateiService
+from .services.lease_history_package_service import LeaseHistoryPackageService
 from .services.operating_cost_service import OperatingCostService
 from .services.reminders import ReminderService, add_months
 from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
@@ -395,13 +398,13 @@ class LeaseAgreementHistoryTests(TestCase):
         self.assertEqual(history_entry.history_change_reason, "Initialer Stand")
 
 
-class TenantArchiveLifecycleTests(TestCase):
+class TenantLifecycleTests(TestCase):
     def setUp(self):
         self.property = Property.objects.create(
-            name="Archiv Objekt",
+            name="Tenant Objekt",
             zip_code="1090",
             city="Wien",
-            street_address="Archivgasse 9",
+            street_address="Testgasse 9",
         )
         self.unit = Unit.objects.create(
             property=self.property,
@@ -409,14 +412,8 @@ class TenantArchiveLifecycleTests(TestCase):
             door_number="1",
             name="Top 1",
         )
-        self.unit_two = Unit.objects.create(
-            property=self.property,
-            unit_type=Unit.UnitType.APARTMENT,
-            door_number="2",
-            name="Top 2",
-        )
 
-    def _create_tenant(self, first_name="Anna", last_name="Archiv") -> Tenant:
+    def _create_tenant(self, first_name="Anna", last_name="Mieter") -> Tenant:
         return Tenant.objects.create(
             salutation=Tenant.Salutation.FRAU,
             first_name=first_name,
@@ -433,155 +430,308 @@ class TenantArchiveLifecycleTests(TestCase):
             heating_costs_net=Decimal("80.00"),
         )
 
-    def _run_callbacks(self):
-        return self.captureOnCommitCallbacks(execute=True)
+    def test_tenant_list_shows_all_tenants(self):
+        first = self._create_tenant(first_name="Anna", last_name="Alpha")
+        second = self._create_tenant(first_name="Berta", last_name="Beta")
 
-    def test_status_change_to_beendet_archives_tenant_without_other_active_lease(self):
+        response = self.client.get(reverse("tenant_list"))
+        self.assertEqual(response.status_code, 200)
+        tenant_ids = set(response.context["tenants"].values_list("pk", flat=True))
+        self.assertIn(first.pk, tenant_ids)
+        self.assertIn(second.pk, tenant_ids)
+
+    def test_tenant_delete_route_blocks_when_active_lease_exists(self):
         tenant = self._create_tenant()
-        lease = self._create_lease(unit=self.unit)
-        with self._run_callbacks():
-            lease.tenants.add(tenant)
-
-        with self._run_callbacks():
-            lease.status = LeaseAgreement.Status.BEENDET
-            lease.save(update_fields=["status"])
-
-        tenant.refresh_from_db()
-        self.assertTrue(tenant.is_archived)
-        self.assertIsNotNone(tenant.archived_at)
-
-    def test_status_change_to_beendet_keeps_tenant_active_with_second_active_lease(self):
-        tenant = self._create_tenant()
-        lease_one = self._create_lease(unit=self.unit)
-        lease_two = self._create_lease(unit=self.unit_two)
-        with self._run_callbacks():
-            lease_one.tenants.add(tenant)
-        with self._run_callbacks():
-            lease_two.tenants.add(tenant)
-
-        with self._run_callbacks():
-            lease_one.status = LeaseAgreement.Status.BEENDET
-            lease_one.save(update_fields=["status"])
-
-        tenant.refresh_from_db()
-        self.assertFalse(tenant.is_archived)
-        self.assertIsNone(tenant.archived_at)
-
-    def test_post_add_on_active_lease_reactivates_archived_tenant(self):
-        tenant = Tenant.objects.create(
-            salutation=Tenant.Salutation.FRAU,
-            first_name="Greta",
-            last_name="Historie",
-            is_archived=True,
-            archived_at=timezone.now(),
-        )
         lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.AKTIV)
+        lease.tenants.add(tenant)
 
-        with self._run_callbacks():
-            lease.tenants.add(tenant)
-
-        tenant.refresh_from_db()
-        self.assertFalse(tenant.is_archived)
-        self.assertIsNone(tenant.archived_at)
-
-    def test_post_remove_archives_tenant_when_last_active_lease_relation_is_removed(self):
-        tenant = self._create_tenant()
-        lease = self._create_lease(unit=self.unit)
-        with self._run_callbacks():
-            lease.tenants.add(tenant)
-
-        with self._run_callbacks():
-            lease.tenants.remove(tenant)
-
-        tenant.refresh_from_db()
-        self.assertTrue(tenant.is_archived)
-        self.assertIsNotNone(tenant.archived_at)
-
-    def test_post_clear_archives_all_removed_tenants(self):
-        tenant = self._create_tenant(first_name="Mona", last_name="Clear")
-        lease = self._create_lease(unit=self.unit)
-        with self._run_callbacks():
-            lease.tenants.add(tenant)
-
-        with self._run_callbacks():
-            lease.tenants.clear()
-
-        tenant.refresh_from_db()
-        self.assertTrue(tenant.is_archived)
-        self.assertIsNotNone(tenant.archived_at)
-
-    def test_tenant_list_filters_default_archived_and_all(self):
-        active_tenant = self._create_tenant(first_name="Aktiv", last_name="Mieter")
-        archived_tenant = Tenant.objects.create(
-            salutation=Tenant.Salutation.HERR,
-            first_name="Archiv",
-            last_name="Mieter",
-            is_archived=True,
-            archived_at=timezone.now(),
+        response = self.client.post(reverse("tenant_delete", args=[tenant.pk]), follow=True)
+        self.assertRedirects(response, reverse("tenant_list"))
+        self.assertContains(
+            response,
+            "Der Mieter kann nicht gelöscht werden, solange ein aktiver Mietvertrag zugeordnet ist.",
         )
+        self.assertTrue(Tenant.objects.filter(pk=tenant.pk).exists())
 
-        response_default = self.client.get(reverse("tenant_list"))
-        default_ids = set(response_default.context["tenants"].values_list("pk", flat=True))
-        self.assertIn(active_tenant.pk, default_ids)
-        self.assertNotIn(archived_tenant.pk, default_ids)
-
-        response_archived = self.client.get(reverse("tenant_list"), {"state": "archived"})
-        archived_ids = set(response_archived.context["tenants"].values_list("pk", flat=True))
-        self.assertNotIn(active_tenant.pk, archived_ids)
-        self.assertIn(archived_tenant.pk, archived_ids)
-
-        response_all = self.client.get(reverse("tenant_list"), {"state": "all"})
-        all_ids = set(response_all.context["tenants"].values_list("pk", flat=True))
-        self.assertIn(active_tenant.pk, all_ids)
-        self.assertIn(archived_tenant.pk, all_ids)
-
-    def test_tenant_delete_route_archives_without_deleting(self):
-        tenant = self._create_tenant()
+    def test_tenant_delete_route_deletes_when_no_active_lease_exists(self):
+        tenant = self._create_tenant(first_name="Lena", last_name="Delete")
+        lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.BEENDET)
+        lease.tenants.add(tenant)
 
         response = self.client.post(reverse("tenant_delete", args=[tenant.pk]))
         self.assertRedirects(response, reverse("tenant_list"))
+        self.assertFalse(Tenant.objects.filter(pk=tenant.pk).exists())
 
-        tenant.refresh_from_db()
-        self.assertTrue(tenant.is_archived)
-        self.assertIsNotNone(tenant.archived_at)
-        self.assertEqual(Tenant.objects.filter(pk=tenant.pk).count(), 1)
-
-    def test_tenant_restore_route_unarchives_when_active_lease_exists(self):
-        tenant = self._create_tenant(first_name="Lena", last_name="Restore")
-        lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.AKTIV)
-        with self._run_callbacks():
-            lease.tenants.add(tenant)
-
-        tenant.is_archived = True
-        tenant.archived_at = timezone.now()
-        tenant.save(update_fields=["is_archived", "archived_at"])
-
-        response = self.client.post(reverse("tenant_restore", args=[tenant.pk]))
-        self.assertRedirects(response, reverse("tenant_list"))
-
-        tenant.refresh_from_db()
-        self.assertFalse(tenant.is_archived)
-        self.assertIsNone(tenant.archived_at)
-
-    def test_lease_form_excludes_archived_tenants_but_keeps_archived_assignees_on_edit(self):
+    def test_lease_form_includes_all_tenants(self):
         active_tenant = self._create_tenant(first_name="Mia", last_name="Aktiv")
-        archived_tenant = Tenant.objects.create(
+        second_tenant = Tenant.objects.create(
             salutation=Tenant.Salutation.HERR,
             first_name="Karl",
-            last_name="Archiv",
-            is_archived=True,
-            archived_at=timezone.now(),
+            last_name="Mieter",
         )
         lease = self._create_lease(unit=self.unit, status=LeaseAgreement.Status.BEENDET)
-        with self._run_callbacks():
-            lease.tenants.add(archived_tenant)
+        lease.tenants.add(second_tenant)
 
         create_form = LeaseAgreementForm()
         self.assertIn(active_tenant, create_form.fields["tenants"].queryset)
-        self.assertNotIn(archived_tenant, create_form.fields["tenants"].queryset)
+        self.assertIn(second_tenant, create_form.fields["tenants"].queryset)
 
         edit_form = LeaseAgreementForm(instance=lease)
-        self.assertIn(archived_tenant, edit_form.fields["tenants"].queryset)
+        self.assertIn(second_tenant, edit_form.fields["tenants"].queryset)
+
+
+class LeaseHistoryPackageTests(TestCase):
+    def setUp(self):
+        self.manager = Manager.objects.create(
+            company_name="Hausverwaltung Stark GmbH",
+            contact_person="Max Stark",
+            email="office@stark.invalid",
+            phone="+43123456",
+            account_number="AT00 0000 0000 0000",
+        )
+        self.property = Property.objects.create(
+            name="Objekt Historie",
+            zip_code="1070",
+            city="Wien",
+            street_address="Historiengasse 7",
+            manager=self.manager,
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="7",
+            name="Top 7",
+            usable_area=Decimal("55.00"),
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Anna",
+            last_name="Historisch",
+            date_of_birth=date(1990, 7, 15),
+            email="anna@example.invalid",
+            phone="+43660111222",
+            iban="AT611904300234573201",
+            notes="Langjährige Mieterin",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2020, 1, 1),
+            exit_date=date(2025, 12, 31),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 1, 1),
+            index_base_value=Decimal("120.55"),
+            net_rent=Decimal("850.00"),
+            operating_costs_net=Decimal("130.00"),
+            heating_costs_net=Decimal("90.00"),
+            deposit=Decimal("2000.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+        self.bank_transaction = BankTransaktion.objects.create(
+            referenz_nummer="TX-HIST-1",
+            partner_name="Anna Historisch",
+            iban=self.tenant.iban,
+            betrag=Decimal("1170.00"),
+            buchungsdatum=date(2025, 10, 5),
+            verwendungszweck="Miete Oktober",
+        )
+        Buchung.objects.create(
+            mietervertrag=self.lease,
+            einheit=self.unit,
+            bank_transaktion=self.bank_transaction,
+            typ=Buchung.Typ.IST,
+            kategorie=Buchung.Kategorie.ZAHLUNG,
+            buchungstext="Miete Oktober",
+            datum=date(2025, 10, 5),
+            netto=Decimal("1063.64"),
+            ust_prozent=Decimal("10.00"),
+            brutto=Decimal("1170.00"),
+        )
+
+        self.lease_attachment = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "vertrag.pdf",
+                b"%PDF-1.4 lease",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.VERTRAG,
+            target_object=self.lease,
+            beschreibung="Mietvertrag unterschrieben",
+        )
+        self.tenant_attachment = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "ausweis.pdf",
+                b"%PDF-1.4 tenant",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.DOKUMENT,
+            target_object=self.tenant,
+            beschreibung="Ausweis",
+        )
+        DateiService.archive(user=None, datei=self.tenant_attachment)
+
+        self.annual_letter_pdf = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "bk-brief.pdf",
+                b"%PDF-1.4 bk",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.BRIEF,
+            target_object=self.lease,
+            beschreibung="BK-Abrechnung 2025",
+        )
+        run = Abrechnungslauf.objects.create(
+            liegenschaft=self.property,
+            jahr=2025,
+        )
+        Abrechnungsschreiben.objects.create(
+            lauf=run,
+            mietervertrag=self.lease,
+            einheit=self.unit,
+            pdf_datei=self.annual_letter_pdf,
+        )
+
+        self.vpi_letter_pdf = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "vpi-brief.pdf",
+                b"%PDF-1.4 vpi",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.BRIEF,
+            target_object=self.lease,
+            beschreibung="VPI-Anpassung 01/2025",
+        )
+        index_value = VpiIndexValue.objects.create(
+            month=date(2025, 1, 1),
+            index_value=Decimal("123.40"),
+        )
+        vpi_run = VpiAdjustmentRun.objects.create(
+            index_value=index_value,
+            run_date=date(2025, 1, 15),
+        )
+        VpiAdjustmentLetter.objects.create(
+            run=vpi_run,
+            lease=self.lease,
+            unit=self.unit,
+            effective_date=date(2025, 2, 1),
+            old_index_value=Decimal("120.00"),
+            new_index_value=Decimal("123.40"),
+            factor=Decimal("1.028333"),
+            old_hmz_net=Decimal("820.00"),
+            new_hmz_net=Decimal("850.00"),
+            delta_hmz_net=Decimal("30.00"),
+            pdf_datei=self.vpi_letter_pdf,
+        )
+
+    def test_build_zip_contains_summary_db_payloads_and_documents(self):
+        service = LeaseHistoryPackageService(lease=self.lease)
+        zip_bytes, summary = service.build_zip_bytes(trigger="manual")
+
+        self.assertGreater(len(zip_bytes), 0)
+        self.assertGreaterEqual(summary["document_count"], 4)
+
+        archive = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        names = set(archive.namelist())
+        self.assertIn("summary.html", names)
+        self.assertIn("meta/manifest.json", names)
+        self.assertIn("db/leaseagreement.json", names)
+        self.assertIn("db/bookings.json", names)
+        self.assertIn("db/files_metadata.json", names)
+
+        self.assertIn(f"documents/{service._safe_document_name(self.lease_attachment)}", names)
+        self.assertIn(f"documents/{service._safe_document_name(self.tenant_attachment)}", names)
+        self.assertIn(f"documents/{service._safe_document_name(self.annual_letter_pdf)}", names)
+        self.assertIn(f"documents/{service._safe_document_name(self.vpi_letter_pdf)}", names)
+
+        summary_html = archive.read("summary.html").decode("utf-8")
+        self.assertIn("Liegenschaft", summary_html)
+        self.assertIn("Objekt Historie", summary_html)
+        self.assertIn("Einheit", summary_html)
+        self.assertIn("Top 7", summary_html)
+        self.assertIn("Verwalter", summary_html)
+        self.assertIn("Hausverwaltung Stark GmbH", summary_html)
+        self.assertIn("HMZ Netto", summary_html)
+        self.assertIn("850.00 EUR", summary_html)
+        self.assertIn("AT611904300234573201", summary_html)
+
+        lease_payload = json.loads(archive.read("db/leaseagreement.json").decode("utf-8"))
+        self.assertEqual(lease_payload["status"], LeaseAgreement.Status.AKTIV)
+        self.assertEqual(lease_payload["net_rent"], "850.00")
+        self.assertEqual(lease_payload["entry_date"], "2020-01-01")
+
+    def test_generate_and_store_latest_archives_previous_package(self):
+        self.lease.status = LeaseAgreement.Status.BEENDET
+        self.lease.save(update_fields=["status"])
+        service = LeaseHistoryPackageService(lease=self.lease)
+
+        first_file, first_bytes, _ = service.generate_and_store_latest(trigger="manual")
+        second_file, second_bytes, _ = service.generate_and_store_latest(trigger="manual")
+
+        self.assertNotEqual(first_file.pk, second_file.pk)
+        self.assertGreater(len(first_bytes), 0)
+        self.assertGreater(len(second_bytes), 0)
+
+        package_files = list(
+            Datei.objects.filter(
+                beschreibung__startswith=service._description_prefix(),
+            ).order_by("id")
+        )
+        self.assertEqual(len(package_files), 2)
+        self.assertTrue(package_files[0].is_archived)
+        self.assertFalse(package_files[1].is_archived)
+
+    def test_manual_download_view_requires_beendet_status(self):
+        response = self.client.post(reverse("lease_history_package_download", args=[self.lease.pk]))
+        self.assertRedirects(response, reverse("lease_detail", args=[self.lease.pk]))
+        self.assertFalse(
+            Datei.objects.filter(
+                beschreibung__startswith=f"{LeaseHistoryPackageService.DESCRIPTION_PREFIX}{self.lease.pk}"
+            ).exists()
+        )
+
+        self.lease.status = LeaseAgreement.Status.BEENDET
+        self.lease.save(update_fields=["status"])
+        response = self.client.post(reverse("lease_history_package_download", args=[self.lease.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        self.assertTrue(
+            Datei.objects.filter(
+                beschreibung__startswith=f"{LeaseHistoryPackageService.DESCRIPTION_PREFIX}{self.lease.pk}",
+                is_archived=False,
+            ).exists()
+        )
+
+    def test_status_transition_in_lease_update_creates_history_package(self):
+        response = self.client.post(
+            reverse("lease_update", args=[self.lease.pk]),
+            data={
+                "unit": str(self.unit.pk),
+                "tenants": [str(self.tenant.pk)],
+                "manager": str(self.manager.pk),
+                "status": LeaseAgreement.Status.BEENDET,
+                "entry_date": "2020-01-01",
+                "exit_date": "2025-12-31",
+                "index_type": LeaseAgreement.IndexType.VPI,
+                "last_index_adjustment": "2025-01-01",
+                "index_base_value": "120.55",
+                "net_rent": "850.00",
+                "operating_costs_net": "130.00",
+                "heating_costs_net": "90.00",
+                "deposit": "2000.00",
+            },
+        )
+        self.assertRedirects(response, reverse("lease_list"))
+
+        self.lease.refresh_from_db()
+        self.assertEqual(self.lease.status, LeaseAgreement.Status.BEENDET)
+        self.assertTrue(
+            Datei.objects.filter(
+                beschreibung__startswith=f"{LeaseHistoryPackageService.DESCRIPTION_PREFIX}{self.lease.pk}",
+                is_archived=False,
+            ).exists()
+        )
 
 
 class SollStellungCommandTests(TestCase):

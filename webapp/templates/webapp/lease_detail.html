@@ -4,7 +4,15 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h3 class="fw-bold">Mietvertrag – Details</h3>
-    <a href="{% url 'lease_list' %}" class="btn btn-light">Zurück</a>
+    <div class="d-flex gap-2">
+        {% if can_generate_history_package %}
+            <form method="post" action="{% url 'lease_history_package_download' lease.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-primary">Historie-Paket (ZIP) neu erstellen & herunterladen</button>
+            </form>
+        {% endif %}
+        <a href="{% url 'lease_list' %}" class="btn btn-light">Zurück</a>
+    </div>
 </div>
 
 <div class="row g-4">

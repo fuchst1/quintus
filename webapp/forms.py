@@ -188,16 +188,6 @@ class LeaseAgreementForm(forms.ModelForm):
             "deposit": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
         }
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        tenant_queryset = Tenant.objects.filter(is_archived=False)
-        if self.instance and self.instance.pk:
-            tenant_queryset = Tenant.objects.filter(
-                Q(is_archived=False) | Q(pk__in=self.instance.tenants.values_list("pk", flat=True))
-            )
-        self.fields["tenants"].queryset = tenant_queryset.order_by("last_name", "first_name").distinct()
-
     def clean(self):
         cleaned_data = super().clean()
         entry_date = cleaned_data.get("entry_date")
