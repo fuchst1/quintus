@@ -53,6 +53,7 @@ from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.files import MAX_FILE_SIZE_BY_CATEGORY, DateiService
 from .services.lease_history_package_service import LeaseHistoryPackageService
 from .services.operating_cost_service import OperatingCostService
+from .services.paperless import PaperlessSearchError, PaperlessService
 from .services.reminders import ReminderService, add_months
 from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
 
@@ -6223,3 +6224,176 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, reverse("vpi_index_value_settings"))
+
+
+class PaperlessSearchViewTests(TestCase):
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_get_without_query_renders_page_without_results(self):
+        response = self.client.get(reverse("paperless_search"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["search_query"], "")
+        self.assertEqual(response.context["search_q_liegenschaft"], "")
+        self.assertEqual(response.context["search_q_einheit"], "")
+        self.assertEqual(response.context["documents"], [])
+        self.assertEqual(response.context["result_count"], 0)
+        self.assertEqual(response.context["error_message"], "")
+        self.assertContains(response, "Bitte Suchbegriff oder Filter eingeben.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="",
+        PAPERLESS_API_TOKEN="",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_query_without_configuration_shows_warning(self):
+        response = self.client.get(reverse("paperless_search"), {"q": "vertrag"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["search_query"], "vertrag")
+        self.assertEqual(response.context["documents"], [])
+        self.assertEqual(response.context["result_count"], 0)
+        self.assertContains(response, "Paperless ist noch nicht konfiguriert.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_query_success_renders_documents_and_count(self):
+        mocked_documents = [
+            {
+                "id": "101",
+                "title": "Stromrechnung Februar",
+                "created": "2026-02-14",
+                "document_type": "Rechnung",
+                "tags": "Strom, 2026",
+                "q_liegenschaft": "BHG14",
+                "q_einheit": "BHG14_1",
+                "score": "12.340",
+            }
+        ]
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=mocked_documents,
+        ) as mocked_search:
+            response = self.client.get(reverse("paperless_search"), {"q": "strom"})
+
+        mocked_search.assert_called_once_with(
+            query="strom",
+            q_liegenschaft="",
+            q_einheit="",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result_count"], 1)
+        self.assertContains(response, "Treffer: 1")
+        self.assertContains(response, "Stromrechnung Februar")
+        self.assertContains(response, "2026-02-14")
+        self.assertContains(response, "Rechnung")
+        self.assertContains(response, "Strom, 2026")
+        self.assertContains(response, "BHG14")
+        self.assertContains(response, "BHG14_1")
+
+    def test_custom_field_token_values_are_translated(self):
+        raw_document = {
+            "id": "42",
+            "title": "Testdokument",
+            "created": "2026-03-06T07:00:00+00:00",
+            "document_type": "5",
+            "tags": [],
+            "custom_fields": [
+                {"name": "q_liegenschaft", "value": "BoVxOtOFC1HFsRG1"},
+                {"name": "q_einheit", "value": "iu9H1tWbK2SrLYql"},
+            ],
+        }
+
+        normalized = PaperlessService._normalize_document(
+            raw_document,
+            document_type_lookup={},
+            tag_lookup={},
+            custom_field_id_by_name={},
+            custom_field_name_by_id={},
+            custom_field_option_lookup={
+                "q_liegenschaft": {"BoVxOtOFC1HFsRG1": "BHG14"},
+                "q_einheit": {"iu9H1tWbK2SrLYql": "BHG14_3"},
+            },
+        )
+
+        self.assertEqual(normalized["q_liegenschaft"], "BHG14")
+        self.assertEqual(normalized["q_einheit"], "BHG14_3")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="http://paperless-ifkg:8000/api",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_query_without_hits_shows_info_and_normalized_endpoint(self):
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ):
+            response = self.client.get(reverse("paperless_search"), {"q": "nonsense"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["paperless_documents_endpoint"], "http://paperless-ifkg:8000/api/documents/")
+        self.assertContains(response, "Anfrage wurde ausgeführt, aber es wurden keine Treffer gefunden.")
+        self.assertContains(response, "http://paperless-ifkg:8000/api/documents/")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_query_with_extended_filters_calls_service_with_custom_fields(self):
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ) as mocked_search:
+            response = self.client.get(
+                reverse("paperless_search"),
+                {
+                    "q_liegenschaft": "BHG14",
+                    "q_einheit": "BHG14_1",
+                },
+            )
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="BHG14",
+            q_einheit="BHG14_1",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["search_q_liegenschaft"], "BHG14")
+        self.assertEqual(response.context["search_q_einheit"], "BHG14_1")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_query_service_error_shows_error_message(self):
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            side_effect=PaperlessSearchError("Paperless antwortet mit HTTP-Status 500."),
+        ):
+            response = self.client.get(reverse("paperless_search"), {"q": "vertrag"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["documents"], [])
+        self.assertEqual(response.context["result_count"], 0)
+        self.assertContains(response, "Paperless antwortet mit HTTP-Status 500.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_sidebar_contains_paperless_link_in_settings(self):
+        response = self.client.get(reverse("paperless_search"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("paperless_search"))
+        self.assertContains(response, "Paperless DMS (Test)")

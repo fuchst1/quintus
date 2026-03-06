@@ -45,6 +45,16 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [item for item in parts if item]
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 _load_dotenv(BASE_DIR / ".env")
 
 
@@ -182,6 +192,11 @@ BK_PORTAL_BASE_URL = os.getenv("BK_PORTAL_BASE_URL", "").strip().rstrip("/")
 BK_PORTAL_PATH_PREFIX = os.getenv("BK_PORTAL_PATH_PREFIX", "").strip()
 # Dev/Test-Fallback auf SECRET_KEY; in Produktion separat setzen.
 BK_PORTAL_TOKEN_SECRET = os.getenv("BK_PORTAL_TOKEN_SECRET", "").strip() or SECRET_KEY
+
+# Paperless-ngx (Test-DMS-Suche)
+PAPERLESS_BASE_URL = os.getenv("PAPERLESS_BASE_URL", "").strip().rstrip("/")
+PAPERLESS_API_TOKEN = os.getenv("PAPERLESS_API_TOKEN", "").strip()
+PAPERLESS_TIMEOUT_SECONDS = _env_int("PAPERLESS_TIMEOUT_SECONDS", default=10)
 
 # E-Mail
 # Standard: direkter SMTP-Versand über den Provider (ohne lokalen Postfix).

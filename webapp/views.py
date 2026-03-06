@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -64,6 +65,7 @@ from .services.annual_statement_portal_export_service import AnnualStatementPort
 from .services.annual_statement_run_service import AnnualStatementRunService
 from .services.lease_history_package_service import LeaseHistoryPackageService
 from .services.operating_cost_service import OperatingCostService
+from .services.paperless import PaperlessSearchError, PaperlessService
 from .services.settlement_adjustments import match_settlement_adjustment_text
 from .services.reminders import ReminderService
 from .services.vpi_adjustment_pdf_service import VpiAdjustmentPdfService
@@ -681,6 +683,70 @@ class ReminderSettingsView(TemplateView):
             return redirect("reminder_settings")
         messages.error(request, "Bitte prüfen Sie die Eingaben bei den Erinnerungsregeln.")
         return self.render_to_response(self.get_context_data(formset=formset))
+
+
+class PaperlessSearchView(TemplateView):
+    template_name = "webapp/paperless_search.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        search_query = (self.request.GET.get("q") or "").strip()
+        search_q_liegenschaft = (self.request.GET.get("q_liegenschaft") or "").strip()
+        search_q_einheit = (self.request.GET.get("q_einheit") or "").strip()
+        documents: list[dict[str, object]] = []
+        error_message = ""
+        search_info_message = ""
+
+        is_paperless_configured = PaperlessService.is_configured()
+        paperless_documents_endpoint = PaperlessService.documents_endpoint()
+        search_requested = bool(search_query or search_q_liegenschaft or search_q_einheit)
+        if search_requested:
+            if not is_paperless_configured:
+                error_message = (
+                    "Paperless ist noch nicht konfiguriert. "
+                    "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+                )
+            else:
+                try:
+                    documents = PaperlessService.search_documents(
+                        query=search_query,
+                        q_liegenschaft=search_q_liegenschaft,
+                        q_einheit=search_q_einheit,
+                    )
+                except PaperlessSearchError as exc:
+                    error_message = str(exc)
+                else:
+                    if not documents:
+                        search_info_message = (
+                            "Anfrage wurde ausgeführt, aber es wurden keine Treffer gefunden."
+                        )
+
+        property_codes = [
+            property_name
+            for property_name in Property.objects.order_by("name").values_list("name", flat=True)
+            if str(property_name or "").strip()
+        ]
+        unit_names = [
+            unit_name
+            for unit_name in Unit.objects.order_by("name").values_list("name", flat=True)
+            if str(unit_name or "").strip()
+        ]
+
+        context["search_query"] = search_query
+        context["search_q_liegenschaft"] = search_q_liegenschaft
+        context["search_q_einheit"] = search_q_einheit
+        context["search_requested"] = search_requested
+        context["documents"] = documents
+        context["result_count"] = len(documents)
+        context["error_message"] = error_message
+        context["search_info_message"] = search_info_message
+        context["is_paperless_configured"] = is_paperless_configured
+        context["paperless_base_url"] = str(getattr(settings, "PAPERLESS_BASE_URL", "") or "").strip()
+        context["paperless_documents_endpoint"] = paperless_documents_endpoint
+        context["paperless_property_codes"] = property_codes
+        context["paperless_unit_names"] = unit_names
+        return context
 
 
 class TenantListView(ListView):

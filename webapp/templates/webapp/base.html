@@ -27,7 +27,7 @@
                         <li class="breadcrumb-item">Finanzen</li>
                         {% elif request.resolver_match.url_name == 'lease_list' or request.resolver_match.url_name == 'lease_create' or request.resolver_match.url_name == 'lease_update' or request.resolver_match.url_name == 'lease_delete' or request.resolver_match.url_name == 'lease_detail' or request.resolver_match.url_name == 'betriebskostenabrechnung' or request.resolver_match.url_name == 'annual_statement_run_list' or request.resolver_match.url_name == 'annual_statement_run_ensure' or request.resolver_match.url_name == 'annual_statement_run_detail' or request.resolver_match.url_name == 'annual_statement_run_delete' or request.resolver_match.url_name == 'annual_statement_run_update_note' or request.resolver_match.url_name == 'annual_statement_run_generate_letters' or request.resolver_match.url_name == 'annual_statement_run_apply' or request.resolver_match.url_name == 'annual_statement_letter_preview' or request.resolver_match.url_name == 'vpi_adjustment_run_list' or request.resolver_match.url_name == 'vpi_adjustment_run_ensure' or request.resolver_match.url_name == 'vpi_adjustment_run_detail' or request.resolver_match.url_name == 'vpi_adjustment_run_update_note' or request.resolver_match.url_name == 'vpi_adjustment_run_generate_letters' or request.resolver_match.url_name == 'vpi_adjustment_run_apply' or request.resolver_match.url_name == 'vpi_adjustment_letter_preview' %}
                         <li class="breadcrumb-item">Verwaltung</li>
-                        {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' or request.resolver_match.url_name == 'vpi_index_value_settings' %}
+                        {% elif request.resolver_match.url_name == 'betriebskosten_gruppe_list' or request.resolver_match.url_name == 'betriebskosten_gruppe_create' or request.resolver_match.url_name == 'betriebskosten_gruppe_update' or request.resolver_match.url_name == 'reminder_settings' or request.resolver_match.url_name == 'vpi_index_value_settings' or request.resolver_match.url_name == 'paperless_search' %}
                         <li class="breadcrumb-item">Einstellungen</li>
                         {% endif %}
                         {% if request.resolver_match.url_name != 'dashboard' %}
@@ -98,6 +98,7 @@
                             {% elif request.resolver_match.url_name == 'tenant_delete' %}Mieter löschen
                             {% elif request.resolver_match.url_name == 'reminder_settings' %}Erinnerungen
                             {% elif request.resolver_match.url_name == 'vpi_index_value_settings' %}VPI pflegen
+                            {% elif request.resolver_match.url_name == 'paperless_search' %}Paperless DMS (Test)
                             {% else %}Seite{% endif %}
                         </li>
                         {% endif %}

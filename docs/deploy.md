@@ -140,3 +140,35 @@ python manage.py export_bk_portal --liegenschaft-id 3 --jahr 2025
 - Indexierung deaktivieren (`robots.txt` + `X-Robots-Tag: noindex, nofollow`).
 - Token-URLs als geheim behandeln (nicht verlinken/teilen außerhalb der Briefe).
 - Bei vermutetem Leak: Export neu erzeugen und alte Exportdateien entfernen.
+
+## Paperless-ngx (Testsuche)
+
+### Umgebungsvariablen
+
+Für die Testseite `Einstellungen -> Paperless DMS (Test)`:
+
+- `PAPERLESS_BASE_URL` (z. B. `https://paperless.example.at`)
+- `PAPERLESS_API_TOKEN` (API-Token eines Paperless-Benutzers mit Leserechten)
+- `PAPERLESS_TIMEOUT_SECONDS` (Timeout der Suchanfrage in Sekunden, Standard `10`)
+
+Hinweis:
+`PAPERLESS_BASE_URL` kann mit oder ohne `/api` angegeben werden
+(z. B. `http://paperless-ifkg:8000` oder `http://paperless-ifkg:8000/api`).
+
+### Verhalten bei fehlender Konfiguration
+
+Wenn `PAPERLESS_BASE_URL` oder `PAPERLESS_API_TOKEN` fehlt, bleibt Quintus lauffähig.
+Die Testseite zeigt dann nur einen Hinweis zur fehlenden Konfiguration, ohne Serverfehler.
+
+### Erweiterte Filter in der Testsuche
+
+Die Testsuche unterstützt zusätzlich:
+
+- `q_liegenschaft` (z. B. `BHG14`)
+- `q_einheit` (z. B. `BHG14_1`)
+
+Diese werden als `custom_field_query` an Paperless übergeben.
+
+Anzeige-Hinweis:
+Wenn Paperless für diese Felder interne Options-IDs speichert, löst Quintus die IDs
+über die `custom_fields`-Definitionen auf und zeigt die lesbaren Labels an.
