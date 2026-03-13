@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
+import os
+from uuid import uuid4
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
@@ -60,11 +63,23 @@ class PaperlessService:
         query: str = "",
         q_liegenschaft: str = "",
         q_einheit: str = "",
+        q_mieter: str = "",
+        tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         normalized_query = (query or "").strip()
         normalized_q_liegenschaft = (q_liegenschaft or "").strip()
         normalized_q_einheit = (q_einheit or "").strip()
-        if not any([normalized_query, normalized_q_liegenschaft, normalized_q_einheit]):
+        normalized_q_mieter = (q_mieter or "").strip()
+        normalized_tags = cls._normalize_tag_names(tags)
+        if not any(
+            [
+                normalized_query,
+                normalized_q_liegenschaft,
+                normalized_q_einheit,
+                normalized_q_mieter,
+                normalized_tags,
+            ]
+        ):
             return []
         if not cls.is_configured():
             raise PaperlessSearchError(
@@ -72,15 +87,31 @@ class PaperlessService:
                 "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
             )
 
-        query_params: dict[str, str] = {}
+        tag_lookup = cls._safe_fetch_lookup_map(endpoint="tags/")
+        tag_id_by_name = {
+            tag_name: tag_id
+            for tag_id, tag_name in tag_lookup.items()
+        }
+        selected_tag_ids = [
+            str(tag_id_by_name[tag_name])
+            for tag_name in normalized_tags
+            if tag_name in tag_id_by_name
+        ]
+        if normalized_tags and not selected_tag_ids:
+            return []
+
+        query_params: dict[str, Any] = {"page_size": str(LOOKUP_PAGE_SIZE)}
         if normalized_query:
             query_params["query"] = normalized_query
         custom_field_query = cls._build_custom_field_query(
             q_liegenschaft=normalized_q_liegenschaft,
             q_einheit=normalized_q_einheit,
+            q_mieter=normalized_q_mieter,
         )
         if custom_field_query:
             query_params["custom_field_query"] = custom_field_query
+        if selected_tag_ids:
+            query_params["tags__id__all"] = selected_tag_ids
 
         request_url = cls._build_url(endpoint="documents/", query_params=query_params)
         payload = cls._request_json(request_url)
@@ -98,7 +129,6 @@ class PaperlessService:
             raise PaperlessSearchError("Unerwartetes Antwortformat von Paperless (results ist keine Liste).")
 
         document_type_lookup = cls._safe_fetch_lookup_map(endpoint="document_types/")
-        tag_lookup = cls._safe_fetch_lookup_map(endpoint="tags/")
         custom_field_name_by_id, custom_field_option_lookup = cls._safe_fetch_custom_field_metadata()
         custom_field_id_by_name = {
             field_name: field_id
@@ -120,6 +150,144 @@ class PaperlessService:
                 )
             )
         return documents
+
+    @classmethod
+    def list_tags(cls) -> list[dict[str, str]]:
+        if not cls.is_configured():
+            return []
+        lookup = cls._safe_fetch_lookup_map(endpoint="tags/")
+        return [
+            {"id": str(tag_id), "name": tag_name}
+            for tag_id, tag_name in sorted(
+                lookup.items(),
+                key=lambda item: item[1].lower(),
+            )
+        ]
+
+    @classmethod
+    def download_document(cls, *, document_id: int) -> tuple[bytes, str, str]:
+        if not cls.is_configured():
+            raise PaperlessSearchError(
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            )
+
+        request_url = cls._build_url(endpoint=f"documents/{int(document_id)}/download/")
+        request = Request(
+            request_url,
+            headers={
+                "Authorization": f"Token {cls.api_token()}",
+                "Accept": "*/*",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=cls.timeout_seconds()) as response:
+                content = response.read()
+                content_type = response.headers.get_content_type() or "application/octet-stream"
+                filename = response.headers.get_filename() or f"paperless_{int(document_id)}"
+                return content, content_type, filename
+        except HTTPError as exc:
+            logger.warning("Paperless download failed with HTTP %s for %s", exc.code, request_url)
+            if exc.code in {401, 403}:
+                raise PaperlessSearchError(
+                    "Zugriff auf Paperless wurde abgelehnt. Bitte API-Token prüfen."
+                ) from None
+            if exc.code == 404:
+                raise PaperlessSearchError("Dokument wurde in Paperless nicht gefunden.") from None
+            raise PaperlessSearchError(
+                f"Paperless antwortet mit HTTP-Status {exc.code}."
+            ) from None
+        except URLError:
+            logger.warning("Paperless host not reachable for %s", request_url)
+            raise PaperlessSearchError(
+                "Paperless ist nicht erreichbar. Bitte Basis-URL und Netzwerk prüfen."
+            ) from None
+        except TimeoutError:
+            logger.warning("Paperless download timeout for %s", request_url)
+            raise PaperlessSearchError("Zeitüberschreitung bei der Anfrage an Paperless.") from None
+        except Exception:
+            logger.exception("Paperless download failed unexpectedly for %s", request_url)
+            raise PaperlessSearchError("Paperless-Dokument konnte nicht geladen werden.") from None
+
+    @classmethod
+    def upload_document(
+        cls,
+        *,
+        uploaded_file,
+        title: str = "",
+        description: str = "",
+        q_liegenschaft: str = "",
+        q_einheit: str = "",
+        q_mieter: str = "",
+        tags: list[str] | None = None,
+    ) -> str:
+        if not cls.is_configured():
+            raise PaperlessSearchError(
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            )
+
+        normalized_tags = cls._normalize_tag_names(tags)
+        resolved_title = cls._compose_upload_title(
+            title=title,
+            description=description,
+        )
+
+        tag_lookup = cls._fetch_lookup_map(endpoint="tags/")
+        tag_id_by_name = {
+            tag_name: tag_id
+            for tag_id, tag_name in tag_lookup.items()
+        }
+        tag_ids: list[str] = []
+        for tag_name in normalized_tags:
+            tag_id = tag_id_by_name.get(tag_name)
+            if tag_id is None:
+                raise PaperlessSearchError(f"Tag '{tag_name}' wurde in Paperless nicht gefunden.")
+            tag_ids.append(str(tag_id))
+
+        custom_field_name_by_id, _custom_field_option_lookup = cls._fetch_custom_field_metadata()
+        custom_field_id_by_name = {
+            field_name: field_id
+            for field_id, field_name in custom_field_name_by_id.items()
+        }
+        custom_fields_payload: dict[str, str] = {}
+        for field_name, value in (
+            ("q_liegenschaft", q_liegenschaft),
+            ("q_einheit", q_einheit),
+            ("q_mieter", q_mieter),
+        ):
+            normalized_value = str(value or "").strip()
+            if not normalized_value:
+                continue
+            field_id = custom_field_id_by_name.get(field_name)
+            if field_id is None:
+                raise PaperlessSearchError(
+                    f"Custom Field '{field_name}' fehlt in Paperless."
+                )
+            custom_fields_payload[str(field_id)] = normalized_value
+
+        request_url = cls._build_url(endpoint="documents/post_document/")
+        form_fields: list[tuple[str, str]] = []
+        if resolved_title:
+            form_fields.append(("title", resolved_title))
+        for tag_id in tag_ids:
+            form_fields.append(("tags", tag_id))
+        if custom_fields_payload:
+            form_fields.append(
+                ("custom_fields", json.dumps(custom_fields_payload, ensure_ascii=False))
+            )
+
+        response_bytes = cls._request_multipart(
+            request_url=request_url,
+            form_fields=form_fields,
+            file_field_name="document",
+            uploaded_file=uploaded_file,
+        )
+        task_id = cls._parse_upload_response(response_bytes)
+        if not task_id:
+            raise PaperlessSearchError("Paperless hat keine Task-ID für den Upload zurückgegeben.")
+        return task_id
 
     @classmethod
     def _request_json(cls, request_url: str) -> Any:
@@ -159,23 +327,127 @@ class PaperlessService:
             raise PaperlessSearchError("Paperless-Suche konnte nicht ausgeführt werden.") from None
 
     @classmethod
-    def _build_url(cls, *, endpoint: str, query_params: dict[str, str] | None = None) -> str:
+    def _request_multipart(
+        cls,
+        *,
+        request_url: str,
+        form_fields: list[tuple[str, str]],
+        file_field_name: str,
+        uploaded_file,
+    ) -> bytes:
+        boundary = f"----QuintusPaperless{uuid4().hex}"
+        file_name = os.path.basename(getattr(uploaded_file, "name", "") or "upload.bin")
+        content_type = (
+            str(getattr(uploaded_file, "content_type", "") or "").strip()
+            or mimetypes.guess_type(file_name)[0]
+            or "application/octet-stream"
+        )
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        file_bytes = uploaded_file.read()
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+
+        body = bytearray()
+        for field_name, field_value in form_fields:
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(
+                f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode("utf-8")
+            )
+            body.extend(str(field_value).encode("utf-8"))
+            body.extend(b"\r\n")
+
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            (
+                f'Content-Disposition: form-data; name="{file_field_name}"; '
+                f'filename="{file_name}"\r\n'
+            ).encode("utf-8")
+        )
+        body.extend(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        body.extend(file_bytes)
+        body.extend(b"\r\n")
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+        request = Request(
+            request_url,
+            data=bytes(body),
+            headers={
+                "Authorization": f"Token {cls.api_token()}",
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=cls.timeout_seconds()) as response:
+                return response.read()
+        except HTTPError as exc:
+            logger.warning("Paperless multipart request failed with HTTP %s for %s", exc.code, request_url)
+            if exc.code in {401, 403}:
+                raise PaperlessSearchError(
+                    "Zugriff auf Paperless wurde abgelehnt. Bitte API-Token prüfen."
+                ) from None
+            raise PaperlessSearchError(
+                f"Paperless antwortet mit HTTP-Status {exc.code}."
+            ) from None
+        except URLError:
+            logger.warning("Paperless host not reachable for %s", request_url)
+            raise PaperlessSearchError(
+                "Paperless ist nicht erreichbar. Bitte Basis-URL und Netzwerk prüfen."
+            ) from None
+        except TimeoutError:
+            logger.warning("Paperless multipart request timeout for %s", request_url)
+            raise PaperlessSearchError("Zeitüberschreitung bei der Anfrage an Paperless.") from None
+        except Exception:
+            logger.exception("Paperless multipart request failed unexpectedly for %s", request_url)
+            raise PaperlessSearchError("Paperless-Upload konnte nicht ausgeführt werden.") from None
+
+    @classmethod
+    def _parse_upload_response(cls, response_bytes: bytes) -> str:
+        response_text = response_bytes.decode("utf-8", errors="replace").strip()
+        if not response_text:
+            return ""
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError:
+            return response_text.strip('"')
+
+        if isinstance(payload, str):
+            return payload.strip()
+        if isinstance(payload, dict):
+            for key in ("task_id", "task", "id", "uuid"):
+                value = payload.get(key)
+                if value is not None:
+                    return str(value).strip()
+        return response_text.strip('"')
+
+    @classmethod
+    def _build_url(cls, *, endpoint: str, query_params: dict[str, Any] | None = None) -> str:
         base_url = cls.base_url()
         if not base_url:
             return ""
         endpoint_path = endpoint.lstrip("/")
         url = f"{base_url}/api/{endpoint_path}"
         if query_params:
-            url = f"{url}?{urlencode(query_params)}"
+            url = f"{url}?{urlencode(query_params, doseq=True)}"
         return url
 
     @classmethod
-    def _build_custom_field_query(cls, *, q_liegenschaft: str, q_einheit: str) -> str:
+    def _build_custom_field_query(
+        cls,
+        *,
+        q_liegenschaft: str,
+        q_einheit: str,
+        q_mieter: str,
+    ) -> str:
         predicates: list[list[str]] = []
         if q_liegenschaft:
             predicates.append(["q_liegenschaft", "exact", q_liegenschaft])
         if q_einheit:
             predicates.append(["q_einheit", "exact", q_einheit])
+        if q_mieter:
+            predicates.append(["q_mieter", "contains", q_mieter])
         if not predicates:
             return ""
         if len(predicates) == 1:
@@ -299,12 +571,14 @@ class PaperlessService:
         )
         q_liegenschaft = custom_field_values.get("q_liegenschaft", "-")
         q_einheit = custom_field_values.get("q_einheit", "-")
+        q_mieter = custom_field_values.get("q_mieter", "-")
 
         # Fallback, falls Paperless die Werte getrennt unter custom_field_values liefert.
         raw_custom_field_values = raw_document.get("custom_field_values")
         if isinstance(raw_custom_field_values, dict):
             q_liegenschaft_id = custom_field_id_by_name.get("q_liegenschaft")
             q_einheit_id = custom_field_id_by_name.get("q_einheit")
+            q_mieter_id = custom_field_id_by_name.get("q_mieter")
             if q_liegenschaft_id is not None and q_liegenschaft == "-":
                 q_liegenschaft = cls._value_to_text(
                     raw_custom_field_values.get(q_liegenschaft_id)
@@ -315,6 +589,11 @@ class PaperlessService:
                     raw_custom_field_values.get(q_einheit_id)
                     or raw_custom_field_values.get(str(q_einheit_id))
                 )
+            if q_mieter_id is not None and q_mieter == "-":
+                q_mieter = cls._value_to_text(
+                    raw_custom_field_values.get(q_mieter_id)
+                    or raw_custom_field_values.get(str(q_mieter_id))
+                )
 
         q_liegenschaft = cls._translate_custom_field_value(
             field_name="q_liegenschaft",
@@ -324,6 +603,11 @@ class PaperlessService:
         q_einheit = cls._translate_custom_field_value(
             field_name="q_einheit",
             value=q_einheit,
+            custom_field_option_lookup=custom_field_option_lookup,
+        )
+        q_mieter = cls._translate_custom_field_value(
+            field_name="q_mieter",
+            value=q_mieter,
             custom_field_option_lookup=custom_field_option_lookup,
         )
 
@@ -337,6 +621,7 @@ class PaperlessService:
             "tags": tags,
             "q_liegenschaft": q_liegenschaft,
             "q_einheit": q_einheit,
+            "q_mieter": q_mieter,
             "score": score,
         }
 
@@ -441,7 +726,7 @@ class PaperlessService:
                 if field_name:
                     values[field_name] = cls._value_to_text(field_value)
 
-        for field_name in ("q_liegenschaft", "q_einheit"):
+        for field_name in ("q_liegenschaft", "q_einheit", "q_mieter"):
             if field_name not in values and raw_document.get(field_name) is not None:
                 values[field_name] = cls._value_to_text(raw_document.get(field_name))
 
@@ -574,3 +859,20 @@ class PaperlessService:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _normalize_tag_names(tags: list[str] | None) -> list[str]:
+        normalized_tags: list[str] = []
+        for raw_tag in tags or []:
+            tag_name = str(raw_tag or "").strip()
+            if tag_name and tag_name not in normalized_tags:
+                normalized_tags.append(tag_name)
+        return normalized_tags
+
+    @staticmethod
+    def _compose_upload_title(*, title: str, description: str) -> str:
+        normalized_title = str(title or "").strip()
+        normalized_description = str(description or "").strip()
+        if normalized_title and normalized_description:
+            return f"{normalized_title} - {normalized_description}"
+        return normalized_title or normalized_description

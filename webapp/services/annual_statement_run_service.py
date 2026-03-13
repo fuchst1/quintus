@@ -612,6 +612,10 @@ class AnnualStatementRunService:
                 start_date=apply_date,
                 categories=categories,
             )
+            bk_tax_percent = letter.mietervertrag.get_operating_costs_vat_percent()
+            hk_tax_percent = letter.mietervertrag.get_heating_costs_vat_percent()
+            bk_tax_text = f"{bk_tax_percent:.2f}".replace(".", ",")
+            hk_tax_text = f"{hk_tax_percent:.2f}".replace(".", ",")
 
             if create_bk and letter.settlement_booking_bk_id is None:
                 booking_bk = Buchung(
@@ -619,10 +623,10 @@ class AnnualStatementRunService:
                     einheit=letter.einheit,
                     typ=Buchung.Typ.SOLL,
                     kategorie=Buchung.Kategorie.BK,
-                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich 10%",
+                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich {bk_tax_text}%",
                     datum=booking_date,
                     netto=net_delta_10,
-                    ust_prozent=Decimal("10.00"),
+                    ust_prozent=bk_tax_percent,
                     brutto=gross_delta_10,
                     is_settlement_adjustment=True,
                 )
@@ -637,10 +641,10 @@ class AnnualStatementRunService:
                     einheit=letter.einheit,
                     typ=Buchung.Typ.SOLL,
                     kategorie=Buchung.Kategorie.HK,
-                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich 20%",
+                    buchungstext=f"BK-Abrechnung {self.year} Ausgleich {hk_tax_text}%",
                     datum=booking_date,
                     netto=net_delta_20,
-                    ust_prozent=Decimal("20.00"),
+                    ust_prozent=hk_tax_percent,
                     brutto=gross_delta_20,
                     is_settlement_adjustment=True,
                 )

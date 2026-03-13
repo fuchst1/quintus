@@ -59,9 +59,11 @@
                 required
             >
             <div class="text-muted small mb-3">Vorschlag aus letzter verwendeter Nummer: {{ next_number_suggestion }}</div>
-            <label for="brief_freitext" class="form-label fw-semibold mb-2">Freitext für alle Briefe dieses Laufs</label>
-            <textarea id="brief_freitext" name="brief_freitext" class="form-control mb-3" rows="4" placeholder="Optionaler Erklärungstext für die Mieter...">{{ run.brief_freitext }}</textarea>
-            <button type="submit" class="btn btn-outline-primary">Freitext speichern</button>
+            <label for="brief_freitext" class="form-label fw-semibold mb-2">Freitext für Wohnungen/sonstige Einheiten</label>
+            <textarea id="brief_freitext" name="brief_freitext" class="form-control mb-3" rows="4" placeholder="Optionaler Erklärungstext für Wohnungsbriefe...">{{ run.brief_freitext }}</textarea>
+            <label for="brief_freitext_parking" class="form-label fw-semibold mb-2">Freitext für Stellplätze/Parkplätze</label>
+            <textarea id="brief_freitext_parking" name="brief_freitext_parking" class="form-control mb-3" rows="4" placeholder="Optionaler Erklärungstext nur für Parkplatz-Briefe...">{{ run.brief_freitext_parking }}</textarea>
+            <button type="submit" class="btn btn-outline-primary">Freitexte speichern</button>
         </form>
     </div>
 </div>

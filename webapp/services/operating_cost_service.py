@@ -39,9 +39,7 @@ def month_bounds(check_date: date) -> tuple[date, date]:
 
 
 def hmz_tax_percent_for_unit(unit: Unit | None) -> Decimal:
-    if unit and unit.unit_type == Unit.UnitType.PARKING:
-        return Decimal("20.00")
-    return Decimal("10.00")
+    return LeaseAgreement.default_net_rent_vat_percent_for_unit(unit)
 
 
 class CostDistributionStrategy(Protocol):
@@ -566,9 +564,9 @@ class OperatingCostService:
 
         if not profile:
             fallback_components = [
-                ("hmz", hmz_tax_percent_for_unit(lease.unit), quantize_cent(lease.net_rent)),
-                ("bk", Decimal("10.00"), quantize_cent(lease.operating_costs_net)),
-                ("hk", Decimal("20.00"), quantize_cent(lease.heating_costs_net)),
+                ("hmz", lease.get_net_rent_vat_percent(), quantize_cent(lease.net_rent)),
+                ("bk", lease.get_operating_costs_vat_percent(), quantize_cent(lease.operating_costs_net)),
+                ("hk", lease.get_heating_costs_vat_percent(), quantize_cent(lease.heating_costs_net)),
             ]
             for field_name, tax_percent, amount in fallback_components:
                 bucket_key = self._rate_bucket_key(tax_percent)

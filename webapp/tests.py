@@ -215,17 +215,17 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             kind=Meter.CalculationKind.READING,
         )
 
-    def test_create_view_with_meter_query_does_not_show_attachments_panel(self):
+    def test_create_view_with_meter_query_does_not_show_dms_panel(self):
         response = self.client.get(
             reverse("meter_reading_create"),
             {"meter": self.meter.pk},
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("attachments_panel", response.context)
-        self.assertNotContains(response, "Dateien zum Verbrauchszähler")
+        self.assertNotIn("dms_context_panel", response.context)
+        self.assertNotContains(response, "Im DMS öffnen")
 
-    def test_update_view_contains_reading_attachments_panel(self):
+    def test_update_view_contains_reading_dms_panel(self):
         reading = MeterReading.objects.create(
             meter=self.meter,
             date=date(2026, 2, 1),
@@ -235,12 +235,13 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         response = self.client.get(reverse("meter_reading_update", args=[reading.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("attachments_panel", response.context)
-        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Zählerstand")
-        self.assertEqual(response.context["attachments_panel"]["target_model"], "meterreading")
-        self.assertTrue(response.context["attachments_panel"]["show_upload_toggle"])
-        self.assertContains(response, "Dateien zum Zählerstand")
-        self.assertContains(response, "Datei hochladen")
+        self.assertIn("dms_context_panel", response.context)
+        self.assertEqual(response.context["dms_context_panel"]["title"], "Dokumente im DMS")
+        self.assertContains(response, "Im DMS öffnen")
+        self.assertContains(
+            response,
+            f"source_model=meterreading&amp;source_id={reading.pk}",
+        )
         self.assertContains(response, "col-12 col-xl-5")
 
     def test_by_meter_list_shows_image_action_and_count_without_inline_panel(self):
@@ -338,6 +339,80 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Bild anzeigen")
         self.assertContains(response, reverse("datei_preview", args=[uploaded_duplicate.pk]))
+
+
+class DmsContextPanelViewTests(TestCase):
+    def setUp(self):
+        self.property = Property.objects.create(
+            name="BHG14",
+            zip_code="3423",
+            city="St. Andrä-Wördern",
+            street_address="Bahngasse 14",
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="3",
+            name="Top 3",
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Anna",
+            last_name="Muster",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
+    def test_property_detail_contains_dms_panel(self):
+        response = self.client.get(reverse("property_detail", args=[self.property.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("dms_context_panel", response.context)
+        self.assertContains(response, "Dokumente im DMS")
+        self.assertContains(
+            response,
+            f"source_model=property&amp;source_id={self.property.pk}",
+        )
+        self.assertNotContains(response, "Datei hochladen")
+
+    def test_unit_update_contains_dms_panel(self):
+        response = self.client.get(reverse("unit_update", args=[self.unit.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("dms_context_panel", response.context)
+        self.assertContains(
+            response,
+            f"source_model=unit&amp;source_id={self.unit.pk}",
+        )
+
+    def test_tenant_update_contains_dms_panel(self):
+        response = self.client.get(reverse("tenant_update", args=[self.tenant.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("dms_context_panel", response.context)
+        self.assertContains(
+            response,
+            f"source_model=tenant&amp;source_id={self.tenant.pk}",
+        )
+
+    def test_lease_detail_contains_dms_panel(self):
+        response = self.client.get(reverse("lease_detail", args=[self.lease.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("dms_context_panel", response.context)
+        self.assertContains(
+            response,
+            f"source_model=leaseagreement&amp;source_id={self.lease.pk}",
+        )
+        self.assertContains(response, "Anna Muster")
 
 
 class LeaseAgreementHistoryTests(TestCase):
@@ -1380,11 +1455,15 @@ class LeaseDetailViewTests(TestCase):
         self.assertContains(response, "Wertsicherung")
         self.assertNotContains(response, "VPI-Erinnerung")
 
-    def test_lease_update_contains_attachments_panel(self):
+    def test_lease_update_contains_dms_panel(self):
         response = self.client.get(reverse("lease_update", args=[self.lease.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertIn("attachments_panel", response.context)
-        self.assertEqual(response.context["attachments_panel"]["title"], "Dateien zum Mietverhältnis")
+        self.assertIn("dms_context_panel", response.context)
+        self.assertEqual(response.context["dms_context_panel"]["title"], "Dokumente im DMS")
+        self.assertContains(
+            response,
+            f"source_model=leaseagreement&amp;source_id={self.lease.pk}",
+        )
 
 
 class BetriebskostenBelegModelTests(TestCase):
@@ -1957,21 +2036,20 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             fetch_redirect_response=False,
         )
 
-    def test_update_view_contains_attachments_panel(self):
+    def test_update_view_contains_dms_panel(self):
         response = self.client.get(reverse("betriebskostenbeleg_update", args=[self.beleg.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("attachments_panel", response.context)
+        self.assertIn("dms_context_panel", response.context)
         self.assertEqual(
-            response.context["attachments_panel"]["title"],
-            "Dateien zum Betriebskostenbeleg",
+            response.context["dms_context_panel"]["title"],
+            "Dokumente im DMS",
         )
-        self.assertEqual(response.context["attachments_panel"]["target_model"], "betriebskostenbeleg")
-        self.assertFalse(response.context["attachments_panel"]["show_upload_toggle"])
-        self.assertTrue(response.context["attachments_panel"]["upload_expanded"])
-        self.assertContains(response, "Dateien zum Betriebskostenbeleg")
-        self.assertNotContains(response, 'name="kategorie"')
-        self.assertNotContains(response, "Datei hochladen")
+        self.assertContains(response, "Im DMS öffnen")
+        self.assertContains(
+            response,
+            f"source_model=betriebskostenbeleg&amp;source_id={self.beleg.pk}",
+        )
 
 
 class BankImportWorkflowTests(TestCase):
@@ -5756,7 +5834,7 @@ class VpiAdjustmentRunServiceTests(TestCase):
         )
         self.run = VpiAdjustmentRun.objects.create(
             index_value=self.index_value,
-            run_date=date(2026, 4, 15),
+            run_date=date(2026, 4, 1),
         )
 
         Buchung.objects.create(
@@ -5773,6 +5851,30 @@ class VpiAdjustmentRunServiceTests(TestCase):
 
     def _service(self) -> VpiAdjustmentRunService:
         return VpiAdjustmentRunService(run=self.run)
+
+    def _create_parking_lease(self) -> LeaseAgreement:
+        parking_unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.PARKING,
+            door_number="P1",
+            name="Stellplatz 1",
+            usable_area=Decimal("12.00"),
+            operating_cost_share=Decimal("1.00"),
+        )
+        parking_lease = LeaseAgreement.objects.create(
+            unit=parking_unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("50.00"),
+            operating_costs_net=Decimal("0.00"),
+            heating_costs_net=Decimal("0.00"),
+        )
+        parking_lease.tenants.add(self.tenant)
+        return parking_lease
 
     def _create_pdf_datei(self) -> Datei:
         return Datei.objects.create(
@@ -5791,7 +5893,7 @@ class VpiAdjustmentRunServiceTests(TestCase):
         self.assertNotIn(self.fix_lease.pk, letters_by_lease)
 
         due_letter = letters_by_lease[self.due_lease.pk]
-        self.assertEqual(due_letter.effective_date, date(2026, 3, 1))
+        self.assertEqual(due_letter.effective_date, date(2026, 4, 1))
         self.assertEqual(due_letter.factor, Decimal("1.065000"))
         self.assertEqual(due_letter.new_hmz_net, Decimal("532.50"))
         self.assertEqual(due_letter.delta_hmz_net, Decimal("32.50"))
@@ -5803,11 +5905,62 @@ class VpiAdjustmentRunServiceTests(TestCase):
 
         payload = service.payload_for_letter(letter=letter, sequence_number=100)
 
+        self.assertEqual(payload["raw_adjustment_percent"], Decimal("10.00"))
+        self.assertEqual(payload["raw_adjustment_percent_display"], "10,00")
         self.assertEqual(payload["factor"], Decimal("1.065000"))
         self.assertEqual(payload["adjustment_percent"], Decimal("6.50"))
         self.assertEqual(payload["adjustment_percent_display"], "6,50")
         self.assertEqual(payload["old_index_year"], 2025)
         self.assertEqual(payload["new_index_year"], 2026)
+
+    def test_payload_includes_monthly_charge_vat_breakdown(self):
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
+
+        payload = service.payload_for_letter(letter=letter, sequence_number=100)
+
+        self.assertEqual(payload["new_hmz_tax_percent_display"], "10,00")
+        self.assertEqual(payload["new_hmz_tax_display"], "53,25")
+        self.assertEqual(payload["bk_net_display"], "100,00")
+        self.assertEqual(payload["bk_tax_percent_display"], "10,00")
+        self.assertEqual(payload["bk_tax_display"], "10,00")
+        self.assertEqual(payload["hz_net_display"], "50,00")
+        self.assertEqual(payload["hz_tax_percent_display"], "20,00")
+        self.assertEqual(payload["hz_tax_display"], "10,00")
+        self.assertEqual(payload["monthly_total_net_display"], "682,50")
+        self.assertEqual(payload["monthly_total_tax_display"], "73,25")
+        self.assertEqual(payload["monthly_total_gross_display"], "755,75")
+
+    def test_parking_lease_defaults_hmz_vat_to_twenty_percent(self):
+        parking_lease = self._create_parking_lease()
+
+        self.assertEqual(parking_lease.net_rent_vat_percent, Decimal("20.00"))
+        self.assertEqual(parking_lease.get_net_rent_vat_percent(), Decimal("20.00"))
+
+    def test_parking_units_use_full_vpi_without_split_and_parking_template(self):
+        parking_lease = self._create_parking_lease()
+        service = self._service()
+        service.ensure_letters()
+        letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=parking_lease)
+
+        self.assertEqual(letter.factor, Decimal("1.100000"))
+        self.assertEqual(letter.new_hmz_net, Decimal("55.00"))
+        self.assertEqual(letter.delta_hmz_net, Decimal("5.00"))
+
+        payload = service.payload_for_letter(letter=letter, sequence_number=101)
+
+        self.assertTrue(payload["is_parking_letter"])
+        self.assertEqual(payload["body_template_name"], "webapp/letters/_vpi_letter_body_parking.html")
+        self.assertEqual(payload["adjustment_percent_display"], "10,00")
+        self.assertEqual(payload["monthly_total_net_display"], "55,00")
+        self.assertEqual(payload["monthly_total_tax_display"], "11,00")
+        self.assertEqual(payload["monthly_total_gross_display"], "66,00")
+        self.assertEqual(
+            payload["intro_text"],
+            "wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020. "
+            "Die Anpassung ist wirksam ab 01.04.2026.",
+        )
 
     def test_payload_old_index_year_prefers_configured_index_table_entry(self):
         VpiIndexValue.objects.create(
@@ -5873,9 +6026,9 @@ class VpiAdjustmentRunServiceTests(TestCase):
         service.ensure_letters()
         letter = VpiAdjustmentLetter.objects.get(run=self.run, lease=self.due_lease)
 
-        self.assertEqual(letter.catchup_months, 1)
-        self.assertEqual(letter.catchup_net_total, Decimal("32.50"))
-        self.assertEqual(letter.catchup_gross_total, Decimal("35.75"))
+        self.assertEqual(letter.catchup_months, 0)
+        self.assertEqual(letter.catchup_net_total, Decimal("0.00"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("0.00"))
 
         Buchung.objects.create(
             mietervertrag=self.due_lease,
@@ -5891,9 +6044,9 @@ class VpiAdjustmentRunServiceTests(TestCase):
         service.ensure_letters()
         letter.refresh_from_db()
 
-        self.assertEqual(letter.catchup_months, 2)
-        self.assertEqual(letter.catchup_net_total, Decimal("65.00"))
-        self.assertEqual(letter.catchup_gross_total, Decimal("71.50"))
+        self.assertEqual(letter.catchup_months, 1)
+        self.assertEqual(letter.catchup_net_total, Decimal("32.50"))
+        self.assertEqual(letter.catchup_gross_total, Decimal("35.75"))
 
     def test_apply_run_is_idempotent(self):
         service = self._service()
@@ -5908,12 +6061,12 @@ class VpiAdjustmentRunServiceTests(TestCase):
         with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 4, 15)):
             result_first = service.apply_run()
         self.assertEqual(result_first["updated_leases"], 1)
-        self.assertEqual(result_first["catchup_bookings"], 1)
+        self.assertEqual(result_first["catchup_bookings"], 0)
 
         self.due_lease.refresh_from_db()
         self.assertEqual(self.due_lease.net_rent, Decimal("532.50"))
         self.assertEqual(self.due_lease.index_base_value, Decimal("110.00"))
-        self.assertEqual(self.due_lease.last_index_adjustment, date(2026, 3, 1))
+        self.assertEqual(self.due_lease.last_index_adjustment, date(2026, 4, 1))
 
         bookings = Buchung.objects.filter(
             mietervertrag=self.due_lease,
@@ -5921,13 +6074,13 @@ class VpiAdjustmentRunServiceTests(TestCase):
             kategorie=Buchung.Kategorie.HMZ,
             buchungstext__startswith="Nachverrechnung VPI",
         )
-        self.assertEqual(bookings.count(), 1)
+        self.assertEqual(bookings.count(), 0)
 
         with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 4, 15)):
             result_second = service.apply_run()
         self.assertEqual(result_second["updated_leases"], 0)
         self.assertEqual(result_second["catchup_bookings"], 0)
-        self.assertEqual(bookings.count(), 1)
+        self.assertEqual(bookings.count(), 0)
 
     def test_build_letter_filename_uses_requested_pattern(self):
         self.property.name = "BHG14"
@@ -6170,6 +6323,83 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
         self.assertEqual(run.run_date, date(2026, 4, 15))
         self.assertFalse(VpiAdjustmentRun.objects.filter(index_value=self.older_index_value).exists())
 
+    def test_opening_existing_draft_run_updates_run_date(self):
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
+
+        response = self.client.get(
+            reverse("vpi_adjustment_run_ensure"),
+            {"run_date": "2026-05-01"},
+        )
+        run.refresh_from_db()
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            reverse("vpi_adjustment_run_detail", kwargs={"pk": run.pk}),
+        )
+        self.assertEqual(run.run_date, date(2026, 5, 1))
+
+    def test_parking_preview_uses_separate_template_and_freetext(self):
+        parking_unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.PARKING,
+            door_number="P7",
+            name="Stellplatz 7",
+            usable_area=Decimal("12.00"),
+            operating_cost_share=Decimal("1.00"),
+        )
+        parking_lease = LeaseAgreement.objects.create(
+            unit=parking_unit,
+            manager=self.manager,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            last_index_adjustment=date(2025, 3, 1),
+            index_base_value=Decimal("100.00"),
+            net_rent=Decimal("50.00"),
+            operating_costs_net=Decimal("0.00"),
+            heating_costs_net=Decimal("0.00"),
+        )
+        parking_lease.tenants.add(self.tenant)
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
+        VpiAdjustmentRunService(run=run).ensure_letters()
+
+        response = self.client.post(
+            reverse("vpi_adjustment_run_update_note", kwargs={"pk": run.pk}),
+            {
+                "brief_freitext": "Wohnungstext",
+                "brief_freitext_parking": "Parkplatztext",
+                "brief_nummer_start": "250",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        run.refresh_from_db()
+        self.assertEqual(run.brief_freitext, "Wohnungstext")
+        self.assertEqual(run.brief_freitext_parking, "Parkplatztext")
+        self.assertEqual(run.brief_nummer_start, 250)
+
+        parking_letter = run.letters.get(lease=parking_lease)
+        preview_response = self.client.get(
+            reverse(
+                "vpi_adjustment_letter_preview",
+                kwargs={"run_pk": run.pk, "pk": parking_letter.pk},
+            )
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertContains(preview_response, "Parkplatztext")
+        self.assertNotContains(preview_response, "Wohnungstext")
+        self.assertContains(preview_response, "Berechnung Stellplatzmiete")
+        self.assertContains(
+            preview_response,
+            "wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020.",
+        )
+        self.assertContains(preview_response, "volle VPI-Anpassung")
+        self.assertNotContains(preview_response, "Für Stellplätze kommt die volle Indexanpassung ohne 3%-Deckelung zur Anwendung.")
+        preview_html = preview_response.content.decode("utf-8")
+        self.assertNotIn(">BK<", preview_html)
+        self.assertNotIn(">HZ<", preview_html)
+
     def test_apply_endpoint_stays_blocked_until_letters_are_generated(self):
         run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
         VpiAdjustmentRunService(run=run).ensure_letters()
@@ -6227,6 +6457,35 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
 
 
 class PaperlessSearchViewTests(TestCase):
+    def setUp(self):
+        self.property = Property.objects.create(
+            name="BHG14",
+            zip_code="3423",
+            city="St. Andrä-Wördern",
+            street_address="Bahngasse 14",
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="3",
+            name="Top 3",
+        )
+        self.tenant = Tenant.objects.create(
+            salutation=Tenant.Salutation.FRAU,
+            first_name="Anna",
+            last_name="Bondar",
+        )
+        self.lease = LeaseAgreement.objects.create(
+            unit=self.unit,
+            status=LeaseAgreement.Status.AKTIV,
+            entry_date=date(2024, 1, 1),
+            index_type=LeaseAgreement.IndexType.VPI,
+            net_rent=Decimal("500.00"),
+            operating_costs_net=Decimal("100.00"),
+            heating_costs_net=Decimal("50.00"),
+        )
+        self.lease.tenants.add(self.tenant)
+
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
         PAPERLESS_API_TOKEN="dummy-token",
@@ -6239,6 +6498,8 @@ class PaperlessSearchViewTests(TestCase):
         self.assertEqual(response.context["search_query"], "")
         self.assertEqual(response.context["search_q_liegenschaft"], "")
         self.assertEqual(response.context["search_q_einheit"], "")
+        self.assertEqual(response.context["search_q_mieter"], "")
+        self.assertEqual(response.context["search_tags"], [])
         self.assertEqual(response.context["documents"], [])
         self.assertEqual(response.context["result_count"], 0)
         self.assertEqual(response.context["error_message"], "")
@@ -6272,7 +6533,8 @@ class PaperlessSearchViewTests(TestCase):
                 "document_type": "Rechnung",
                 "tags": "Strom, 2026",
                 "q_liegenschaft": "BHG14",
-                "q_einheit": "BHG14_1",
+                "q_einheit": "Top 3",
+                "q_mieter": "Anna Bondar",
                 "score": "12.340",
             }
         ]
@@ -6286,16 +6548,29 @@ class PaperlessSearchViewTests(TestCase):
             query="strom",
             q_liegenschaft="",
             q_einheit="",
+            q_mieter="",
+            tags=[],
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["result_count"], 1)
-        self.assertContains(response, "Treffer: 1")
         self.assertContains(response, "Stromrechnung Februar")
         self.assertContains(response, "2026-02-14")
         self.assertContains(response, "Rechnung")
         self.assertContains(response, "Strom, 2026")
         self.assertContains(response, "BHG14")
-        self.assertContains(response, "BHG14_1")
+        self.assertContains(response, "Top 3")
+        self.assertContains(response, "Anna Bondar")
+        self.assertEqual(
+            response.context["documents"][0]["download_url"],
+            (
+                f"{reverse('paperless_document_download', kwargs={'document_id': 101})}"
+                f"?next=%2Fdms%2Fpaperless%2F%3Fq%3Dstrom"
+            ),
+        )
+        self.assertContains(
+            response,
+            reverse("paperless_document_download", kwargs={"document_id": 101}),
+        )
 
     def test_custom_field_token_values_are_translated(self):
         raw_document = {
@@ -6307,6 +6582,7 @@ class PaperlessSearchViewTests(TestCase):
             "custom_fields": [
                 {"name": "q_liegenschaft", "value": "BoVxOtOFC1HFsRG1"},
                 {"name": "q_einheit", "value": "iu9H1tWbK2SrLYql"},
+                {"name": "q_mieter", "value": "Anna Bondar"},
             ],
         }
 
@@ -6324,6 +6600,7 @@ class PaperlessSearchViewTests(TestCase):
 
         self.assertEqual(normalized["q_liegenschaft"], "BHG14")
         self.assertEqual(normalized["q_einheit"], "BHG14_3")
+        self.assertEqual(normalized["q_mieter"], "Anna Bondar")
 
     @override_settings(
         PAPERLESS_BASE_URL="http://paperless-ifkg:8000/api",
@@ -6338,9 +6615,11 @@ class PaperlessSearchViewTests(TestCase):
             response = self.client.get(reverse("paperless_search"), {"q": "nonsense"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["paperless_documents_endpoint"], "http://paperless-ifkg:8000/api/documents/")
+        self.assertEqual(
+            response.context["paperless_documents_endpoint"],
+            "http://paperless-ifkg:8000/api/documents/",
+        )
         self.assertContains(response, "Anfrage wurde ausgeführt, aber es wurden keine Treffer gefunden.")
-        self.assertContains(response, "http://paperless-ifkg:8000/api/documents/")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -6356,18 +6635,56 @@ class PaperlessSearchViewTests(TestCase):
                 reverse("paperless_search"),
                 {
                     "q_liegenschaft": "BHG14",
-                    "q_einheit": "BHG14_1",
+                    "q_einheit": "Top 3",
+                    "q_mieter": "Anna Bondar",
+                    "tags": ["Strom", "2026"],
                 },
             )
 
         mocked_search.assert_called_once_with(
             query="",
             q_liegenschaft="BHG14",
-            q_einheit="BHG14_1",
+            q_einheit="Top 3",
+            q_mieter="Anna Bondar",
+            tags=["Strom", "2026"],
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["search_q_liegenschaft"], "BHG14")
-        self.assertEqual(response.context["search_q_einheit"], "BHG14_1")
+        self.assertEqual(response.context["search_q_einheit"], "Top 3")
+        self.assertEqual(response.context["search_q_mieter"], "Anna Bondar")
+        self.assertEqual(response.context["search_tags"], ["Strom", "2026"])
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_source_context_prefills_search_for_lease(self):
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ) as mocked_search:
+            response = self.client.get(
+                reverse("paperless_search"),
+                {
+                    "source_model": "leaseagreement",
+                    "source_id": str(self.lease.pk),
+                },
+            )
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="BHG14",
+            q_einheit="Top 3",
+            q_mieter="Anna Bondar",
+            tags=[],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.context["source_context"])
+        self.assertEqual(response.context["search_q_liegenschaft"], "BHG14")
+        self.assertEqual(response.context["search_q_einheit"], "Top 3")
+        self.assertEqual(response.context["search_q_mieter"], "Anna Bondar")
+        self.assertContains(response, "DMS-Kontext: Mietverhältnis Top 3 / Anna Bondar")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -6391,9 +6708,116 @@ class PaperlessSearchViewTests(TestCase):
         PAPERLESS_API_TOKEN="dummy-token",
         PAPERLESS_TIMEOUT_SECONDS=10,
     )
-    def test_sidebar_contains_paperless_link_in_settings(self):
+    def test_upload_post_calls_service_with_prefilled_metadata(self):
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Vertrag"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="task-123",
+        ) as mocked_upload:
+            response = self.client.post(
+                f"{reverse('paperless_search')}?source_model=leaseagreement&source_id={self.lease.pk}",
+                {
+                    "title": "Mietvertrag",
+                    "description": "Unterzeichnet",
+                    "q_liegenschaft": "BHG14",
+                    "q_einheit": "Top 3",
+                    "q_mieter": "Anna Bondar",
+                    "tags": ["Vertrag"],
+                    "file": SimpleUploadedFile("vertrag.pdf", b"%PDF-1.4", content_type="application/pdf"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            f"{reverse('paperless_search')}?source_model=leaseagreement&source_id={self.lease.pk}",
+        )
+        mocked_upload.assert_called_once()
+        self.assertEqual(mocked_upload.call_args.kwargs["title"], "Mietvertrag")
+        self.assertEqual(mocked_upload.call_args.kwargs["description"], "Unterzeichnet")
+        self.assertEqual(mocked_upload.call_args.kwargs["q_liegenschaft"], "BHG14")
+        self.assertEqual(mocked_upload.call_args.kwargs["q_einheit"], "Top 3")
+        self.assertEqual(mocked_upload.call_args.kwargs["q_mieter"], "Anna Bondar")
+        self.assertEqual(mocked_upload.call_args.kwargs["tags"], ["Vertrag"])
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_upload_service_error_is_rendered_on_page(self):
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Vertrag"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            side_effect=PaperlessSearchError("Paperless-Upload fehlgeschlagen."),
+        ):
+            response = self.client.post(
+                reverse("paperless_search"),
+                {
+                    "title": "Mietvertrag",
+                    "description": "",
+                    "q_liegenschaft": "BHG14",
+                    "q_einheit": "Top 3",
+                    "q_mieter": "Anna Bondar",
+                    "tags": ["Vertrag"],
+                    "file": SimpleUploadedFile("vertrag.pdf", b"%PDF-1.4", content_type="application/pdf"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Paperless-Upload fehlgeschlagen.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_document_download_streams_file_from_paperless(self):
+        with patch(
+            "webapp.views.PaperlessService.download_document",
+            return_value=(b"%PDF-1.4", "application/pdf", "stromrechnung.pdf"),
+        ) as mocked_download:
+            response = self.client.get(
+                reverse("paperless_document_download", kwargs={"document_id": 101}),
+            )
+
+        mocked_download.assert_called_once_with(document_id=101)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertEqual(response["Content-Disposition"], 'attachment; filename="stromrechnung.pdf"')
+        self.assertEqual(response.content, b"%PDF-1.4")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_document_download_redirects_back_with_error_message(self):
+        target_url = "/dms/paperless/?q=evn&q_liegenschaft=BHG14"
+        with patch(
+            "webapp.views.PaperlessService.download_document",
+            side_effect=PaperlessSearchError("Dokument wurde in Paperless nicht gefunden."),
+        ):
+            response = self.client.get(
+                reverse("paperless_document_download", kwargs={"document_id": 101}),
+                {"next": target_url},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, target_url)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_sidebar_contains_dms_link_in_settings(self):
         response = self.client.get(reverse("paperless_search"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, reverse("paperless_search"))
-        self.assertContains(response, "Paperless DMS (Test)")
+        self.assertContains(response, "DMS")

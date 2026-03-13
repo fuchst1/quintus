@@ -147,6 +147,27 @@ class LeaseAgreementForm(forms.ModelForm):
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
         input_formats=["%Y-%m-%d", "%d.%m.%Y"],
     )
+    net_rent_vat_percent = forms.DecimalField(
+        required=False,
+        min_value=0,
+        max_value=100,
+        widget=forms.NumberInput(attrs={"class": "form-control", "min": "0", "max": "100", "step": "0.01"}),
+        label="HMZ USt (%)",
+    )
+    operating_costs_vat_percent = forms.DecimalField(
+        required=False,
+        min_value=0,
+        max_value=100,
+        widget=forms.NumberInput(attrs={"class": "form-control", "min": "0", "max": "100", "step": "0.01"}),
+        label="BK USt (%)",
+    )
+    heating_costs_vat_percent = forms.DecimalField(
+        required=False,
+        min_value=0,
+        max_value=100,
+        widget=forms.NumberInput(attrs={"class": "form-control", "min": "0", "max": "100", "step": "0.01"}),
+        label="Heizung USt (%)",
+    )
     exit_date = forms.DateField(
         required=False,
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
@@ -171,8 +192,11 @@ class LeaseAgreementForm(forms.ModelForm):
             "last_index_adjustment",
             "index_base_value",
             "net_rent",
+            "net_rent_vat_percent",
             "operating_costs_net",
+            "operating_costs_vat_percent",
             "heating_costs_net",
+            "heating_costs_vat_percent",
             "deposit",
         ]
         widgets = {
@@ -188,12 +212,49 @@ class LeaseAgreementForm(forms.ModelForm):
             "deposit": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "0.01"}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        unit = self.instance.unit if getattr(self.instance, "unit_id", None) else None
+        raw_unit_id = self.data.get("unit") or self.initial.get("unit")
+        if unit is None and raw_unit_id:
+            try:
+                unit = Unit.objects.filter(pk=int(raw_unit_id)).only("id", "unit_type").first()
+            except (TypeError, ValueError):
+                unit = None
+
+        defaults = {
+            "net_rent_vat_percent": (
+                self.instance.get_net_rent_vat_percent()
+                if self.instance.pk
+                else LeaseAgreement.default_net_rent_vat_percent_for_unit(unit)
+            ),
+            "operating_costs_vat_percent": (
+                self.instance.get_operating_costs_vat_percent()
+                if self.instance.pk
+                else LeaseAgreement.default_operating_costs_vat_percent()
+            ),
+            "heating_costs_vat_percent": (
+                self.instance.get_heating_costs_vat_percent()
+                if self.instance.pk
+                else LeaseAgreement.default_heating_costs_vat_percent()
+            ),
+        }
+        for field_name, value in defaults.items():
+            self.fields[field_name].initial = value
+
     def clean(self):
         cleaned_data = super().clean()
         entry_date = cleaned_data.get("entry_date")
         exit_date = cleaned_data.get("exit_date")
+        unit = cleaned_data.get("unit")
         if entry_date and exit_date and exit_date < entry_date:
             self.add_error("exit_date", "Auszugsdatum darf nicht vor dem Einzugsdatum liegen.")
+        if cleaned_data.get("net_rent_vat_percent") in {None, ""}:
+            cleaned_data["net_rent_vat_percent"] = LeaseAgreement.default_net_rent_vat_percent_for_unit(unit)
+        if cleaned_data.get("operating_costs_vat_percent") in {None, ""}:
+            cleaned_data["operating_costs_vat_percent"] = LeaseAgreement.default_operating_costs_vat_percent()
+        if cleaned_data.get("heating_costs_vat_percent") in {None, ""}:
+            cleaned_data["heating_costs_vat_percent"] = LeaseAgreement.default_heating_costs_vat_percent()
         return cleaned_data
 
 
@@ -656,3 +717,62 @@ class BetriebskostenGruppeForm(forms.ModelForm):
             "sort_order": forms.NumberInput(attrs={"class": "form-control", "min": "0", "step": "1"}),
             "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
         }
+
+
+class PaperlessUploadForm(forms.Form):
+    max_file_size_bytes = 25 * 1024 * 1024
+
+    file = forms.FileField(
+        label="Datei",
+        widget=forms.ClearableFileInput(attrs={"class": "form-control"}),
+    )
+    title = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Titel",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    description = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Beschreibung",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+        help_text="Wird beim Upload an den Titel angehängt, da Paperless hier kein separates Beschreibungsfeld anbietet.",
+    )
+    q_liegenschaft = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Liegenschaft",
+        widget=forms.TextInput(attrs={"class": "form-control", "list": "paperlessLiegenschaftList"}),
+    )
+    q_einheit = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Einheit",
+        widget=forms.TextInput(attrs={"class": "form-control", "list": "paperlessEinheitList"}),
+    )
+    q_mieter = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Mieter",
+        widget=forms.TextInput(attrs={"class": "form-control", "list": "paperlessMieterList"}),
+    )
+    tags = forms.MultipleChoiceField(
+        required=False,
+        label="Tags",
+        choices=(),
+        widget=forms.SelectMultiple(attrs={"class": "form-select", "size": "6"}),
+    )
+
+    def __init__(self, *args, tag_choices: list[tuple[str, str]] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["tags"].choices = tag_choices or []
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data["file"]
+        file_size = getattr(uploaded_file, "size", 0) or 0
+        if file_size <= 0:
+            raise ValidationError("Bitte eine gültige Datei auswählen.")
+        if file_size > self.max_file_size_bytes:
+            raise ValidationError("Die Datei ist zu groß. Maximal erlaubt sind 25 MB.")
+        return uploaded_file

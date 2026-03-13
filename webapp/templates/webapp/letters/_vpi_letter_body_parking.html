@@ -44,7 +44,7 @@
             <p><strong>Hinweis:</strong> {{ payload.skip_reason }}</p>
         </div>
     {% else %}
-        <table class="bk-letter-table bk-letter-table-vpi" role="table" aria-label="Wertsicherungsanpassung">
+        <table class="bk-letter-table bk-letter-table-vpi" role="table" aria-label="Wertsicherungsanpassung Stellplatz">
             <colgroup>
                 <col class="bk-letter-table-vpi-col-label">
                 <col class="bk-letter-table-vpi-col-value">
@@ -66,10 +66,6 @@
                 <tr>
                     <td colspan="4">Neuer Index Jahresdurchschnitt (VPI 2020 {{ payload.new_index_year }})</td>
                     <td class="text-end">{{ payload.new_index_value }}</td>
-                </tr>
-                <tr>
-                    <td colspan="4">Steigerung laut VPI (ohne 3%-Deckelung)</td>
-                    <td class="text-end">{{ payload.raw_adjustment_percent_display }} %</td>
                 </tr>
                 <tr>
                     <td colspan="4">{{ payload.index_change_label }}</td>
@@ -100,24 +96,10 @@
                     <td class="text-end">€ {{ payload.new_hmz_tax_display }}</td>
                     <td class="text-end">€ {{ payload.new_hmz_gross_display }}</td>
                 </tr>
-                <tr>
-                    <td>BK</td>
-                    <td class="text-end">€ {{ payload.bk_net_display }}</td>
-                    <td class="text-end">{{ payload.bk_tax_percent_display }} %</td>
-                    <td class="text-end">€ {{ payload.bk_tax_display }}</td>
-                    <td class="text-end">€ {{ payload.bk_gross_display }}</td>
-                </tr>
-                <tr>
-                    <td>HZ</td>
-                    <td class="text-end">€ {{ payload.hz_net_display }}</td>
-                    <td class="text-end">{{ payload.hz_tax_percent_display }} %</td>
-                    <td class="text-end">€ {{ payload.hz_tax_display }}</td>
-                    <td class="text-end">€ {{ payload.hz_gross_display }}</td>
-                </tr>
                 <tr class="bk-letter-table-total">
                     <td><strong>Gesamt monatlich</strong></td>
                     <td class="text-end"><strong>€ {{ payload.monthly_total_net_display }}</strong></td>
-                    <td class="text-end">—</td>
+                    <td class="text-end">{{ payload.new_hmz_tax_percent_display }} %</td>
                     <td class="text-end"><strong>€ {{ payload.monthly_total_tax_display }}</strong></td>
                     <td class="text-end"><strong>€ {{ payload.monthly_total_gross_display }}</strong></td>
                 </tr>

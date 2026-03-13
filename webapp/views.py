@@ -4,6 +4,7 @@ from calendar import monthrange
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
@@ -49,6 +50,7 @@ from .forms import (
     LeaseAgreementForm,
     MeterForm,
     MeterReadingForm,
+    PaperlessUploadForm,
     PropertyForm,
     PropertyOwnershipFormSet,
     ReminderRuleConfigFormSet,
@@ -110,6 +112,156 @@ def build_attachments_panel_context(request, target_object, *, title: str):
         "rows": rows,
         "can_upload": DateiService.can_upload(target_object=target_object),
         "next_url": request.get_full_path(),
+    }
+
+
+def _tenant_full_name(tenant: Tenant) -> str:
+    return " ".join(
+        part
+        for part in [str(tenant.first_name or "").strip(), str(tenant.last_name or "").strip()]
+        if part
+    ).strip()
+
+
+def _lease_tenant_names(lease: LeaseAgreement) -> str:
+    tenant_names = [
+        _tenant_full_name(tenant)
+        for tenant in lease.tenants.all()
+    ]
+    tenant_names = [name for name in tenant_names if name]
+    return ", ".join(tenant_names)
+
+
+def build_paperless_source_context(*, source_model: str | None, source_id: str | int | None):
+    normalized_model = str(source_model or "").strip().lower()
+    if not normalized_model or source_id in {None, ""}:
+        return None
+
+    try:
+        object_id = int(source_id)
+    except (TypeError, ValueError):
+        return None
+
+    if normalized_model == "property":
+        property_obj = Property.objects.filter(pk=object_id).first()
+        if property_obj is None:
+            return None
+        search_defaults = {
+            "q_liegenschaft": property_obj.name,
+            "q_einheit": "",
+            "q_mieter": "",
+            "tags": [],
+        }
+        source_label = f"Liegenschaft {property_obj.name}"
+    elif normalized_model == "unit":
+        unit = Unit.objects.select_related("property").filter(pk=object_id).first()
+        if unit is None:
+            return None
+        search_defaults = {
+            "q_liegenschaft": unit.property.name if unit.property else "",
+            "q_einheit": unit.name,
+            "q_mieter": "",
+            "tags": [],
+        }
+        source_label = f"Einheit {unit.name}"
+    elif normalized_model == "leaseagreement":
+        lease = (
+            LeaseAgreement.objects.select_related("unit", "unit__property")
+            .prefetch_related("tenants")
+            .filter(pk=object_id)
+            .first()
+        )
+        if lease is None:
+            return None
+        tenant_names = _lease_tenant_names(lease)
+        search_defaults = {
+            "q_liegenschaft": lease.unit.property.name if lease.unit and lease.unit.property else "",
+            "q_einheit": lease.unit.name if lease.unit else "",
+            "q_mieter": tenant_names,
+            "tags": [],
+        }
+        source_label = f"Mietverhältnis {lease.unit.name if lease.unit else '—'}"
+        if tenant_names:
+            source_label = f"{source_label} / {tenant_names}"
+    elif normalized_model == "tenant":
+        tenant = Tenant.objects.filter(pk=object_id).first()
+        if tenant is None:
+            return None
+        tenant_name = _tenant_full_name(tenant)
+        search_defaults = {
+            "q_liegenschaft": "",
+            "q_einheit": "",
+            "q_mieter": tenant_name,
+            "tags": [],
+        }
+        source_label = f"Mieter {tenant_name or tenant.pk}"
+    elif normalized_model == "meterreading":
+        reading = MeterReading.objects.select_related("meter", "meter__property").filter(pk=object_id).first()
+        if reading is None:
+            return None
+        search_defaults = {
+            "q_liegenschaft": (
+                reading.meter.property.name
+                if reading.meter and reading.meter.property
+                else ""
+            ),
+            "q_einheit": "",
+            "q_mieter": "",
+            "tags": [],
+        }
+        source_label = f"Zählerstand {reading.date:%d.%m.%Y}"
+    elif normalized_model == "betriebskostenbeleg":
+        beleg = BetriebskostenBeleg.objects.select_related("liegenschaft").filter(pk=object_id).first()
+        if beleg is None:
+            return None
+        search_defaults = {
+            "q_liegenschaft": beleg.liegenschaft.name if beleg.liegenschaft else "",
+            "q_einheit": "",
+            "q_mieter": "",
+            "tags": [],
+        }
+        source_label = f"Betriebskostenbeleg {beleg.datum:%d.%m.%Y}"
+    else:
+        return None
+
+    filters = [
+        {"label": "Liegenschaft", "value": search_defaults["q_liegenschaft"]},
+        {"label": "Einheit", "value": search_defaults["q_einheit"]},
+        {"label": "Mieter", "value": search_defaults["q_mieter"]},
+    ]
+    filters = [item for item in filters if str(item["value"] or "").strip()]
+
+    return {
+        "source_model": normalized_model,
+        "source_id": object_id,
+        "source_label": source_label,
+        "search_defaults": search_defaults,
+        "filters": filters,
+    }
+
+
+def build_dms_context_panel_context(request, target_object):
+    source_context = build_paperless_source_context(
+        source_model=target_object._meta.model_name,
+        source_id=target_object.pk,
+    )
+    if source_context is None:
+        return None
+    open_url = "{}?{}".format(
+        reverse("paperless_search"),
+        urlencode(
+            {
+                "source_model": source_context["source_model"],
+                "source_id": source_context["source_id"],
+            }
+        ),
+    )
+    return {
+        "title": "Dokumente im DMS",
+        "description": "Benutzerdokumente werden zentral in Paperless verwaltet und gesucht.",
+        "open_url": open_url,
+        "source_label": source_context["source_label"],
+        "filters": source_context["filters"],
     }
 
 # Bestehendes Dashboard
@@ -537,11 +689,7 @@ class PropertyDetailView(DetailView):
         context["unit_count"] = len(units)
         context["rented_unit_count"] = rented_unit_count
         context["vacant_unit_count"] = max(len(units) - rented_unit_count, 0)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zur Liegenschaft",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
 
@@ -585,11 +733,7 @@ class PropertyUpdateView(UpdateView):
             )
         else:
             context["ownership_formset"] = PropertyOwnershipFormSet(instance=self.object)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zur Liegenschaft",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
     def form_valid(self, form):
@@ -688,19 +832,90 @@ class ReminderSettingsView(TemplateView):
 class PaperlessSearchView(TemplateView):
     template_name = "webapp/paperless_search.html"
 
+    def _tag_choices(self) -> list[tuple[str, str]]:
+        return [
+            (tag["name"], tag["name"])
+            for tag in PaperlessService.list_tags()
+        ]
+
+    def _tenant_choices(self) -> list[str]:
+        seen_names: set[str] = set()
+        tenant_names: list[str] = []
+        for first_name, last_name in Tenant.objects.order_by("last_name", "first_name").values_list(
+            "first_name",
+            "last_name",
+        ):
+            full_name = " ".join(part for part in [str(first_name or "").strip(), str(last_name or "").strip()] if part)
+            if full_name and full_name not in seen_names:
+                seen_names.add(full_name)
+                tenant_names.append(full_name)
+        return tenant_names
+
+    def _effective_filters(self) -> dict[str, object]:
+        source_context = build_paperless_source_context(
+            source_model=self.request.GET.get("source_model"),
+            source_id=self.request.GET.get("source_id"),
+        )
+        defaults = source_context["search_defaults"] if source_context else {}
+
+        def value_or_default(key: str) -> str:
+            if key in self.request.GET:
+                return (self.request.GET.get(key) or "").strip()
+            return str(defaults.get(key, "") or "").strip()
+
+        if "tags" in self.request.GET:
+            selected_tags = [
+                str(tag_name or "").strip()
+                for tag_name in self.request.GET.getlist("tags")
+                if str(tag_name or "").strip()
+            ]
+        else:
+            selected_tags = list(defaults.get("tags", []))
+
+        return {
+            "source_context": source_context,
+            "query": (self.request.GET.get("q") or "").strip(),
+            "q_liegenschaft": value_or_default("q_liegenschaft"),
+            "q_einheit": value_or_default("q_einheit"),
+            "q_mieter": value_or_default("q_mieter"),
+            "tags": selected_tags,
+        }
+
+    def _build_upload_form(
+        self,
+        *,
+        tag_choices: list[tuple[str, str]],
+        filters: dict[str, object],
+        form_data=None,
+        files=None,
+    ) -> PaperlessUploadForm:
+        if form_data is not None:
+            return PaperlessUploadForm(form_data, files, tag_choices=tag_choices)
+        initial = {
+            "q_liegenschaft": filters.get("q_liegenschaft", ""),
+            "q_einheit": filters.get("q_einheit", ""),
+            "q_mieter": filters.get("q_mieter", ""),
+            "tags": filters.get("tags", []),
+        }
+        return PaperlessUploadForm(tag_choices=tag_choices, initial=initial)
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-
-        search_query = (self.request.GET.get("q") or "").strip()
-        search_q_liegenschaft = (self.request.GET.get("q_liegenschaft") or "").strip()
-        search_q_einheit = (self.request.GET.get("q_einheit") or "").strip()
+        filters = self._effective_filters()
+        search_query = str(filters["query"])
+        search_q_liegenschaft = str(filters["q_liegenschaft"])
+        search_q_einheit = str(filters["q_einheit"])
+        search_q_mieter = str(filters["q_mieter"])
+        search_tags = list(filters["tags"])
         documents: list[dict[str, object]] = []
         error_message = ""
         search_info_message = ""
 
         is_paperless_configured = PaperlessService.is_configured()
         paperless_documents_endpoint = PaperlessService.documents_endpoint()
-        search_requested = bool(search_query or search_q_liegenschaft or search_q_einheit)
+        search_requested = bool(
+            search_query or search_q_liegenschaft or search_q_einheit or search_q_mieter or search_tags
+        )
         if search_requested:
             if not is_paperless_configured:
                 error_message = (
@@ -713,6 +928,8 @@ class PaperlessSearchView(TemplateView):
                         query=search_query,
                         q_liegenschaft=search_q_liegenschaft,
                         q_einheit=search_q_einheit,
+                        q_mieter=search_q_mieter,
+                        tags=search_tags,
                     )
                 except PaperlessSearchError as exc:
                     error_message = str(exc)
@@ -721,7 +938,22 @@ class PaperlessSearchView(TemplateView):
                         search_info_message = (
                             "Anfrage wurde ausgeführt, aber es wurden keine Treffer gefunden."
                         )
+                    else:
+                        next_url = self.request.get_full_path()
+                        for document in documents:
+                            document_id = str(document.get("id") or "").strip()
+                            if not document_id.isdigit():
+                                document["download_url"] = ""
+                                continue
+                            document["download_url"] = "{}?{}".format(
+                                reverse(
+                                    "paperless_document_download",
+                                    kwargs={"document_id": int(document_id)},
+                                ),
+                                urlencode({"next": next_url}),
+                            )
 
+        tag_choices = self._tag_choices() if is_paperless_configured else []
         property_codes = [
             property_name
             for property_name in Property.objects.order_by("name").values_list("name", flat=True)
@@ -732,10 +964,16 @@ class PaperlessSearchView(TemplateView):
             for unit_name in Unit.objects.order_by("name").values_list("name", flat=True)
             if str(unit_name or "").strip()
         ]
+        upload_form = kwargs.get("upload_form") or self._build_upload_form(
+            tag_choices=tag_choices,
+            filters=filters,
+        )
 
         context["search_query"] = search_query
         context["search_q_liegenschaft"] = search_q_liegenschaft
         context["search_q_einheit"] = search_q_einheit
+        context["search_q_mieter"] = search_q_mieter
+        context["search_tags"] = search_tags
         context["search_requested"] = search_requested
         context["documents"] = documents
         context["result_count"] = len(documents)
@@ -746,7 +984,68 @@ class PaperlessSearchView(TemplateView):
         context["paperless_documents_endpoint"] = paperless_documents_endpoint
         context["paperless_property_codes"] = property_codes
         context["paperless_unit_names"] = unit_names
+        context["paperless_tenant_names"] = self._tenant_choices()
+        context["available_tags"] = [
+            {"value": value, "label": label}
+            for value, label in tag_choices
+        ]
+        context["source_context"] = filters["source_context"]
+        context["upload_form"] = upload_form
         return context
+
+    def post(self, request, *args, **kwargs):
+        filters = self._effective_filters()
+        tag_choices = self._tag_choices() if PaperlessService.is_configured() else []
+        upload_form = self._build_upload_form(
+            tag_choices=tag_choices,
+            filters=filters,
+            form_data=request.POST,
+            files=request.FILES,
+        )
+        if not upload_form.is_valid():
+            messages.error(request, "Bitte prüfen Sie die Upload-Eingaben.")
+            return self.render_to_response(self.get_context_data(upload_form=upload_form))
+
+        cleaned_data = upload_form.cleaned_data
+        try:
+            task_id = PaperlessService.upload_document(
+                uploaded_file=cleaned_data["file"],
+                title=cleaned_data.get("title", ""),
+                description=cleaned_data.get("description", ""),
+                q_liegenschaft=cleaned_data.get("q_liegenschaft", ""),
+                q_einheit=cleaned_data.get("q_einheit", ""),
+                q_mieter=cleaned_data.get("q_mieter", ""),
+                tags=cleaned_data.get("tags", []),
+            )
+        except PaperlessSearchError as exc:
+            messages.error(request, str(exc))
+            return self.render_to_response(self.get_context_data(upload_form=upload_form))
+
+        messages.success(
+            request,
+            f"Dokument wurde an Paperless übergeben. Task-ID: {task_id}.",
+        )
+        return redirect(request.get_full_path())
+
+
+class PaperlessDocumentDownloadView(View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        document_id = int(kwargs["document_id"])
+        next_url = request.GET.get("next") or reverse("paperless_search")
+        if not url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+            next_url = reverse("paperless_search")
+
+        try:
+            content, content_type, filename = PaperlessService.download_document(document_id=document_id)
+        except PaperlessSearchError as exc:
+            messages.error(request, str(exc))
+            return redirect(next_url)
+
+        response = HttpResponse(content, content_type=content_type or "application/octet-stream")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class TenantListView(ListView):
@@ -770,11 +1069,7 @@ class TenantUpdateView(UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zum Mieter",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
 
@@ -869,11 +1164,7 @@ class LeaseAgreementUpdateView(UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zum Mietverhältnis",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
 
@@ -979,11 +1270,7 @@ class LeaseAgreementDetailView(DetailView):
         reminder_service = ReminderService(today=timezone.localdate())
         reminder_items = reminder_service.collect_items()
         context["lease_reminder_items"] = reminder_service.items_by_lease(reminder_items).get(self.object.pk, [])
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zum Mietverhältnis",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         context["can_generate_history_package"] = self.object.status == LeaseAgreement.Status.BEENDET
         return context
 
@@ -1176,11 +1463,7 @@ class MeterReadingUpdateView(UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zum Zählerstand",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
     def get_success_url(self):
@@ -2052,7 +2335,7 @@ def split_payment_gross_by_tax_rate(lease, gross_amount):
 
     bucket_10, bucket_20 = expected_monthly_gross_tax_buckets(lease)
     if bucket_10 <= Decimal("0.00") and bucket_20 <= Decimal("0.00"):
-        hmz_tax = hmz_tax_percent_for_unit(lease.unit)
+        hmz_tax = lease.get_net_rent_vat_percent()
         return [{"ust_prozent": hmz_tax, "brutto": gross_amount}]
     if bucket_10 > Decimal("0.00") and bucket_20 <= Decimal("0.00"):
         return [{"ust_prozent": Decimal("10.00"), "brutto": gross_amount}]
@@ -2061,7 +2344,7 @@ def split_payment_gross_by_tax_rate(lease, gross_amount):
 
     total = (bucket_10 + bucket_20).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if total <= Decimal("0.00"):
-        hmz_tax = hmz_tax_percent_for_unit(lease.unit)
+        hmz_tax = lease.get_net_rent_vat_percent()
         return [{"ust_prozent": hmz_tax, "brutto": gross_amount}]
 
     gross_10 = (gross_amount * bucket_10 / total).quantize(
@@ -2080,32 +2363,39 @@ def split_payment_gross_by_tax_rate(lease, gross_amount):
 
 
 def expected_monthly_gross_tax_buckets(lease):
-    hmz_tax_percent = hmz_tax_percent_for_unit(lease.unit)
+    hmz_tax_percent = lease.get_net_rent_vat_percent()
+    bk_tax_percent = lease.get_operating_costs_vat_percent()
+    hk_tax_percent = lease.get_heating_costs_vat_percent()
     hmz_tax_rate = hmz_tax_percent / Decimal("100")
+    bk_tax_rate = bk_tax_percent / Decimal("100")
+    hk_tax_rate = hk_tax_percent / Decimal("100")
 
     hmz_gross = (
         Decimal(lease.net_rent or Decimal("0.00")) * (Decimal("1.00") + hmz_tax_rate)
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     bk_gross = (
-        Decimal(lease.operating_costs_net or Decimal("0.00")) * Decimal("1.10")
+        Decimal(lease.operating_costs_net or Decimal("0.00")) * (Decimal("1.00") + bk_tax_rate)
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     hk_gross = (
-        Decimal(lease.heating_costs_net or Decimal("0.00")) * Decimal("1.20")
+        Decimal(lease.heating_costs_net or Decimal("0.00")) * (Decimal("1.00") + hk_tax_rate)
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    bucket_10 = bk_gross
-    bucket_20 = hk_gross
-    if hmz_tax_percent == Decimal("10.00"):
-        bucket_10 = (bucket_10 + hmz_gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    else:
-        bucket_20 = (bucket_20 + hmz_gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    bucket_10 = Decimal("0.00")
+    bucket_20 = Decimal("0.00")
+    for gross_amount, tax_percent in (
+        (hmz_gross, hmz_tax_percent),
+        (bk_gross, bk_tax_percent),
+        (hk_gross, hk_tax_percent),
+    ):
+        if tax_percent == Decimal("20.00"):
+            bucket_20 = (bucket_20 + gross_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            bucket_10 = (bucket_10 + gross_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return bucket_10, bucket_20
 
 
 def hmz_tax_percent_for_unit(unit):
-    if unit and unit.unit_type == Unit.UnitType.PARKING:
-        return Decimal("20.00")
-    return Decimal("10.00")
+    return LeaseAgreement.default_net_rent_vat_percent_for_unit(unit)
 
 
 def netto_from_brutto_and_tax(brutto, tax_percent):
@@ -2796,11 +3086,7 @@ class BetriebskostenBelegUpdateView(UpdateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["next_url"] = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zum Betriebskostenbeleg",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
     def get_success_url(self):
@@ -4038,12 +4324,13 @@ class VpiAdjustmentRunNoteUpdateView(View):
                 return redirect("vpi_adjustment_run_detail", pk=run.pk)
             parsed_number = int(raw_number)
         run.brief_freitext = (request.POST.get("brief_freitext") or "").strip()
+        run.brief_freitext_parking = (request.POST.get("brief_freitext_parking") or "").strip()
         run.brief_nummer_start = parsed_number
-        run.save(update_fields=["brief_freitext", "brief_nummer_start", "updated_at"])
+        run.save(update_fields=["brief_freitext", "brief_freitext_parking", "brief_nummer_start", "updated_at"])
         if parsed_number:
-            messages.success(request, f"Freitext und Startnummer {parsed_number} gespeichert.")
+            messages.success(request, f"Freitexte und Startnummer {parsed_number} gespeichert.")
         else:
-            messages.success(request, "Freitext gespeichert. Startnummer bitte noch bestätigen.")
+            messages.success(request, "Freitexte gespeichert. Startnummer bitte noch bestätigen.")
         return redirect("vpi_adjustment_run_detail", pk=run.pk)
 
 
@@ -4199,11 +4486,7 @@ class UnitDetailView(DetailView):
         leases = list(self.object.leases.all())
         context["active_leases"] = [lease for lease in leases if lease.status == LeaseAgreement.Status.AKTIV]
         context["ended_leases"] = [lease for lease in leases if lease.status == LeaseAgreement.Status.BEENDET]
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zur Einheit",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
 
@@ -4222,11 +4505,7 @@ class UnitUpdateView(UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["attachments_panel"] = build_attachments_panel_context(
-            self.request,
-            self.object,
-            title="Dateien zur Einheit",
-        )
+        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
         return context
 
 

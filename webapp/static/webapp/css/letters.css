@@ -154,12 +154,21 @@
 .bk-letter-table-vpi {
     margin: 0.72rem 0 0.8rem;
     font-size: 0.592rem;
+    table-layout: fixed;
 }
 
 .bk-letter-table-vpi th,
 .bk-letter-table-vpi td {
     padding: 0.32rem 0.36rem;
     line-height: 1.16;
+}
+
+.bk-letter-table-vpi-col-label {
+    width: 52%;
+}
+
+.bk-letter-table-vpi-col-value {
+    width: 12%;
 }
 
 .bk-letter-table th {
@@ -169,6 +178,11 @@
 
 .bk-letter-table-section td {
     background: #f1f5fb;
+    font-weight: 700;
+}
+
+.bk-letter-table-subhead td {
+    background: #eef2f8;
     font-weight: 700;
 }
 

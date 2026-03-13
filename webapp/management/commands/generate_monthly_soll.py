@@ -108,13 +108,15 @@ class Command(BaseCommand):
 
     def _soll_components_for_lease(self, lease):
         return [
-            (Buchung.Kategorie.HMZ, lease.net_rent, self._hmz_rate(lease.unit)),
-            (Buchung.Kategorie.BK, lease.operating_costs_net, Decimal("0.10")),
-            (Buchung.Kategorie.HK, lease.heating_costs_net, Decimal("0.20")),
+            (Buchung.Kategorie.HMZ, lease.net_rent, lease.get_net_rent_vat_percent() / Decimal("100")),
+            (
+                Buchung.Kategorie.BK,
+                lease.operating_costs_net,
+                lease.get_operating_costs_vat_percent() / Decimal("100"),
+            ),
+            (
+                Buchung.Kategorie.HK,
+                lease.heating_costs_net,
+                lease.get_heating_costs_vat_percent() / Decimal("100"),
+            ),
         ]
-
-    @staticmethod
-    def _hmz_rate(unit):
-        if unit and unit.unit_type == Unit.UnitType.PARKING:
-            return Decimal("0.20")
-        return Decimal("0.10")

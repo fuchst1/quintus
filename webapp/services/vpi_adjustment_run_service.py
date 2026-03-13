@@ -15,7 +15,6 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from webapp.models import Buchung, LeaseAgreement, VpiAdjustmentLetter, VpiAdjustmentRun, VpiIndexValue
-from webapp.services.operating_cost_service import hmz_tax_percent_for_unit
 from webapp.services.reminders import add_months
 from webapp.services.vpi_adjustment_pdf_service import (
     VpiAdjustmentPdfGenerationError,
@@ -96,6 +95,15 @@ class VpiAdjustmentRunService:
             tenant_change = fixed_threshold + ((raw_change - fixed_threshold) / Decimal("2.00"))
         return (Decimal("1.00") + tenant_change).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
+    @staticmethod
+    def _full_factor_from_index_values(*, old_index_value: Decimal, new_index_value: Decimal) -> Decimal:
+        if old_index_value <= ZERO:
+            return Decimal("1.000000")
+        raw_factor = (new_index_value / old_index_value).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        if raw_factor <= Decimal("1.000000"):
+            return Decimal("1.000000")
+        return raw_factor
+
     @classmethod
     def _month_range(cls, start_month: date, end_month: date) -> list[date]:
         if end_month < start_month:
@@ -109,11 +117,20 @@ class VpiAdjustmentRunService:
         return values
 
     @staticmethod
+    def _is_parking_lease(lease: LeaseAgreement) -> bool:
+        return bool(lease.unit and lease.unit.unit_type == lease.unit.UnitType.PARKING)
+
+    @staticmethod
     def _gross_from_net(netto: Decimal, tax_percent: Decimal) -> Decimal:
         return (netto * (Decimal("1.00") + (tax_percent / Decimal("100")))).quantize(
             CENT,
             rounding=ROUND_HALF_UP,
         )
+
+    @staticmethod
+    def _tax_amount_from_net(netto: Decimal, tax_percent: Decimal) -> Decimal:
+        gross = VpiAdjustmentRunService._gross_from_net(netto, tax_percent)
+        return (gross - netto).quantize(CENT, rounding=ROUND_HALF_UP)
 
     @staticmethod
     def _net_from_gross(gross: Decimal, tax_percent: Decimal) -> Decimal:
@@ -181,10 +198,13 @@ class VpiAdjustmentRunService:
 
     @staticmethod
     def ensure_run(*, index_value: VpiIndexValue, run_date: date) -> VpiAdjustmentRun:
-        run, _created = VpiAdjustmentRun.objects.get_or_create(
+        run, created = VpiAdjustmentRun.objects.get_or_create(
             index_value=index_value,
             defaults={"run_date": run_date},
         )
+        if not created and run.status != VpiAdjustmentRun.Status.APPLIED and run.run_date != run_date:
+            run.run_date = run_date
+            run.save(update_fields=["run_date", "updated_at"])
         return run
 
     def _leasedue_candidates(self):
@@ -263,19 +283,20 @@ class VpiAdjustmentRunService:
                 "delta_hmz_net": ZERO,
                 "catchup_months": 0,
                 "catchup_net_total": ZERO,
-                "catchup_tax_percent": hmz_tax_percent_for_unit(lease.unit),
+                "catchup_tax_percent": lease.get_net_rent_vat_percent(),
                 "catchup_gross_total": ZERO,
                 "skip_reason": "Letzte Wertsicherung fehlt.",
             }
 
-        effective_date = add_months(lease.last_index_adjustment, 12)
+        minimum_effective_date = add_months(lease.last_index_adjustment, 12)
+        effective_date = max(minimum_effective_date, self.run_date)
         preview_allowed_from = self._subtract_months(effective_date, 1)
         if self.run_date < preview_allowed_from:
             return None
 
         old_index_value = self._to_money_decimal(lease.index_base_value)
         old_hmz_net = self._to_money_decimal(lease.net_rent)
-        tax_percent = hmz_tax_percent_for_unit(lease.unit)
+        tax_percent = lease.get_net_rent_vat_percent()
 
         if old_index_value <= ZERO:
             return {
@@ -294,10 +315,16 @@ class VpiAdjustmentRunService:
                 "skip_reason": "Index-Basiswert fehlt oder ist ungültig.",
             }
 
-        factor = self._tenant_factor_from_index_values(
-            old_index_value=old_index_value,
-            new_index_value=self.new_index_value,
-        )
+        if self._is_parking_lease(lease):
+            factor = self._full_factor_from_index_values(
+                old_index_value=old_index_value,
+                new_index_value=self.new_index_value,
+            )
+        else:
+            factor = self._tenant_factor_from_index_values(
+                old_index_value=old_index_value,
+                new_index_value=self.new_index_value,
+            )
         new_hmz_net = (old_hmz_net * factor).quantize(CENT, rounding=ROUND_HALF_UP)
         delta_hmz_net = (new_hmz_net - old_hmz_net).quantize(CENT, rounding=ROUND_HALF_UP)
 
@@ -495,15 +522,41 @@ class VpiAdjustmentRunService:
         recipient_name = self._tenant_names(lease)
         recipient_street = self._recipient_street(lease=lease)
         recipient_zip_city = sender_zip_city
+        is_parking_letter = self._is_parking_lease(lease)
 
-        old_hmz_gross = self._gross_from_net(self._to_money_decimal(letter.old_hmz_net), letter.catchup_tax_percent)
-        new_hmz_gross = self._gross_from_net(self._to_money_decimal(letter.new_hmz_net), letter.catchup_tax_percent)
+        old_hmz_net = self._to_money_decimal(letter.old_hmz_net)
+        new_hmz_net = self._to_money_decimal(letter.new_hmz_net)
+        hmz_tax_percent = self._to_money_decimal(letter.catchup_tax_percent)
+        old_hmz_gross = self._gross_from_net(old_hmz_net, hmz_tax_percent)
+        new_hmz_gross = self._gross_from_net(new_hmz_net, hmz_tax_percent)
+        new_hmz_tax = self._tax_amount_from_net(new_hmz_net, hmz_tax_percent)
         delta_hmz_gross = (new_hmz_gross - old_hmz_gross).quantize(CENT, rounding=ROUND_HALF_UP)
-        bk_gross = self._gross_from_net(self._to_money_decimal(lease.operating_costs_net), Decimal("10.00"))
-        hz_gross = self._gross_from_net(self._to_money_decimal(lease.heating_costs_net), Decimal("20.00"))
-        monthly_total_gross = (new_hmz_gross + bk_gross + hz_gross).quantize(CENT, rounding=ROUND_HALF_UP)
+        bk_net = self._to_money_decimal(lease.operating_costs_net)
+        bk_tax_percent = lease.get_operating_costs_vat_percent()
+        bk_tax = self._tax_amount_from_net(bk_net, bk_tax_percent)
+        bk_gross = self._gross_from_net(bk_net, bk_tax_percent)
+        hz_net = self._to_money_decimal(lease.heating_costs_net)
+        hz_tax_percent = lease.get_heating_costs_vat_percent()
+        hz_tax = self._tax_amount_from_net(hz_net, hz_tax_percent)
+        hz_gross = self._gross_from_net(hz_net, hz_tax_percent)
+        if is_parking_letter:
+            monthly_total_net = new_hmz_net
+            monthly_total_tax = new_hmz_tax
+            monthly_total_gross = new_hmz_gross
+        else:
+            monthly_total_net = (new_hmz_net + bk_net + hz_net).quantize(CENT, rounding=ROUND_HALF_UP)
+            monthly_total_tax = (new_hmz_tax + bk_tax + hz_tax).quantize(CENT, rounding=ROUND_HALF_UP)
+            monthly_total_gross = (new_hmz_gross + bk_gross + hz_gross).quantize(CENT, rounding=ROUND_HALF_UP)
         old_index_value = self._to_money_decimal(letter.old_index_value)
         new_index_value = self._to_money_decimal(letter.new_index_value)
+        raw_adjustment_percent = ZERO
+        if old_index_value > ZERO:
+            raw_adjustment_percent = (((new_index_value / old_index_value) - Decimal("1.00")) * Decimal("100.00")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            if raw_adjustment_percent < ZERO:
+                raw_adjustment_percent = ZERO
         factor = self._to_ratio_decimal(letter.factor)
         adjustment_percent = ((factor - Decimal("1.00")) * Decimal("100.00")).quantize(
             Decimal("0.01"),
@@ -528,7 +581,11 @@ class VpiAdjustmentRunService:
                 sequence_number=sequence_number,
                 year=issue_date.year,
             ),
-            "subject": "Wertsicherungsanpassung gemäß VPI 2020",
+            "subject": (
+                "Wertsicherungsanpassung Stellplatz gemäß VPI 2020"
+                if is_parking_letter
+                else "Wertsicherungsanpassung gemäß VPI 2020"
+            ),
             "issue_date": self._date_str(issue_date),
             "index_month": self.index_value.month.strftime("%m/%Y"),
             "run_date": self._date_str(self.run_date),
@@ -540,6 +597,12 @@ class VpiAdjustmentRunService:
             "recipient_street": recipient_street,
             "recipient_zip_city": recipient_zip_city,
             "greeting_text": self._greeting(letter=letter),
+            "is_parking_letter": is_parking_letter,
+            "body_template_name": (
+                "webapp/letters/_vpi_letter_body_parking.html"
+                if is_parking_letter
+                else "webapp/letters/_vpi_letter_body.html"
+            ),
             "sender_name": sender_name,
             "sender_logo_data_uri": self._sender_logo_data_uri(),
             "sender_street": sender_street,
@@ -548,40 +611,100 @@ class VpiAdjustmentRunService:
             "sender_email": (manager.email if manager else "") or "",
             "sender_phone": (manager.phone if manager else "") or "",
             "sender_website": sender_website,
+            "intro_text": (
+                "wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020. "
+                f"Die Anpassung ist wirksam ab {self._date_str(letter.effective_date)}."
+                if is_parking_letter
+                else (
+                    "wir informieren Sie über die Anpassung des Hauptmietzinses auf Basis des VPI 2020. "
+                    f"Die Anpassung ist wirksam ab {self._date_str(letter.effective_date)}."
+                )
+            ),
+            "calculation_heading": (
+                "Berechnung Stellplatzmiete"
+                if is_parking_letter
+                else "Berechnung Hauptmietzins"
+            ),
+            "index_change_label": (
+                "Steigerung um (volle VPI-Anpassung)"
+                if is_parking_letter
+                else 'Steigerung um (Deckel gemäß 5. MILG  "Mietpreisbremse")'
+            ),
+            "old_rent_label": (
+                "Stellplatzmiete bisher (netto)"
+                if is_parking_letter
+                else "HMZ bisher (netto)"
+            ),
+            "new_rent_label": (
+                "Stellplatzmiete neu (netto)"
+                if is_parking_letter
+                else "HMZ neu (netto)"
+            ),
+            "new_charge_label": (
+                "Stellplatzmiete neu"
+                if is_parking_letter
+                else "HMZ neu"
+            ),
             "old_index_value": old_index_value,
             "new_index_value": new_index_value,
             "old_index_year": old_index_year,
             "new_index_year": new_index_year,
+            "raw_adjustment_percent": raw_adjustment_percent,
             "adjustment_percent": adjustment_percent,
             "factor": factor,
-            "old_hmz_net": self._to_money_decimal(letter.old_hmz_net),
-            "new_hmz_net": self._to_money_decimal(letter.new_hmz_net),
+            "old_hmz_net": old_hmz_net,
+            "new_hmz_net": new_hmz_net,
             "delta_hmz_net": self._to_money_decimal(letter.delta_hmz_net),
             "old_hmz_gross": old_hmz_gross,
             "new_hmz_gross": new_hmz_gross,
             "delta_hmz_gross": delta_hmz_gross,
+            "new_hmz_tax_percent": hmz_tax_percent,
+            "new_hmz_tax": new_hmz_tax,
+            "bk_net": bk_net,
+            "bk_tax_percent": bk_tax_percent,
+            "bk_tax": bk_tax,
             "bk_gross": bk_gross,
+            "hz_net": hz_net,
+            "hz_tax_percent": hz_tax_percent,
+            "hz_tax": hz_tax,
             "hz_gross": hz_gross,
+            "monthly_total_net": monthly_total_net,
+            "monthly_total_tax": monthly_total_tax,
             "monthly_total_gross": monthly_total_gross,
             "catchup_months": int(letter.catchup_months or 0),
             "catchup_period_text": self._catchup_period_text(letter=letter),
             "catchup_net_total": self._to_money_decimal(letter.catchup_net_total),
             "catchup_gross_total": self._to_money_decimal(letter.catchup_gross_total),
-            "catchup_tax_percent": self._to_money_decimal(letter.catchup_tax_percent),
+            "catchup_tax_percent": hmz_tax_percent,
             "has_catchup": has_catchup,
             "payment_due_date": self._date_str(issue_date + timedelta(days=14)),
             "skip_reason": (letter.skip_reason or "").strip(),
-            "free_text": (self.run.brief_freitext or "").strip(),
+            "free_text": (
+                (self.run.brief_freitext_parking or "").strip()
+                if is_parking_letter
+                else (self.run.brief_freitext or "").strip()
+            ),
             "closing_text": "Mit freundlichen Grüßen",
-            "old_hmz_net_display": self._format_money_at(letter.old_hmz_net),
-            "new_hmz_net_display": self._format_money_at(letter.new_hmz_net),
+            "old_hmz_net_display": self._format_money_at(old_hmz_net),
+            "new_hmz_net_display": self._format_money_at(new_hmz_net),
             "delta_hmz_net_display": self._format_money_at(letter.delta_hmz_net),
             "old_hmz_gross_display": self._format_money_at(old_hmz_gross),
             "new_hmz_gross_display": self._format_money_at(new_hmz_gross),
             "delta_hmz_gross_display": self._format_money_at(delta_hmz_gross),
+            "raw_adjustment_percent_display": self._format_percent_at(raw_adjustment_percent),
             "adjustment_percent_display": self._format_percent_at(adjustment_percent),
+            "new_hmz_tax_percent_display": self._format_percent_at(hmz_tax_percent),
+            "new_hmz_tax_display": self._format_money_at(new_hmz_tax),
+            "bk_net_display": self._format_money_at(bk_net),
+            "bk_tax_percent_display": self._format_percent_at(bk_tax_percent),
+            "bk_tax_display": self._format_money_at(bk_tax),
             "bk_gross_display": self._format_money_at(bk_gross),
+            "hz_net_display": self._format_money_at(hz_net),
+            "hz_tax_percent_display": self._format_percent_at(hz_tax_percent),
+            "hz_tax_display": self._format_money_at(hz_tax),
             "hz_gross_display": self._format_money_at(hz_gross),
+            "monthly_total_net_display": self._format_money_at(monthly_total_net),
+            "monthly_total_tax_display": self._format_money_at(monthly_total_tax),
             "monthly_total_gross_display": self._format_money_at(monthly_total_gross),
             "catchup_gross_display": self._format_money_at(letter.catchup_gross_total),
             "catchup_net_display": self._format_money_at(letter.catchup_net_total),

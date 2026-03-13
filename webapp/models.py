@@ -334,17 +334,38 @@ class LeaseAgreement(models.Model):
         verbose_name=_("HMZ Netto"),
         validators=[MinValueValidator(0)],
     )
+    net_rent_vat_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("10.00"),
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name=_("HMZ USt (%)"),
+    )
     operating_costs_net = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         verbose_name=_("BK Netto"),
         validators=[MinValueValidator(0)],
     )
+    operating_costs_vat_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("10.00"),
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name=_("BK USt (%)"),
+    )
     heating_costs_net = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         verbose_name=_("Heizung Netto"),
         validators=[MinValueValidator(0)],
+    )
+    heating_costs_vat_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("20.00"),
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name=_("Heizung USt (%)"),
     )
     deposit = models.DecimalField(
         max_digits=10,
@@ -362,15 +383,58 @@ class LeaseAgreement(models.Model):
             return self.net_rent / usable_area
         return Decimal("0.00")
 
+    @staticmethod
+    def default_net_rent_vat_percent_for_unit(unit: "Unit | None") -> Decimal:
+        if unit and unit.unit_type == Unit.UnitType.PARKING:
+            return Decimal("20.00")
+        return Decimal("10.00")
+
+    @staticmethod
+    def default_operating_costs_vat_percent() -> Decimal:
+        return Decimal("10.00")
+
+    @staticmethod
+    def default_heating_costs_vat_percent() -> Decimal:
+        return Decimal("20.00")
+
+    @staticmethod
+    def _normalized_vat_percent(value: Decimal | None, *, fallback: Decimal) -> Decimal:
+        normalized = Decimal(str(value if value is not None else fallback))
+        return normalized.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    def get_net_rent_vat_percent(self) -> Decimal:
+        fallback = self.default_net_rent_vat_percent_for_unit(self.unit)
+        return self._normalized_vat_percent(self.net_rent_vat_percent, fallback=fallback)
+
+    def get_operating_costs_vat_percent(self) -> Decimal:
+        return self._normalized_vat_percent(
+            self.operating_costs_vat_percent,
+            fallback=self.default_operating_costs_vat_percent(),
+        )
+
+    def get_heating_costs_vat_percent(self) -> Decimal:
+        return self._normalized_vat_percent(
+            self.heating_costs_vat_percent,
+            fallback=self.default_heating_costs_vat_percent(),
+        )
+
     @property
     def total_gross_rent(self):
-        hmz_tax_rate = Decimal("0.10")
-        if self.unit and self.unit.unit_type == Unit.UnitType.PARKING:
-            hmz_tax_rate = Decimal("0.20")
+        hmz_tax_rate = self.get_net_rent_vat_percent() / Decimal("100")
+        bk_tax_rate = self.get_operating_costs_vat_percent() / Decimal("100")
+        hk_tax_rate = self.get_heating_costs_vat_percent() / Decimal("100")
         hmz_gross = self.net_rent * (Decimal("1.00") + hmz_tax_rate)
-        bk_gross = self.operating_costs_net * Decimal("1.10")
-        hk_gross = self.heating_costs_net * Decimal("1.20")
+        bk_gross = self.operating_costs_net * (Decimal("1.00") + bk_tax_rate)
+        hk_gross = self.heating_costs_net * (Decimal("1.00") + hk_tax_rate)
         return hmz_gross + bk_gross + hk_gross
+
+    def save(self, *args, **kwargs):
+        self.net_rent_vat_percent = self.get_net_rent_vat_percent()
+        if self.unit and self.unit.unit_type == Unit.UnitType.PARKING and self.net_rent_vat_percent == Decimal("10.00"):
+            self.net_rent_vat_percent = self.default_net_rent_vat_percent_for_unit(self.unit)
+        self.operating_costs_vat_percent = self.get_operating_costs_vat_percent()
+        self.heating_costs_vat_percent = self.get_heating_costs_vat_percent()
+        super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = _("Mietvertrag")
@@ -635,6 +699,11 @@ class VpiAdjustmentRun(models.Model):
         blank=True,
         verbose_name=_("Brief-Freitext"),
         help_text=_("Optionaler Freitext, der in allen Schreiben dieses Laufs angezeigt wird."),
+    )
+    brief_freitext_parking = models.TextField(
+        blank=True,
+        verbose_name=_("Brief-Freitext Parkplätze"),
+        help_text=_("Optionaler Freitext, der nur in Schreiben für Stellplätze/Parkplätze angezeigt wird."),
     )
     status = models.CharField(
         max_length=20,

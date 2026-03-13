@@ -381,8 +381,11 @@ class LeaseHistoryPackageService:
                 "last_index_adjustment",
                 "index_base_value",
                 "net_rent",
+                "net_rent_vat_percent",
                 "operating_costs_net",
+                "operating_costs_vat_percent",
                 "heating_costs_net",
+                "heating_costs_vat_percent",
                 "deposit",
             ).first()
             or {},
@@ -571,8 +574,11 @@ class LeaseHistoryPackageService:
         <tr><th>Letzte Wertsicherung</th><td>{self._escape_html(self._format_date(self.lease.last_index_adjustment))}</td></tr>
         <tr><th>Index-Basiswert</th><td>{self._escape_html(self._format_decimal(self.lease.index_base_value))}</td></tr>
         <tr><th>HMZ Netto</th><td>{self._escape_html(self._format_money(self.lease.net_rent))}</td></tr>
+        <tr><th>HMZ USt</th><td>{self._escape_html(self._format_decimal(self.lease.get_net_rent_vat_percent()))} %</td></tr>
         <tr><th>BK Netto</th><td>{self._escape_html(self._format_money(self.lease.operating_costs_net))}</td></tr>
+        <tr><th>BK USt</th><td>{self._escape_html(self._format_decimal(self.lease.get_operating_costs_vat_percent()))} %</td></tr>
         <tr><th>Heizung Netto</th><td>{self._escape_html(self._format_money(self.lease.heating_costs_net))}</td></tr>
+        <tr><th>Heizung USt</th><td>{self._escape_html(self._format_decimal(self.lease.get_heating_costs_vat_percent()))} %</td></tr>
         <tr><th>Kaution</th><td>{self._escape_html(self._format_money(self.lease.deposit))}</td></tr>
       </tbody>
     </table>
