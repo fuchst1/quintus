@@ -45,6 +45,67 @@ class PaperlessService:
             return ""
         return f"{base_url}/api/documents/"
 
+    @classmethod
+    def documents_gui_url(
+        cls,
+        *,
+        query: str = "",
+        q_liegenschaft: str = "",
+        q_einheit: str = "",
+        q_mieter: str = "",
+        document_type_id: int | None = None,
+        sort: str = "",
+        reverse: bool = False,
+        page: int | None = 1,
+    ) -> str:
+        base_url = cls.base_url()
+        if not base_url:
+            return ""
+
+        normalized_query = (query or "").strip()
+        normalized_q_liegenschaft = (q_liegenschaft or "").strip()
+        normalized_q_einheit = (q_einheit or "").strip()
+        normalized_q_mieter = (q_mieter or "").strip()
+        normalized_document_type_id = cls._to_int(document_type_id)
+        normalized_sort = str(sort or "").strip()
+        normalized_page = cls._to_int(page)
+
+        query_params: dict[str, Any] = {}
+        if normalized_page is not None and normalized_page > 0:
+            query_params["page"] = str(normalized_page)
+        if normalized_query:
+            query_params["query"] = normalized_query
+        custom_field_query = cls._build_gui_custom_field_query(
+            q_liegenschaft=normalized_q_liegenschaft,
+            q_einheit=normalized_q_einheit,
+            q_mieter=normalized_q_mieter,
+        )
+        if custom_field_query:
+            query_params["custom_field_query"] = custom_field_query
+        if normalized_document_type_id is not None:
+            query_params["document_type__id__in"] = str(normalized_document_type_id)
+        if normalized_sort:
+            query_params["sort"] = normalized_sort
+        if reverse:
+            query_params["reverse"] = "1"
+
+        url = f"{base_url}/documents"
+        if query_params:
+            url = f"{url}?{urlencode(query_params, doseq=True)}"
+        return url
+
+    @classmethod
+    def document_type_id_by_name(cls, name: str) -> int | None:
+        normalized_name = str(name or "").strip().casefold()
+        if not normalized_name or not cls.is_configured():
+            return None
+
+        document_type_lookup = cls._safe_fetch_lookup_map(endpoint="document_types/")
+        for document_type_id, document_type_name in document_type_lookup.items():
+            if str(document_type_name or "").strip().casefold() == normalized_name:
+                return document_type_id
+        return None
+
     @staticmethod
     def timeout_seconds() -> int:
         raw_timeout = getattr(settings, "PAPERLESS_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
@@ -65,12 +126,21 @@ class PaperlessService:
         q_einheit: str = "",
         q_mieter: str = "",
         tags: list[str] | None = None,
+        document_type_id: int | None = None,
+        limit: int | None = None,
+        sort: str = "",
+        reverse: bool = False,
     ) -> list[dict[str, Any]]:
         normalized_query = (query or "").strip()
         normalized_q_liegenschaft = (q_liegenschaft or "").strip()
         normalized_q_einheit = (q_einheit or "").strip()
         normalized_q_mieter = (q_mieter or "").strip()
         normalized_tags = cls._normalize_tag_names(tags)
+        normalized_document_type_id = cls._to_int(document_type_id)
+        normalized_limit = cls._to_int(limit)
+        if normalized_limit is not None and normalized_limit <= 0:
+            normalized_limit = None
+        normalized_sort = str(sort or "").strip()
         if not any(
             [
                 normalized_query,
@@ -78,6 +148,7 @@ class PaperlessService:
                 normalized_q_einheit,
                 normalized_q_mieter,
                 normalized_tags,
+                normalized_document_type_id,
             ]
         ):
             return []
@@ -100,7 +171,11 @@ class PaperlessService:
         if normalized_tags and not selected_tag_ids:
             return []
 
-        query_params: dict[str, Any] = {"page_size": str(LOOKUP_PAGE_SIZE)}
+        page_size = LOOKUP_PAGE_SIZE
+        if normalized_limit is not None:
+            page_size = max(1, min(normalized_limit, LOOKUP_PAGE_SIZE))
+
+        query_params: dict[str, Any] = {"page_size": str(page_size)}
         if normalized_query:
             query_params["query"] = normalized_query
         custom_field_query = cls._build_custom_field_query(
@@ -112,6 +187,12 @@ class PaperlessService:
             query_params["custom_field_query"] = custom_field_query
         if selected_tag_ids:
             query_params["tags__id__all"] = selected_tag_ids
+        if normalized_document_type_id is not None:
+            query_params["document_type__id__in"] = str(normalized_document_type_id)
+        if normalized_sort:
+            query_params["sort"] = normalized_sort
+        if reverse:
+            query_params["reverse"] = "1"
 
         request_url = cls._build_url(endpoint="documents/", query_params=query_params)
         payload = cls._request_json(request_url)
@@ -149,6 +230,8 @@ class PaperlessService:
                     custom_field_option_lookup=custom_field_option_lookup,
                 )
             )
+        if normalized_limit is not None:
+            return documents[:normalized_limit]
         return documents
 
     @classmethod
@@ -229,10 +312,8 @@ class PaperlessService:
             )
 
         normalized_tags = cls._normalize_tag_names(tags)
-        resolved_title = cls._compose_upload_title(
-            title=title,
-            description=description,
-        )
+        normalized_title = str(title or "").strip()
+        normalized_description = str(description or "").strip()
 
         tag_lookup = cls._fetch_lookup_map(endpoint="tags/")
         tag_id_by_name = {
@@ -269,8 +350,10 @@ class PaperlessService:
 
         request_url = cls._build_url(endpoint="documents/post_document/")
         form_fields: list[tuple[str, str]] = []
-        if resolved_title:
-            form_fields.append(("title", resolved_title))
+        if normalized_title:
+            form_fields.append(("title", normalized_title))
+        if normalized_description:
+            form_fields.append(("notes", normalized_description))
         for tag_id in tag_ids:
             form_fields.append(("tags", tag_id))
         if custom_fields_payload:
@@ -453,6 +536,89 @@ class PaperlessService:
         if len(predicates) == 1:
             return json.dumps(predicates[0], ensure_ascii=False, separators=(",", ":"))
         return json.dumps(["AND", predicates], ensure_ascii=False, separators=(",", ":"))
+
+    @classmethod
+    def _build_gui_custom_field_query(
+        cls,
+        *,
+        q_liegenschaft: str,
+        q_einheit: str,
+        q_mieter: str,
+    ) -> str:
+        raw_filters = [
+            ("q_liegenschaft", str(q_liegenschaft or "").strip(), "exact", False),
+            ("q_einheit", str(q_einheit or "").strip(), "exact", False),
+            ("q_mieter", str(q_mieter or "").strip(), "contains", True),
+        ]
+        raw_filters = [item for item in raw_filters if item[1]]
+        if not raw_filters or not cls.is_configured():
+            return ""
+
+        custom_field_name_by_id, custom_field_option_lookup = cls._safe_fetch_custom_field_metadata()
+        custom_field_id_by_name = {
+            field_name: field_id
+            for field_id, field_name in custom_field_name_by_id.items()
+        }
+
+        predicates: list[list[Any]] = []
+        for field_name, raw_value, operator, allow_multiple_labels in raw_filters:
+            field_id = custom_field_id_by_name.get(field_name)
+            if field_id is None:
+                continue
+
+            option_ids = cls._match_custom_field_option_ids(
+                field_name=field_name,
+                raw_value=raw_value,
+                custom_field_option_lookup=custom_field_option_lookup,
+                allow_multiple_labels=allow_multiple_labels,
+            )
+            if option_ids:
+                predicates.append([field_id, "in", option_ids])
+                continue
+
+            predicates.append([field_id, operator, raw_value])
+
+        if not predicates:
+            return ""
+        combinator = "OR" if len(predicates) == 1 else "AND"
+        return json.dumps([combinator, predicates], ensure_ascii=False, separators=(",", ":"))
+
+    @classmethod
+    def _match_custom_field_option_ids(
+        cls,
+        *,
+        field_name: str,
+        raw_value: str,
+        custom_field_option_lookup: dict[str, dict[str, str]],
+        allow_multiple_labels: bool,
+    ) -> list[str]:
+        options = custom_field_option_lookup.get(field_name) or {}
+        if not options:
+            return []
+
+        candidate_labels = [str(raw_value or "").strip()]
+        if allow_multiple_labels:
+            candidate_labels = [
+                part.strip()
+                for part in str(raw_value or "").split(",")
+                if part.strip()
+            ] or candidate_labels
+
+        normalized_labels = {
+            label.casefold(): label
+            for label in candidate_labels
+        }
+        matched_option_ids: list[str] = []
+        for option_id, option_label in options.items():
+            option_label_text = str(option_label or "").strip()
+            if not option_label_text:
+                continue
+            if option_label_text.casefold() not in normalized_labels:
+                continue
+            option_id_text = str(option_id or "").strip()
+            if option_id_text and option_id_text not in matched_option_ids:
+                matched_option_ids.append(option_id_text)
+        return matched_option_ids
 
     @classmethod
     def _safe_fetch_lookup_map(cls, *, endpoint: str) -> dict[int, str]:
@@ -868,11 +1034,3 @@ class PaperlessService:
             if tag_name and tag_name not in normalized_tags:
                 normalized_tags.append(tag_name)
         return normalized_tags
-
-    @staticmethod
-    def _compose_upload_title(*, title: str, description: str) -> str:
-        normalized_title = str(title or "").strip()
-        normalized_description = str(description or "").strip()
-        if normalized_title and normalized_description:
-            return f"{normalized_title} - {normalized_description}"
-        return normalized_title or normalized_description

@@ -55,6 +55,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_optional_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return None
+
+
 _load_dotenv(BASE_DIR / ".env")
 
 
@@ -197,6 +207,11 @@ BK_PORTAL_TOKEN_SECRET = os.getenv("BK_PORTAL_TOKEN_SECRET", "").strip() or SECR
 PAPERLESS_BASE_URL = os.getenv("PAPERLESS_BASE_URL", "").strip().rstrip("/")
 PAPERLESS_API_TOKEN = os.getenv("PAPERLESS_API_TOKEN", "").strip()
 PAPERLESS_TIMEOUT_SECONDS = _env_int("PAPERLESS_TIMEOUT_SECONDS", default=10)
+PAPERLESS_LEASE_DOCUMENT_TYPE_ID = _env_optional_int("PAPERLESS_LEASE_DOCUMENT_TYPE_ID")
+PAPERLESS_METER_READING_DOCUMENT_TYPE_ID = _env_int(
+    "PAPERLESS_METER_READING_DOCUMENT_TYPE_ID",
+    default=6,
+)
 
 # E-Mail
 # Standard: direkter SMTP-Versand über den Provider (ohne lokalen Postfix).

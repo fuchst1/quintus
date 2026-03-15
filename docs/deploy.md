@@ -150,6 +150,8 @@ Für die Testseite `Einstellungen -> Paperless DMS (Test)`:
 - `PAPERLESS_BASE_URL` (z. B. `https://paperless.example.at`)
 - `PAPERLESS_API_TOKEN` (API-Token eines Paperless-Benutzers mit Leserechten)
 - `PAPERLESS_TIMEOUT_SECONDS` (Timeout der Suchanfrage in Sekunden, Standard `10`)
+- `PAPERLESS_LEASE_DOCUMENT_TYPE_ID` (optional, Dokumenttyp-ID für Mietverträge; wenn leer, versucht Quintus den Typnamen `Mietvertrag` in Paperless aufzulösen)
+- `PAPERLESS_METER_READING_DOCUMENT_TYPE_ID` (optional, Dokumenttyp-ID für Zählerstand-Bilder, Standard `6`)
 
 Hinweis:
 `PAPERLESS_BASE_URL` kann mit oder ohne `/api` angegeben werden

@@ -238,10 +238,7 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertIn("dms_context_panel", response.context)
         self.assertEqual(response.context["dms_context_panel"]["title"], "Dokumente im DMS")
         self.assertContains(response, "Im DMS öffnen")
-        self.assertContains(
-            response,
-            f"source_model=meterreading&amp;source_id={reading.pk}",
-        )
+        self.assertContains(response, "Dokumenttyp: Zählerstand")
         self.assertContains(response, "col-12 col-xl-5")
 
     def test_by_meter_list_shows_image_action_and_count_without_inline_panel(self):
@@ -377,10 +374,8 @@ class DmsContextPanelViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
         self.assertContains(response, "Dokumente im DMS")
-        self.assertContains(
-            response,
-            f"source_model=property&amp;source_id={self.property.pk}",
-        )
+        self.assertContains(response, 'target="_blank"')
+        self.assertContains(response, 'rel="noopener noreferrer"')
         self.assertNotContains(response, "Datei hochladen")
 
     def test_unit_update_contains_dms_panel(self):
@@ -388,9 +383,91 @@ class DmsContextPanelViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
+        self.assertEqual(
+            response.context["dms_context_panel"]["filters"],
+            [{"label": "Einheit", "value": "Top 3"}],
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_unit_detail_shows_top_paperless_documents(self):
+        preview_documents = [
+            {
+                "id": "101",
+                "title": "Ableseprotokoll 2026",
+                "created": "2026-03-10",
+                "document_type": "Protokoll",
+                "tags": "-",
+                "q_liegenschaft": "-",
+                "q_einheit": "Top 3",
+                "q_mieter": "-",
+                "score": "-",
+            },
+            {
+                "id": "102",
+                "title": "Wasserzähler Foto",
+                "created": "2026-03-02",
+                "document_type": "Foto",
+                "tags": "-",
+                "q_liegenschaft": "-",
+                "q_einheit": "Top 3",
+                "q_mieter": "-",
+                "score": "-",
+            },
+        ]
+
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=preview_documents,
+        ) as mocked_search:
+            response = self.client.get(reverse("unit_detail", args=[self.unit.pk]))
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="",
+            q_einheit="Top 3",
+            q_mieter="",
+            tags=[],
+            document_type_id=None,
+            limit=10,
+            sort="created",
+            reverse=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Neueste Dokumente")
+        self.assertContains(response, "Ableseprotokoll 2026")
+        self.assertContains(response, "Wasserzähler Foto")
         self.assertContains(
             response,
-            f"source_model=unit&amp;source_id={self.unit.pk}",
+            reverse("paperless_document_download", kwargs={"document_id": 101}),
+        )
+        self.assertContains(response, "Im DMS öffnen")
+        self.assertEqual(
+            response.context["dms_context_panel"]["open_url"],
+            PaperlessService.documents_gui_url(
+                q_einheit="Top 3",
+                sort="created",
+                reverse=True,
+                page=1,
+            ),
+        )
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example.invalid/api")
+    def test_unit_detail_links_dms_button_directly_to_paperless_gui(self):
+        response = self.client.get(reverse("unit_detail", args=[self.unit.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["dms_context_panel"]["open_url"],
+            PaperlessService.documents_gui_url(
+                q_einheit="Top 3",
+                sort="created",
+                reverse=True,
+                page=1,
+            ),
         )
 
     def test_tenant_update_contains_dms_panel(self):
@@ -398,21 +475,60 @@ class DmsContextPanelViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
-        self.assertContains(
-            response,
-            f"source_model=tenant&amp;source_id={self.tenant.pk}",
-        )
 
     def test_lease_detail_contains_dms_panel(self):
         response = self.client.get(reverse("lease_detail", args=[self.lease.pk]))
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
-        self.assertContains(
-            response,
-            f"source_model=leaseagreement&amp;source_id={self.lease.pk}",
-        )
         self.assertContains(response, "Anna Muster")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid/api",
+        PAPERLESS_LEASE_DOCUMENT_TYPE_ID=7,
+    )
+    def test_lease_detail_uses_unit_tenant_and_mietvertrag_document_type(self):
+        response = self.client.get(reverse("lease_detail", args=[self.lease.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["dms_context_panel"]["filters"],
+            [
+                {"label": "Einheit", "value": "Top 3"},
+                {"label": "Mieter", "value": "Anna Muster"},
+                {"label": "Dokumenttyp", "value": "Mietvertrag"},
+            ],
+        )
+        self.assertEqual(
+            response.context["dms_context_panel"]["open_url"],
+            PaperlessService.documents_gui_url(
+                q_einheit="Top 3",
+                q_mieter="Anna Muster",
+                document_type_id=7,
+                sort="created",
+                reverse=True,
+                page=1,
+            ),
+        )
+        self.assertNotContains(response, "Liegenschaft: BHG14")
+
+    @override_settings(PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6)
+    def test_meter_reading_context_contains_document_type_filter(self):
+        reading = MeterReading.objects.create(
+            meter=Meter.objects.create(
+                property=self.property,
+                meter_type=Meter.MeterType.WATER_COLD,
+                meter_number="W-1001",
+                kind=Meter.CalculationKind.READING,
+            ),
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+
+        response = self.client.get(reverse("meter_reading_update", args=[reading.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Dokumenttyp: Zählerstand")
 
 
 class LeaseAgreementHistoryTests(TestCase):
@@ -1460,10 +1576,6 @@ class LeaseDetailViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
         self.assertEqual(response.context["dms_context_panel"]["title"], "Dokumente im DMS")
-        self.assertContains(
-            response,
-            f"source_model=leaseagreement&amp;source_id={self.lease.pk}",
-        )
 
 
 class BetriebskostenBelegModelTests(TestCase):
@@ -2046,10 +2158,6 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             "Dokumente im DMS",
         )
         self.assertContains(response, "Im DMS öffnen")
-        self.assertContains(
-            response,
-            f"source_model=betriebskostenbeleg&amp;source_id={self.beleg.pk}",
-        )
 
 
 class BankImportWorkflowTests(TestCase):
@@ -6094,7 +6202,7 @@ class VpiAdjustmentRunServiceTests(TestCase):
 
         self.assertEqual(filename, "23_2026_BHG14_Wertsicherung_20260214.pdf")
 
-    def test_apply_readiness_blocks_before_effective_date(self):
+    def test_apply_readiness_allows_before_effective_date(self):
         early_index = VpiIndexValue.objects.create(
             month=date(2026, 1, 1),
             index_value=Decimal("110.00"),
@@ -6113,11 +6221,10 @@ class VpiAdjustmentRunServiceTests(TestCase):
             letter.pdf_datei = pdf
             letter.save(update_fields=["pdf_datei", "updated_at"])
 
-        with patch("webapp.services.vpi_adjustment_run_service.timezone.localdate", return_value=date(2026, 2, 14)):
-            ready, reason = service.apply_readiness()
+        ready, reason = service.apply_readiness()
 
-        self.assertFalse(ready)
-        self.assertIn("Anpassung kann erst ab 01.03.2026 angewendet werden.", reason)
+        self.assertTrue(ready)
+        self.assertEqual(reason, "")
 
 
 class CheckVpiReleasesCommandTests(TestCase):
@@ -6412,6 +6519,28 @@ class VpiAdjustmentUiIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(run.status, VpiAdjustmentRun.Status.DRAFT)
 
+    def test_detail_view_allows_apply_before_effective_date_when_letters_exist(self):
+        run = VpiAdjustmentRunService.ensure_run(index_value=self.older_index_value, run_date=date(2026, 2, 14))
+        service = VpiAdjustmentRunService(run=run)
+        letters = service.ensure_letters()
+        run.brief_nummer_start = 200
+        run.save(update_fields=["brief_nummer_start"])
+        pdf = Datei.objects.create(
+            file=SimpleUploadedFile("vpi-early.pdf", b"%PDF-1.4", content_type="application/pdf"),
+            kategorie=Datei.Kategorie.DOKUMENT,
+        )
+        for letter in letters:
+            if (letter.skip_reason or "").strip():
+                continue
+            letter.pdf_datei = pdf
+            letter.save(update_fields=["pdf_datei", "updated_at"])
+
+        response = self.client.get(reverse("vpi_adjustment_run_detail", kwargs={"pk": run.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["can_apply"])
+        self.assertEqual(response.context["apply_block_reason"], "")
+
     def test_delete_draft_run_from_list(self):
         run = VpiAdjustmentRunService.ensure_run(index_value=self.latest_index_value, run_date=date(2026, 4, 15))
         VpiAdjustmentRunService(run=run).ensure_letters()
@@ -6550,6 +6679,7 @@ class PaperlessSearchViewTests(TestCase):
             q_einheit="",
             q_mieter="",
             tags=[],
+            document_type_id=None,
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["result_count"], 1)
@@ -6603,6 +6733,166 @@ class PaperlessSearchViewTests(TestCase):
         self.assertEqual(normalized["q_mieter"], "Anna Bondar")
 
     @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_upload_service_sends_description_as_notes(self):
+        uploaded_file = SimpleUploadedFile(
+            "vertrag.pdf",
+            b"%PDF-1.4",
+            content_type="application/pdf",
+        )
+
+        with patch.object(PaperlessService, "_fetch_lookup_map", return_value={}), patch.object(
+            PaperlessService,
+            "_fetch_custom_field_metadata",
+            return_value=({}, {}),
+        ), patch.object(
+            PaperlessService,
+            "_request_multipart",
+            return_value=b'{"task_id":"task-123"}',
+        ) as mocked_request, patch.object(
+            PaperlessService,
+            "_parse_upload_response",
+            return_value="task-123",
+        ):
+            task_id = PaperlessService.upload_document(
+                uploaded_file=uploaded_file,
+                title="Mietvertrag",
+                description="Unterzeichnet",
+            )
+
+        self.assertEqual(task_id, "task-123")
+        self.assertEqual(
+            mocked_request.call_args.kwargs["form_fields"],
+            [("title", "Mietvertrag"), ("notes", "Unterzeichnet")],
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_search_service_sends_document_type_filter(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_lookup_map",
+            side_effect=[{}, {}],
+        ), patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=({}, {}),
+        ), patch.object(
+            PaperlessService,
+            "_request_json",
+            return_value={"results": []},
+        ) as mocked_request:
+            documents = PaperlessService.search_documents(document_type_id=6)
+
+        self.assertEqual(documents, [])
+        self.assertIn(
+            "document_type__id__in=6",
+            mocked_request.call_args.args[0],
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_search_service_sends_limit_sort_and_reverse_parameters(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_lookup_map",
+            side_effect=[{}, {}],
+        ), patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=({}, {}),
+        ), patch.object(
+            PaperlessService,
+            "_request_json",
+            return_value={"results": []},
+        ) as mocked_request:
+            documents = PaperlessService.search_documents(
+                q_einheit="Top 3",
+                limit=10,
+                sort="created",
+                reverse=True,
+            )
+
+        self.assertEqual(documents, [])
+        self.assertIn("page_size=10", mocked_request.call_args.args[0])
+        self.assertIn("sort=created", mocked_request.call_args.args[0])
+        self.assertIn("reverse=1", mocked_request.call_args.args[0])
+
+    @override_settings(PAPERLESS_BASE_URL="http://paperless-ifkg:8000/api")
+    def test_documents_gui_url_uses_frontend_documents_path(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=(
+                {6: "q_einheit"},
+                {"q_einheit": {"iu9H1tWbK2SrLYql": "Top 3"}},
+            ),
+        ):
+            gui_url = PaperlessService.documents_gui_url(
+                q_einheit="Top 3",
+                document_type_id=6,
+                sort="created",
+                reverse=True,
+                page=1,
+            )
+
+        self.assertEqual(
+            gui_url,
+            "http://paperless-ifkg:8000/documents?page=1&custom_field_query=%5B%22OR%22%2C%5B%5B6%2C%22in%22%2C%5B%22iu9H1tWbK2SrLYql%22%5D%5D%5D%5D&document_type__id__in=6&sort=created&reverse=1",
+        )
+
+    @override_settings(PAPERLESS_BASE_URL="http://paperless-ifkg:8000/api")
+    def test_documents_gui_url_uses_option_ids_for_select_custom_fields(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=(
+                {6: "q_einheit", 7: "q_mieter"},
+                {
+                    "q_einheit": {"WgnfX1wQmvegu2qn": "BHG14_1"},
+                    "q_mieter": {"rZSFWZPgPhb44FdQ": "Frieda Fuchs"},
+                },
+            ),
+        ):
+            gui_url = PaperlessService.documents_gui_url(
+                q_einheit="BHG14_1",
+                q_mieter="Frieda Fuchs",
+                document_type_id=3,
+                sort="created",
+                reverse=True,
+                page=1,
+            )
+
+        self.assertEqual(
+            gui_url,
+            "http://paperless-ifkg:8000/documents?page=1&custom_field_query=%5B%22AND%22%2C%5B%5B6%2C%22in%22%2C%5B%22WgnfX1wQmvegu2qn%22%5D%5D%2C%5B7%2C%22in%22%2C%5B%22rZSFWZPgPhb44FdQ%22%5D%5D%5D%5D&document_type__id__in=3&sort=created&reverse=1",
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_document_type_id_by_name_resolves_exact_name(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_lookup_map",
+            return_value={7: "Mietvertrag", 8: "Vorschreibung"},
+        ):
+            document_type_id = PaperlessService.document_type_id_by_name("mietvertrag")
+
+        self.assertEqual(document_type_id, 7)
+
+    @override_settings(
         PAPERLESS_BASE_URL="http://paperless-ifkg:8000/api",
         PAPERLESS_API_TOKEN="dummy-token",
         PAPERLESS_TIMEOUT_SECONDS=10,
@@ -6647,6 +6937,7 @@ class PaperlessSearchViewTests(TestCase):
             q_einheit="Top 3",
             q_mieter="Anna Bondar",
             tags=["Strom", "2026"],
+            document_type_id=None,
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["search_q_liegenschaft"], "BHG14")
@@ -6658,6 +6949,7 @@ class PaperlessSearchViewTests(TestCase):
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
         PAPERLESS_API_TOKEN="dummy-token",
         PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_LEASE_DOCUMENT_TYPE_ID=7,
     )
     def test_source_context_prefills_search_for_lease(self):
         with patch(
@@ -6674,17 +6966,94 @@ class PaperlessSearchViewTests(TestCase):
 
         mocked_search.assert_called_once_with(
             query="",
-            q_liegenschaft="BHG14",
+            q_liegenschaft="",
             q_einheit="Top 3",
             q_mieter="Anna Bondar",
             tags=[],
+            document_type_id=7,
         )
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(response.context["source_context"])
-        self.assertEqual(response.context["search_q_liegenschaft"], "BHG14")
+        self.assertEqual(response.context["search_q_liegenschaft"], "")
         self.assertEqual(response.context["search_q_einheit"], "Top 3")
         self.assertEqual(response.context["search_q_mieter"], "Anna Bondar")
         self.assertContains(response, "DMS-Kontext: Mietverhältnis Top 3 / Anna Bondar")
+        self.assertContains(response, "Dokumenttyp: Mietvertrag")
+        self.assertNotContains(response, "Liegenschaft: BHG14")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_source_context_prefills_search_for_unit_without_property_filter(self):
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ) as mocked_search:
+            response = self.client.get(
+                reverse("paperless_search"),
+                {
+                    "source_model": "unit",
+                    "source_id": str(self.unit.pk),
+                },
+            )
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="",
+            q_einheit="Top 3",
+            q_mieter="",
+            tags=[],
+            document_type_id=None,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["search_q_liegenschaft"], "")
+        self.assertEqual(response.context["search_q_einheit"], "Top 3")
+        self.assertContains(response, "DMS-Kontext: Einheit Top 3")
+        self.assertNotContains(response, "Liegenschaft: BHG14")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_source_context_prefills_document_type_for_meter_reading(self):
+        reading = MeterReading.objects.create(
+            meter=Meter.objects.create(
+                property=self.property,
+                meter_type=Meter.MeterType.WATER_COLD,
+                meter_number="W-1002",
+                kind=Meter.CalculationKind.READING,
+            ),
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ) as mocked_search:
+            response = self.client.get(
+                reverse("paperless_search"),
+                {
+                    "source_model": "meterreading",
+                    "source_id": str(reading.pk),
+                },
+            )
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="BHG14",
+            q_einheit="",
+            q_mieter="",
+            tags=[],
+            document_type_id=6,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DMS-Kontext: Zählerstand 01.02.2026")
+        self.assertContains(response, "Dokumenttyp: Zählerstand")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",

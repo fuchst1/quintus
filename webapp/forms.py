@@ -737,7 +737,7 @@ class PaperlessUploadForm(forms.Form):
         max_length=255,
         label="Beschreibung",
         widget=forms.TextInput(attrs={"class": "form-control"}),
-        help_text="Wird beim Upload an den Titel angehängt, da Paperless hier kein separates Beschreibungsfeld anbietet.",
+        help_text="Wird beim Upload als Notiz in Paperless gespeichert.",
     )
     q_liegenschaft = forms.CharField(
         required=False,

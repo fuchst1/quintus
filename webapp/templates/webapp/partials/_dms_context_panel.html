@@ -14,11 +14,37 @@
                 </div>
                 {% endif %}
             </div>
-            <a href="{{ dms_context_panel.open_url }}" class="btn btn-primary">
+            <a href="{{ dms_context_panel.open_url }}" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
                 <i class="bi bi-folder2-open me-1"></i>
                 Im DMS öffnen
             </a>
         </div>
+        {% if dms_context_panel.preview_documents or dms_context_panel.preview_error_message or dms_context_panel.preview_empty_message %}
+        <div class="border-top mt-3 pt-3">
+            <div class="fw-semibold mb-2">Neueste Dokumente</div>
+            {% if dms_context_panel.preview_documents %}
+            <div class="list-group list-group-flush">
+                {% for document in dms_context_panel.preview_documents %}
+                    {% if document.download_url %}
+                    <a href="{{ document.download_url }}" class="list-group-item list-group-item-action px-0">
+                        <div class="fw-semibold small">{{ document.title }}</div>
+                        <div class="text-muted small">{{ document.created }}{% if document.document_type and document.document_type != "-" %} · {{ document.document_type }}{% endif %}</div>
+                    </a>
+                    {% else %}
+                    <div class="list-group-item px-0">
+                        <div class="fw-semibold small">{{ document.title }}</div>
+                        <div class="text-muted small">{{ document.created }}{% if document.document_type and document.document_type != "-" %} · {{ document.document_type }}{% endif %}</div>
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            {% elif dms_context_panel.preview_error_message %}
+            <div class="small text-danger">{{ dms_context_panel.preview_error_message }}</div>
+            {% elif dms_context_panel.preview_empty_message %}
+            <div class="small text-muted">{{ dms_context_panel.preview_empty_message }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}

@@ -406,16 +406,6 @@ class VpiAdjustmentRunService:
         missing_pdfs = [letter for letter in actionable_letters if letter.pdf_datei_id is None]
         if missing_pdfs:
             return False, "Bitte zuerst die Briefe erzeugen, bevor die Anpassung angewendet wird."
-
-        today = timezone.localdate()
-        future_effective_dates = [
-            letter.effective_date
-            for letter in actionable_letters
-            if letter.effective_date and letter.effective_date > today
-        ]
-        if future_effective_dates:
-            earliest = min(future_effective_dates)
-            return False, f"Anpassung kann erst ab {earliest:%d.%m.%Y} angewendet werden."
         return True, ""
 
     @staticmethod
@@ -628,7 +618,7 @@ class VpiAdjustmentRunService:
             "index_change_label": (
                 "Steigerung um (volle VPI-Anpassung)"
                 if is_parking_letter
-                else 'Steigerung um (Deckel gemäß 5. MILG  "Mietpreisbremse")'
+                else 'Steigerung mit Deckelung gemäß 5. MILG,  "Mietpreisbremse")'
             ),
             "old_rent_label": (
                 "Stellplatzmiete bisher (netto)"
