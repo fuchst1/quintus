@@ -37,7 +37,6 @@ ALLOWED_TARGET_MODELS = {
     "tenant",
     "leaseagreement",
     "meter",
-    "meterreading",
     "betriebskostenbeleg",
 }
 
@@ -126,8 +125,6 @@ class DateiService:
 
         if target_model == "betriebskostenbeleg":
             return Datei.Kategorie.RECHNUNG
-        if target_model == "meterreading" and is_image:
-            return Datei.Kategorie.ZAEHLERFOTO
         if is_image:
             return Datei.Kategorie.BILD
         if extension == ".pdf" or mime_type == "application/pdf":

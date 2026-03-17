@@ -31,10 +31,17 @@
                             <th>Letzter Verbrauch</th>
                             <th>Jahresverbrauch</th>
                             <th>Notiz</th>
-                            <th class="text-center">Fotos</th>
+                            <th class="text-center">Foto</th>
                         </tr>
                     </thead>
                     <tbody>
+                        {% if paperless_photo_error_message %}
+                        <tr>
+                            <td colspan="7" class="py-3">
+                                <div class="alert alert-warning mb-0">{{ paperless_photo_error_message }}</div>
+                            </td>
+                        </tr>
+                        {% endif %}
                         {% for reading in readings %}
                         <tr class="meter-reading-row-clickable" data-href="{% url 'meter_reading_update' reading.pk %}">
                             <td class="text-center">
@@ -63,19 +70,18 @@
                             </td>
                             <td>{{ reading.note|default:"—" }}</td>
                             <td class="text-center">
-                                {% if reading.first_image_id %}
+                                {% if reading.paperless_photo and reading.paperless_photo.preview_url %}
                                 <a
-                                    href="{% url 'datei_preview' reading.first_image_id %}"
-                                    class="btn btn-sm btn-outline-primary me-1"
+                                    href="{{ reading.paperless_photo.preview_url }}"
+                                    class="btn btn-sm btn-outline-primary"
                                     target="_blank"
-                                    rel="noopener"
+                                    rel="noopener noreferrer"
                                 >
-                                    Bild anzeigen
+                                    Foto öffnen
                                 </a>
+                                {% else %}
+                                <span class="text-muted small">Kein Foto</span>
                                 {% endif %}
-                                <a href="{% url 'meter_reading_update' reading.pk %}" class="btn btn-sm btn-outline-primary">
-                                    Fotos ({{ reading.attachment_count }})
-                                </a>
                             </td>
                         </tr>
                         {% empty %}

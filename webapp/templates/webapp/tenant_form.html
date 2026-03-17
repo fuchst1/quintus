@@ -3,8 +3,8 @@
 {% block page_title %}{% if object %}Mieter bearbeiten{% else %}Neuer Mieter{% endif %}{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-8">
+<div class="row g-4 {% if not dms_context_panel %}justify-content-center{% endif %}">
+    <div class="{% if dms_context_panel %}col-12 col-xl-7{% else %}col-12 col-xl-8{% endif %}">
         <div class="card border-0 shadow-sm">
             <div class="card-body p-4">
                 <form method="post">
@@ -17,9 +17,11 @@
                 </form>
             </div>
         </div>
-        {% if object %}
-            {% include "webapp/partials/_dms_context_panel.html" with dms_context_panel=dms_context_panel %}
-        {% endif %}
     </div>
+    {% if dms_context_panel %}
+        <div class="col-12 col-xl-5">
+            {% include "webapp/partials/_dms_context_panel.html" with dms_context_panel=dms_context_panel dms_context_panel_inline=True %}
+        </div>
+    {% endif %}
 </div>
 {% endblock %}

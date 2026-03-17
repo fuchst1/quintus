@@ -54,7 +54,7 @@ class PaperlessService:
         q_liegenschaft: str = "",
         q_einheit: str = "",
         q_mieter: str = "",
-        q_source_ref: str = "",
+        q_source_ref: object | None = None,
         document_type_id: object | None = None,
         sort: str = "",
         reverse: bool = False,
@@ -68,7 +68,7 @@ class PaperlessService:
         normalized_q_liegenschaft = (q_liegenschaft or "").strip()
         normalized_q_einheit = (q_einheit or "").strip()
         normalized_q_mieter = (q_mieter or "").strip()
-        normalized_q_source_ref = (q_source_ref or "").strip()
+        normalized_q_source_ref = cls._normalize_query_text_values(q_source_ref)
         normalized_document_type_query = cls._document_type_query_value(document_type_id)
         normalized_sort = str(sort or "").strip()
         normalized_page = cls._to_int(page)
@@ -129,7 +129,7 @@ class PaperlessService:
         q_liegenschaft: str = "",
         q_einheit: str = "",
         q_mieter: str = "",
-        q_source_ref: str = "",
+        q_source_ref: object | None = None,
         tags: list[str] | None = None,
         document_type_id: object | None = None,
         limit: int | None = None,
@@ -140,7 +140,7 @@ class PaperlessService:
         normalized_q_liegenschaft = (q_liegenschaft or "").strip()
         normalized_q_einheit = (q_einheit or "").strip()
         normalized_q_mieter = (q_mieter or "").strip()
-        normalized_q_source_ref = (q_source_ref or "").strip()
+        normalized_q_source_ref = cls._normalize_query_text_values(q_source_ref)
         normalized_tags = cls._normalize_tag_names(tags)
         normalized_document_type_query = cls._document_type_query_value(document_type_id)
         normalized_limit = cls._to_int(limit)
@@ -657,16 +657,18 @@ class PaperlessService:
         q_liegenschaft: str,
         q_einheit: str,
         q_mieter: str,
-        q_source_ref: str,
+        q_source_ref: object | None,
     ) -> str:
+        normalized_q_source_ref = cls._normalize_query_text_values(q_source_ref)
         raw_filters = [
             ("q_liegenschaft", str(q_liegenschaft or "").strip(), "exact", False),
             ("q_einheit", str(q_einheit or "").strip(), "exact", False),
             ("q_mieter", str(q_mieter or "").strip(), "contains", True),
-            ("q_source_ref", str(q_source_ref or "").strip(), "exact", False),
         ]
         raw_filters = [item for item in raw_filters if item[1]]
-        if not raw_filters or not cls.is_configured():
+        if not raw_filters and not normalized_q_source_ref:
+            return ""
+        if not cls.is_configured():
             return ""
 
         custom_field_name_by_id, custom_field_option_lookup = cls._safe_fetch_custom_field_metadata()
@@ -693,10 +695,30 @@ class PaperlessService:
 
             predicates.append([field_id, operator, raw_value])
 
+        source_ref_field_id = custom_field_id_by_name.get("q_source_ref")
+        if source_ref_field_id is not None and normalized_q_source_ref:
+            source_ref_predicates = [
+                [source_ref_field_id, "exact", source_ref]
+                for source_ref in normalized_q_source_ref
+            ]
+            if len(source_ref_predicates) == 1:
+                predicates.append(source_ref_predicates[0])
+            else:
+                predicates.append(["OR", source_ref_predicates])
+
         if not predicates:
             return ""
-        combinator = "OR" if len(predicates) == 1 else "AND"
-        return json.dumps([combinator, predicates], ensure_ascii=False, separators=(",", ":"))
+        if len(predicates) == 1:
+            predicate = predicates[0]
+            if (
+                isinstance(predicate, list)
+                and len(predicate) == 2
+                and predicate[0] in {"AND", "OR"}
+                and isinstance(predicate[1], list)
+            ):
+                return json.dumps(predicate, ensure_ascii=False, separators=(",", ":"))
+            return json.dumps(["OR", [predicate]], ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(["AND", predicates], ensure_ascii=False, separators=(",", ":"))
 
     @classmethod
     def _build_gui_custom_field_query(
@@ -1215,3 +1237,22 @@ class PaperlessService:
             if tag_name and tag_name not in normalized_tags:
                 normalized_tags.append(tag_name)
         return normalized_tags
+
+    @staticmethod
+    def _normalize_query_text_values(value: Any) -> list[str]:
+        if value is None or value == "":
+            return []
+
+        if isinstance(value, str):
+            raw_values = [value]
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+
+        normalized_values: list[str] = []
+        for raw_value in raw_values:
+            normalized_value = str(raw_value or "").strip()
+            if normalized_value and normalized_value not in normalized_values:
+                normalized_values.append(normalized_value)
+        return normalized_values

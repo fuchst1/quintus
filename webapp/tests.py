@@ -408,40 +408,99 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertContains(response, "Paperless-Upload fehlgeschlagen.")
         self.assertEqual(Datei.objects.count(), 0)
 
-    def test_by_meter_list_shows_image_action_and_count_without_inline_panel(self):
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_by_meter_list_shows_paperless_photo_action_without_inline_panel(self):
         reading = MeterReading.objects.create(
             meter=self.meter,
             date=date(2026, 2, 1),
             value=Decimal("123.000"),
         )
-        uploaded_datei = DateiService.upload(
-            user=None,
-            uploaded_file=SimpleUploadedFile(
-                "zaehlerstand.jpg",
-                b"img",
-                content_type="image/jpeg",
-            ),
-            kategorie=Datei.Kategorie.ZAEHLERFOTO,
-            target_object=reading,
-        )
+        source_ref = f"meterreading:{reading.source_uuid}"
+        preview_documents = [
+            {
+                "id": "601",
+                "title": "Zählerfoto 01.02.2026",
+                "created": "2026-02-01",
+                "document_type": "Zählerstand",
+                "tags": "-",
+                "q_liegenschaft": "Objekt Zähler",
+                "q_einheit": "Top 5",
+                "q_mieter": "-",
+                "q_source_ref": source_ref,
+                "score": "-",
+            }
+        ]
 
-        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=preview_documents,
+        ) as mocked_search:
+            response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("attachments_panel", response.context)
-        self.assertContains(response, "Fotos (1)")
-        self.assertContains(response, "Bild anzeigen")
-        self.assertContains(response, reverse("datei_preview", args=[uploaded_datei.pk]))
-        self.assertContains(response, reverse("meter_reading_update", args=[reading.pk]))
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="Objekt Zähler",
+            q_einheit="Top 5",
+            q_mieter="",
+            q_source_ref=[source_ref],
+            tags=[],
+            document_type_id=6,
+            limit=200,
+            sort="created",
+            reverse=True,
+        )
+        self.assertContains(response, "Foto öffnen")
+        self.assertContains(
+            response,
+            reverse("paperless_document_preview", kwargs={"document_id": 601}),
+        )
+        self.assertNotContains(response, "Bild anzeigen")
+        self.assertNotContains(response, "Fotos (")
         self.assertNotContains(response, "Dateien zum Verbrauchszähler")
 
-    def test_by_meter_list_shows_image_action_for_category_bild(self):
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_by_meter_list_shows_empty_state_without_paperless_photo(self):
         reading = MeterReading.objects.create(
             meter=self.meter,
             date=date(2026, 3, 1),
             value=Decimal("150.000"),
         )
-        uploaded_datei = DateiService.upload(
+
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ):
+            response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kein Foto")
+        self.assertNotContains(response, "Foto öffnen")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_by_meter_list_uses_newest_paperless_photo_and_ignores_legacy_local_files(self):
+        reading = MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 3, 1),
+            value=Decimal("150.000"),
+        )
+        legacy_datei = DateiService.upload(
             user=None,
             uploaded_file=SimpleUploadedFile(
                 "beleg-bild.jpg",
@@ -451,58 +510,75 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             kategorie=Datei.Kategorie.BILD,
             target_object=reading,
         )
+        source_ref = f"meterreading:{reading.source_uuid}"
+        preview_documents = [
+            {
+                "id": "701",
+                "title": "Zählerfoto alt",
+                "created": "2026-03-01",
+                "document_type": "Zählerstand",
+                "tags": "-",
+                "q_liegenschaft": "Objekt Zähler",
+                "q_einheit": "Top 5",
+                "q_mieter": "-",
+                "q_source_ref": source_ref,
+                "score": "-",
+            },
+            {
+                "id": "702",
+                "title": "Zählerfoto neu",
+                "created": "2026-03-02",
+                "document_type": "Zählerstand",
+                "tags": "-",
+                "q_liegenschaft": "Objekt Zähler",
+                "q_einheit": "Top 5",
+                "q_mieter": "-",
+                "q_source_ref": source_ref,
+                "score": "-",
+            },
+        ]
 
-        response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=preview_documents,
+        ):
+            response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Bild anzeigen")
-        self.assertContains(response, reverse("datei_preview", args=[uploaded_datei.pk]))
-
-    def test_by_meter_list_shows_image_action_for_duplicate_upload_on_other_meter(self):
-        meter_two = Meter.objects.create(
-            property=self.property,
-            meter_type=Meter.MeterType.WATER_COLD,
-            meter_number="W-1051",
-            kind=Meter.CalculationKind.READING,
+        self.assertContains(
+            response,
+            reverse("paperless_document_preview", kwargs={"document_id": 702}),
         )
-        reading_one = MeterReading.objects.create(
+        self.assertNotContains(
+            response,
+            reverse("paperless_document_preview", kwargs={"document_id": 701}),
+        )
+        self.assertNotContains(response, reverse("datei_preview", args=[legacy_datei.pk]))
+        self.assertNotContains(response, "Bild anzeigen")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_by_meter_list_shows_warning_when_paperless_lookup_fails(self):
+        reading = MeterReading.objects.create(
             meter=self.meter,
             date=date(2026, 4, 1),
             value=Decimal("200.000"),
         )
-        reading_two = MeterReading.objects.create(
-            meter=meter_two,
-            date=date(2026, 4, 1),
-            value=Decimal("220.000"),
-        )
 
-        shared_bytes = b"same-image-bytes"
-        DateiService.upload(
-            user=None,
-            uploaded_file=SimpleUploadedFile(
-                "dup-one.jpg",
-                shared_bytes,
-                content_type="image/jpeg",
-            ),
-            kategorie=Datei.Kategorie.BILD,
-            target_object=reading_one,
-        )
-        uploaded_duplicate = DateiService.upload(
-            user=None,
-            uploaded_file=SimpleUploadedFile(
-                "dup-two.jpg",
-                shared_bytes,
-                content_type="image/jpeg",
-            ),
-            kategorie=Datei.Kategorie.BILD,
-            target_object=reading_two,
-        )
-
-        response = self.client.get(reverse("meter_reading_by_meter_list", args=[meter_two.pk]))
+        with patch(
+            "webapp.views.PaperlessService.search_documents",
+            side_effect=PaperlessSearchError("Paperless ist nicht erreichbar."),
+        ):
+            response = self.client.get(reverse("meter_reading_by_meter_list", args=[self.meter.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Bild anzeigen")
-        self.assertContains(response, reverse("datei_preview", args=[uploaded_duplicate.pk]))
+        self.assertContains(response, "Paperless ist nicht erreichbar.")
+        self.assertContains(response, "Kein Foto")
+        self.assertNotContains(response, "Foto öffnen")
 
 
 class DmsContextPanelViewTests(TestCase):
@@ -852,6 +928,8 @@ class DmsContextPanelViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
+        self.assertContains(response, "col-12 col-xl-5")
+        self.assertContains(response, "col-12 col-xl-7")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -5253,7 +5331,7 @@ class DateiUploadFormValidationTests(TestCase):
         datei = form.save()
         self.assertEqual(datei.kategorie, Datei.Kategorie.DOKUMENT)
 
-    def test_valid_form_accepts_meterreading_as_target_object(self):
+    def test_valid_form_rejects_meterreading_as_target_object(self):
         meter = Meter.objects.create(
             property=self.property,
             meter_type=Meter.MeterType.WATER_COLD,
@@ -5283,10 +5361,8 @@ class DateiUploadFormValidationTests(TestCase):
             user=self.user,
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
-        datei = form.save()
-        zuordnung = datei.zuordnungen.get()
-        self.assertEqual(zuordnung.content_object, reading)
+        self.assertFalse(form.is_valid())
+        self.assertIn("Dieser Objekttyp darf nicht mit Dateien verknüpft werden.", str(form.errors))
 
     def test_valid_form_accepts_betriebskostenbeleg_as_target_object(self):
         beleg = BetriebskostenBeleg.objects.create(
@@ -7639,6 +7715,38 @@ class PaperlessSearchViewTests(TestCase):
         self.assertEqual(documents, [])
         self.assertIn(
             "custom_field_query=%5B%22OR%22%2C%5B%5B8%2C%22exact%22%2C%22meterreading%3Aabc-123%22%5D%5D%5D",
+            mocked_request.call_args.args[0],
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_search_service_sends_multiple_q_source_refs_as_exact_or_filter(self):
+        with patch.object(
+            PaperlessService,
+            "_safe_fetch_lookup_map",
+            side_effect=[{}, {}],
+        ), patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=({8: "q_source_ref"}, {}),
+        ), patch.object(
+            PaperlessService,
+            "_request_json",
+            return_value={"results": []},
+        ) as mocked_request:
+            documents = PaperlessService.search_documents(
+                q_source_ref=["meterreading:abc-123", "meterreading:def-456"],
+                limit=10,
+                sort="created",
+                reverse=True,
+            )
+
+        self.assertEqual(documents, [])
+        self.assertIn(
+            "custom_field_query=%5B%22OR%22%2C%5B%5B8%2C%22exact%22%2C%22meterreading%3Aabc-123%22%5D%2C%5B8%2C%22exact%22%2C%22meterreading%3Adef-456%22%5D%5D%5D",
             mocked_request.call_args.args[0],
         )
 

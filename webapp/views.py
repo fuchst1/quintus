@@ -660,6 +660,74 @@ def _unit_paperless_photo_gallery_context(request, *, unit: Unit) -> dict[str, o
         ),
     }
 
+
+def _meterreading_list_photo_context(
+    request,
+    *,
+    meter: Meter,
+    readings: list[MeterReading],
+) -> dict[str, object]:
+    source_ref_by_reading_id = {
+        reading.pk: _meterreading_source_ref(reading)
+        for reading in readings
+        if reading.pk and _meterreading_source_ref(reading)
+    }
+    source_refs = list(source_ref_by_reading_id.values())
+    if not source_refs:
+        return {
+            "documents_by_reading_id": {},
+            "error_message": "",
+        }
+
+    if not PaperlessService.is_configured():
+        return {
+            "documents_by_reading_id": {},
+            "error_message": (
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            ),
+        }
+
+    try:
+        documents = PaperlessService.search_documents(
+            query="",
+            q_liegenschaft=meter.property.name if meter.property else "",
+            q_einheit=meter.unit.name if meter.unit else "",
+            q_mieter="",
+            q_source_ref=source_refs,
+            tags=[],
+            document_type_id=_meter_reading_paperless_document_type_id(),
+            limit=200,
+            sort="created",
+            reverse=True,
+        )
+    except PaperlessSearchError as exc:
+        return {
+            "documents_by_reading_id": {},
+            "error_message": str(exc),
+        }
+
+    latest_document_by_source_ref: dict[str, dict[str, object]] = {}
+    for document in documents:
+        source_ref = str(document.get("q_source_ref") or "").strip()
+        if source_ref not in source_refs:
+            continue
+        existing_document = latest_document_by_source_ref.get(source_ref)
+        if existing_document is None or _paperless_document_id(document) > _paperless_document_id(existing_document):
+            latest_document_by_source_ref[source_ref] = document
+
+    documents_by_reading_id: dict[int, dict[str, object]] = {}
+    for reading_id, source_ref in source_ref_by_reading_id.items():
+        document = latest_document_by_source_ref.get(source_ref)
+        if document is None:
+            continue
+        documents_by_reading_id[reading_id] = _paperless_document_with_links(request, document)
+
+    return {
+        "documents_by_reading_id": documents_by_reading_id,
+        "error_message": "",
+    }
+
 # Bestehendes Dashboard
 class DashboardView(TemplateView):
     template_name = "webapp/home.html"
@@ -1845,46 +1913,11 @@ class MeterReadingByMeterListView(ListView):
         context["meter"] = meter
 
         readings = list(context["readings"])
-        reading_ids = [reading.pk for reading in readings if reading.pk]
-        attachment_count_by_reading_id: dict[int, int] = {}
-        first_image_id_by_reading_id: dict[int, int] = {}
-        if reading_ids:
-            reading_content_type = ContentType.objects.get_for_model(MeterReading)
-            attachment_rows = (
-                DateiZuordnung.objects.filter(
-                    content_type=reading_content_type,
-                    object_id__in=reading_ids,
-                    datei__is_archived=False,
-                )
-                .values("object_id")
-                .annotate(total=Count("id"))
-            )
-            attachment_count_by_reading_id = {
-                int(row["object_id"]): int(row["total"]) for row in attachment_rows
-            }
-            image_rows = (
-                DateiZuordnung.objects.filter(
-                    content_type=reading_content_type,
-                    object_id__in=reading_ids,
-                    datei__is_archived=False,
-                )
-                .filter(
-                    Q(
-                        datei__kategorie__in=[
-                            Datei.Kategorie.BILD,
-                            Datei.Kategorie.ZAEHLERFOTO,
-                        ]
-                    )
-                    | Q(datei__mime_type__istartswith="image/")
-                )
-                .select_related("datei")
-                .order_by("object_id", "-datei__created_at", "-id")
-            )
-            for image_row in image_rows:
-                object_id = int(image_row.object_id)
-                if object_id in first_image_id_by_reading_id:
-                    continue
-                first_image_id_by_reading_id[object_id] = int(image_row.datei_id)
+        paperless_photo_context = _meterreading_list_photo_context(
+            self.request,
+            meter=meter,
+            readings=readings,
+        )
 
         last_reading_by_year: dict[int, MeterReading] = {}
         for index, reading in enumerate(readings):
@@ -1904,10 +1937,8 @@ class MeterReadingByMeterListView(ListView):
                 reading.yearly_consumption = yearly_map.get(reading.date.year)
             else:
                 reading.yearly_consumption = None
-            reading.attachment_count = attachment_count_by_reading_id.get(reading.pk, 0)
-            reading.first_image_id = first_image_id_by_reading_id.get(reading.pk)
-            # Backward-compatible alias for templates during rollout.
-            reading.first_photo_id = reading.first_image_id
+            reading.paperless_photo = paperless_photo_context["documents_by_reading_id"].get(reading.pk)
+        context["paperless_photo_error_message"] = paperless_photo_context["error_message"]
         return context
 
 
