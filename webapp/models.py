@@ -1392,6 +1392,24 @@ class BetriebskostenBeleg(models.Model):
     buchungstext = models.CharField(max_length=255, blank=True, verbose_name=_("Buchungstext"))
     import_referenz = models.CharField(max_length=255, blank=True, default="", verbose_name=_("Import-Referenz"))
     import_quelle = models.CharField(max_length=100, blank=True, default="bankimport", verbose_name=_("Import-Quelle"))
+    source_uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        db_index=True,
+        verbose_name=_("Quellreferenz"),
+    )
+    paperless_document_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Paperless-Dokument-ID"),
+    )
+    paperless_task_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name=_("Paperless-Task-ID"),
+    )
 
     class Meta:
         verbose_name = _("Betriebskostenbeleg")

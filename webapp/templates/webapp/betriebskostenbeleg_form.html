@@ -11,7 +11,7 @@
     <div class="{% if dms_context_panel %}col-12 col-xl-7{% else %}col-12 col-xl-8{% endif %}">
         <div class="card border-0 shadow-sm">
             <div class="card-body p-4">
-                <form method="post">
+                <form method="post" enctype="multipart/form-data">
                     {% csrf_token %}
                     <input type="hidden" name="next" value="{% if next_url %}{{ next_url }}{% else %}{% url 'betriebskostenbeleg_list' %}{% endif %}">
                     {% if form.errors %}
@@ -22,6 +22,11 @@
                     {% if form.non_field_errors %}
                         <div class="alert alert-danger">
                             {{ form.non_field_errors }}
+                        </div>
+                    {% endif %}
+                    {% if paperless_status %}
+                        <div class="alert alert-{% if paperless_status.level == 'success' %}success{% else %}info{% endif %}">
+                            {{ paperless_status.text }}
                         </div>
                     {% endif %}
                     <div class="row g-3">
@@ -103,6 +108,18 @@
                             {% if form.buchungstext.errors %}
                                 <div class="invalid-feedback d-block">
                                     {{ form.buchungstext.errors|striptags }}
+                                </div>
+                            {% endif %}
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.paperless_document.label }}</label>
+                            {{ form.paperless_document }}
+                            {% if form.paperless_document.help_text %}
+                                <div class="form-text">{{ form.paperless_document.help_text }}</div>
+                            {% endif %}
+                            {% if form.paperless_document.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.paperless_document.errors|striptags }}
                                 </div>
                             {% endif %}
                         </div>

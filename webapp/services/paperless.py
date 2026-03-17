@@ -47,6 +47,13 @@ class PaperlessService:
         return f"{base_url}/api/documents/"
 
     @classmethod
+    def tasks_endpoint(cls) -> str:
+        base_url = cls.base_url()
+        if not base_url:
+            return ""
+        return f"{base_url}/api/tasks/"
+
+    @classmethod
     def documents_gui_url(
         cls,
         *,
@@ -409,6 +416,68 @@ class PaperlessService:
         return task_id
 
     @classmethod
+    def resolve_task_document(
+        cls,
+        *,
+        task_id: str,
+    ) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return {
+                "task_id": "",
+                "status": "pending",
+                "document_id": None,
+                "message": "",
+            }
+        if not cls.is_configured():
+            raise PaperlessSearchError(
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            )
+
+        request_url = cls._build_url(
+            endpoint="tasks/",
+            query_params={
+                "task_id": normalized_task_id,
+                "page_size": str(LOOKUP_PAGE_SIZE),
+            },
+        )
+        payload = cls._request_json(request_url)
+        task_payload = cls._extract_task_payload(payload, task_id=normalized_task_id)
+        if task_payload is None:
+            return {
+                "task_id": normalized_task_id,
+                "status": "pending",
+                "document_id": None,
+                "message": "",
+            }
+
+        document_id = cls._extract_task_document_id(task_payload)
+        if document_id is not None:
+            return {
+                "task_id": normalized_task_id,
+                "status": "success",
+                "document_id": document_id,
+                "message": "",
+            }
+
+        status = cls._normalize_task_status(task_payload)
+        if status in {"failure", "failed", "error", "cancelled"}:
+            return {
+                "task_id": normalized_task_id,
+                "status": "failure",
+                "document_id": None,
+                "message": cls._extract_task_error(task_payload),
+            }
+
+        return {
+            "task_id": normalized_task_id,
+            "status": "pending",
+            "document_id": None,
+            "message": "",
+        }
+
+    @classmethod
     def _request_json(cls, request_url: str) -> Any:
         request = Request(
             request_url,
@@ -533,6 +602,120 @@ class PaperlessService:
         except Exception:
             logger.exception("Paperless multipart request failed unexpectedly for %s", request_url)
             raise PaperlessSearchError("Paperless-Upload konnte nicht ausgeführt werden.") from None
+
+    @classmethod
+    def _extract_task_payload(cls, payload: Any, *, task_id: str) -> dict[str, Any] | None:
+        task_candidates: list[dict[str, Any]] = []
+
+        if isinstance(payload, dict):
+            raw_results = payload.get("results")
+            if isinstance(raw_results, list):
+                task_candidates = [
+                    item
+                    for item in raw_results
+                    if isinstance(item, dict)
+                ]
+            elif raw_results is None:
+                task_candidates = [payload]
+        elif isinstance(payload, list):
+            task_candidates = [
+                item
+                for item in payload
+                if isinstance(item, dict)
+            ]
+
+        normalized_task_id = str(task_id or "").strip()
+        for candidate in task_candidates:
+            candidate_task_id = cls._task_identifier(candidate)
+            if candidate_task_id and candidate_task_id == normalized_task_id:
+                return candidate
+
+        if len(task_candidates) == 1 and not cls._task_identifier(task_candidates[0]):
+            return task_candidates[0]
+        return None
+
+    @classmethod
+    def _task_identifier(cls, task_payload: dict[str, Any]) -> str:
+        for key in ("task_id", "id", "uuid", "task"):
+            value = task_payload.get(key)
+            if value is not None:
+                normalized_value = str(value).strip()
+                if normalized_value:
+                    return normalized_value
+        return ""
+
+    @classmethod
+    def _normalize_task_status(cls, task_payload: dict[str, Any]) -> str:
+        raw_status = task_payload.get("status")
+        if raw_status in {None, ""}:
+            result = task_payload.get("result")
+            if isinstance(result, dict) and result.get("status") not in {None, ""}:
+                raw_status = result.get("status")
+        return str(raw_status or "").strip().lower()
+
+    @classmethod
+    def _extract_task_document_id(cls, task_payload: dict[str, Any]) -> int | None:
+        direct_candidates = [
+            task_payload.get("related_document"),
+            task_payload.get("related_document_id"),
+            task_payload.get("document_id"),
+            task_payload.get("document"),
+        ]
+        for candidate in direct_candidates:
+            document_id = cls._coerce_document_id(candidate)
+            if document_id is not None:
+                return document_id
+
+        result = task_payload.get("result")
+        if isinstance(result, dict):
+            nested_candidates = [
+                result.get("related_document"),
+                result.get("related_document_id"),
+                result.get("document_id"),
+                result.get("document"),
+            ]
+            for candidate in nested_candidates:
+                document_id = cls._coerce_document_id(candidate)
+                if document_id is not None:
+                    return document_id
+
+        return None
+
+    @classmethod
+    def _coerce_document_id(cls, candidate: Any) -> int | None:
+        if isinstance(candidate, dict):
+            for key in ("id", "document_id", "related_document"):
+                nested_document_id = cls._coerce_document_id(candidate.get(key))
+                if nested_document_id is not None:
+                    return nested_document_id
+            return None
+
+        normalized_value = str(candidate or "").strip()
+        if normalized_value.isdigit():
+            return int(normalized_value)
+        return None
+
+    @classmethod
+    def _extract_task_error(cls, task_payload: dict[str, Any]) -> str:
+        error_candidates = [
+            task_payload.get("message"),
+            task_payload.get("error"),
+            task_payload.get("detail"),
+        ]
+        result = task_payload.get("result")
+        if isinstance(result, dict):
+            error_candidates.extend(
+                [
+                    result.get("message"),
+                    result.get("error"),
+                    result.get("detail"),
+                ]
+            )
+        for candidate in error_candidates:
+            normalized_value = str(candidate or "").strip()
+            if normalized_value:
+                return normalized_value
+        return "Paperless meldet einen Fehler beim Upload."
 
     @classmethod
     def _parse_upload_response(cls, response_bytes: bytes) -> str:

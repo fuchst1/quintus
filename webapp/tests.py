@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import call, patch
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -201,6 +202,40 @@ class MeterYearlyConsumptionTests(TestCase):
         self.assertLessEqual(results[0]["meter_id"], results[1]["meter_id"])
 
 
+class MeterListViewTests(TestCase):
+    def setUp(self):
+        self.property = Property.objects.create(
+            name="Objekt Zähler",
+            zip_code="1050",
+            city="Wien",
+            street_address="Messgasse 5",
+        )
+        self.unit = Unit.objects.create(
+            property=self.property,
+            unit_type=Unit.UnitType.APARTMENT,
+            door_number="5",
+            name="Top 5",
+        )
+        self.meter = Meter.objects.create(
+            property=self.property,
+            unit=self.unit,
+            meter_type=Meter.MeterType.WATER_COLD,
+            meter_number="W-1050",
+            kind=Meter.CalculationKind.READING,
+        )
+
+    def test_meter_list_shows_dedicated_action_for_meter_readings(self):
+        response = self.client.get(reverse("meter_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'title="Zählerstände anzeigen"', html=False)
+        self.assertContains(
+            response,
+            reverse("meter_reading_by_meter_list", args=[self.meter.pk]),
+        )
+        self.assertContains(response, "bi-list-ul")
+
+
 class MeterReadingAttachmentPanelViewTests(TestCase):
     def setUp(self):
         self.property = Property.objects.create(
@@ -231,7 +266,95 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("dms_context_panel", response.context)
+        self.assertIn("paperless_photo", response.context["form"].fields)
+        self.assertContains(response, "Zählerfoto")
         self.assertNotContains(response, "Im DMS öffnen")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_create_view_uploads_meter_photo_to_paperless(self):
+        with patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="task-111",
+        ) as mocked_upload:
+            response = self.client.post(
+                reverse("meter_reading_create"),
+                {
+                    "meter": str(self.meter.pk),
+                    "date": "2026-02-01",
+                    "value": "123.000",
+                    "note": "",
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
+                },
+            )
+
+        reading = MeterReading.objects.get(
+            meter=self.meter,
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            reverse("meter_reading_by_meter_list", kwargs={"pk": self.meter.pk}),
+        )
+        mocked_upload.assert_called_once()
+        self.assertEqual(
+            mocked_upload.call_args.kwargs["q_source_ref"],
+            f"meterreading:{reading.source_uuid}",
+        )
+        self.assertEqual(mocked_upload.call_args.kwargs["q_liegenschaft"], "Objekt Zähler")
+        self.assertEqual(mocked_upload.call_args.kwargs["q_einheit"], "Top 5")
+        self.assertEqual(mocked_upload.call_args.kwargs["document_type_id"], 6)
+        self.assertEqual(mocked_upload.call_args.kwargs["created"], date(2026, 2, 1))
+        self.assertEqual(mocked_upload.call_args.kwargs["title"], "Zählerfoto 01.02.2026")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_create_view_redirects_to_edit_when_photo_upload_fails(self):
+        with patch(
+            "webapp.views.PaperlessService.upload_document",
+            side_effect=PaperlessSearchError("Paperless-Upload fehlgeschlagen."),
+        ), patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ):
+            response = self.client.post(
+                reverse("meter_reading_create"),
+                {
+                    "meter": str(self.meter.pk),
+                    "date": "2026-02-01",
+                    "value": "124.000",
+                    "note": "",
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
+                },
+                follow=True,
+            )
+
+        reading = MeterReading.objects.get(
+            meter=self.meter,
+            date=date(2026, 2, 1),
+            value=Decimal("124.000"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse("meter_reading_update", args=[reading.pk]))
+        self.assertContains(response, "Zählerstand wurde gespeichert, aber der Foto-Upload ist fehlgeschlagen")
 
     def test_update_view_contains_reading_dms_panel(self):
         reading = MeterReading.objects.create(
@@ -245,10 +368,13 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("dms_context_panel", response.context)
         self.assertEqual(response.context["dms_context_panel"]["title"], "Dokumente im DMS")
+        self.assertIn("paperless_photo", response.context["form"].fields)
+        self.assertNotIn("paperless_photo_panel", response.context)
         self.assertContains(response, "Im DMS öffnen")
         self.assertContains(response, "Dokumenttyp: Zählerstand")
-        self.assertContains(response, "Zählerfoto in Paperless")
-        self.assertContains(response, "Foto an Paperless senden")
+        self.assertContains(response, "Zählerfoto")
+        self.assertNotContains(response, "Zählerfoto in Paperless")
+        self.assertNotContains(response, "Foto an Paperless senden")
         self.assertContains(response, "col-12 col-xl-5")
 
     @override_settings(
@@ -309,11 +435,7 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             sort="created",
             reverse=True,
         )
-        self.assertEqual(mocked_search.call_args_list, [expected_call, expected_call])
-        self.assertEqual(
-            response.context["paperless_photo_panel"]["current_document"]["id"],
-            "402",
-        )
+        self.assertEqual(mocked_search.call_args_list, [expected_call])
         self.assertEqual(
             response.context["dms_context_panel"]["preview_documents"][0]["id"],
             "402",
@@ -322,11 +444,7 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertNotContains(response, "Zählerfoto alt")
         self.assertContains(
             response,
-            reverse("paperless_document_preview", kwargs={"document_id": 402}),
-        )
-        self.assertContains(
-            response,
-            f'value="{source_ref}"',
+            reverse("paperless_document_download", kwargs={"document_id": 402}),
         )
 
     @override_settings(
@@ -350,25 +468,30 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             response = self.client.post(
                 reverse("meter_reading_update", args=[reading.pk]),
                 {
-                    "paperless_photo_upload": "1",
-                    "title": "Wasserzähler 01.02.2026",
-                    "description": "Foto vom Zählerstand",
-                    "q_liegenschaft": "Objekt Zähler",
-                    "q_einheit": "Top 5",
-                    "q_source_ref": source_ref,
-                    "created": "2026-02-01",
-                    "file": SimpleUploadedFile("zaehlerfoto.jpg", b"img", content_type="image/jpeg"),
+                    "meter": str(reading.meter_id),
+                    "date": "2026-02-01",
+                    "value": "123.000",
+                    "note": "",
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
                 },
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("meter_reading_update", args=[reading.pk]))
+        self.assertEqual(
+            response.url,
+            reverse("meter_reading_by_meter_list", kwargs={"pk": reading.meter_id}),
+        )
         mocked_upload.assert_called_once()
         self.assertEqual(mocked_upload.call_args.kwargs["q_liegenschaft"], "Objekt Zähler")
         self.assertEqual(mocked_upload.call_args.kwargs["q_einheit"], "Top 5")
         self.assertEqual(mocked_upload.call_args.kwargs["q_source_ref"], source_ref)
         self.assertEqual(mocked_upload.call_args.kwargs["document_type_id"], 6)
         self.assertEqual(mocked_upload.call_args.kwargs["created"], date(2026, 2, 1))
+        self.assertEqual(mocked_upload.call_args.kwargs["title"], "Zählerfoto 01.02.2026")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -393,19 +516,24 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
             response = self.client.post(
                 reverse("meter_reading_update", args=[reading.pk]),
                 {
-                    "paperless_photo_upload": "1",
-                    "title": "Wasserzähler 01.02.2026",
-                    "description": "",
-                    "q_liegenschaft": "Objekt Zähler",
-                    "q_einheit": "Top 5",
-                    "q_source_ref": f"meterreading:{reading.source_uuid}",
-                    "created": "2026-02-01",
-                    "file": SimpleUploadedFile("zaehlerfoto.jpg", b"img", content_type="image/jpeg"),
+                    "meter": str(reading.meter_id),
+                    "date": "2026-02-01",
+                    "value": "124.000",
+                    "note": "",
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
                 },
+                follow=True,
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Paperless-Upload fehlgeschlagen.")
+        self.assertRedirects(response, reverse("meter_reading_update", args=[reading.pk]))
+        self.assertContains(response, "Zählerstand wurde gespeichert, aber der Foto-Upload ist fehlgeschlagen")
+        reading.refresh_from_db()
+        self.assertEqual(reading.value, Decimal("124.000"))
         self.assertEqual(Datei.objects.count(), 0)
 
     @override_settings(
@@ -459,7 +587,7 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertContains(response, "Foto öffnen")
         self.assertContains(
             response,
-            reverse("paperless_document_preview", kwargs={"document_id": 601}),
+            reverse("paperless_document_download", kwargs={"document_id": 601}),
         )
         self.assertNotContains(response, "Bild anzeigen")
         self.assertNotContains(response, "Fotos (")
@@ -547,11 +675,11 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(
             response,
-            reverse("paperless_document_preview", kwargs={"document_id": 702}),
+            reverse("paperless_document_download", kwargs={"document_id": 702}),
         )
         self.assertNotContains(
             response,
-            reverse("paperless_document_preview", kwargs={"document_id": 701}),
+            reverse("paperless_document_download", kwargs={"document_id": 701}),
         )
         self.assertNotContains(response, reverse("datei_preview", args=[legacy_datei.pk]))
         self.assertNotContains(response, "Bild anzeigen")
@@ -2208,6 +2336,18 @@ class BetriebskostenBelegModelTests(TestCase):
         )
         self.assertEqual(beleg.ust_prozent, Decimal("20.00"))
 
+    def test_source_uuid_is_created_automatically(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 1, 13),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+        )
+
+        self.assertIsNotNone(beleg.source_uuid)
+
 
 class BetriebskostenGruppeModelTests(TestCase):
     def test_get_or_create_ungrouped_is_idempotent(self):
@@ -2261,6 +2401,30 @@ class BetriebskostenBelegFormTests(TestCase):
         form = BetriebskostenBelegForm(instance=beleg)
         self.assertEqual(form.fields["ust_betrag"].initial, Decimal("24.69"))
 
+    def test_form_rejects_paperless_upload_for_legacy_years(self):
+        form = BetriebskostenBelegForm(
+            data={
+                "liegenschaft": str(self.property.pk),
+                "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                "ausgabengruppe": str(self.ungrouped_group.pk),
+                "datum": "2025-12-31",
+                "netto": "100.00",
+                "ust_prozent": "20.00",
+                "brutto": "120.00",
+                "buchungstext": "Altbeleg",
+            },
+            files={
+                "paperless_document": SimpleUploadedFile(
+                    "altbeleg.pdf",
+                    b"%PDF-1.4 legacy",
+                    content_type="application/pdf",
+                )
+            },
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("paperless_document", form.errors)
+
 
 class BetriebskostenBelegCreateViewTests(TestCase):
     def setUp(self):
@@ -2289,6 +2453,113 @@ class BetriebskostenBelegCreateViewTests(TestCase):
         self.assertEqual(form.initial.get("ausgabengruppe"), ungrouped_group.pk)
         self.assertNotIn("lieferant_name", form.fields)
         self.assertNotIn("iban", form.fields)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=11,
+    )
+    def test_create_with_paperless_upload_saves_document_id_and_redirects_to_edit(self):
+        with patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="bk-task-1",
+        ) as mocked_upload, patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-1",
+                "status": "success",
+                "document_id": 901,
+                "message": "",
+            },
+        ):
+            response = self.client.post(
+                reverse("betriebskostenbeleg_create"),
+                {
+                    "liegenschaft": str(self.bhg14.pk),
+                    "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                    "ausgabengruppe": str(BetriebskostenGruppe.get_or_create_ungrouped()[0].pk),
+                    "datum": "2026-03-01",
+                    "netto": "100.00",
+                    "ust_prozent": "20.00",
+                    "brutto": "120.00",
+                    "buchungstext": "EVN März",
+                    "paperless_document": SimpleUploadedFile(
+                        "evn-maerz.pdf",
+                        b"%PDF-1.4 evn",
+                        content_type="application/pdf",
+                    ),
+                },
+                follow=False,
+            )
+
+        beleg = BetriebskostenBeleg.objects.get(buchungstext="EVN März")
+        expected_redirect = "{}?{}".format(
+            reverse("betriebskostenbeleg_update", args=[beleg.pk]),
+            urlencode({"next": reverse("betriebskostenbeleg_list")}),
+        )
+        self.assertRedirects(response, expected_redirect, fetch_redirect_response=False)
+        beleg.refresh_from_db()
+        self.assertEqual(beleg.paperless_document_id, 901)
+        self.assertEqual(beleg.paperless_task_id, "")
+        mocked_upload.assert_called_once_with(
+            uploaded_file=mocked_upload.call_args.kwargs["uploaded_file"],
+            title="EVN März",
+            q_liegenschaft="BHG14",
+            q_source_ref=f"betriebskostenbeleg:{beleg.source_uuid}",
+            tags=["Betriebskostenbeleg"],
+            document_type_id=11,
+            created=date(2026, 3, 1),
+        )
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=11,
+    )
+    def test_create_with_pending_paperless_upload_saves_task_id(self):
+        with patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="bk-task-pending",
+        ), patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-pending",
+                "status": "pending",
+                "document_id": None,
+                "message": "",
+            },
+        ):
+            response = self.client.post(
+                reverse("betriebskostenbeleg_create"),
+                {
+                    "liegenschaft": str(self.bhg14.pk),
+                    "bk_art": BetriebskostenBeleg.BKArt.WASSER,
+                    "ausgabengruppe": str(BetriebskostenGruppe.get_or_create_ungrouped()[0].pk),
+                    "datum": "2026-03-02",
+                    "netto": "20.00",
+                    "ust_prozent": "20.00",
+                    "brutto": "24.00",
+                    "buchungstext": "Wasser März",
+                    "paperless_document": SimpleUploadedFile(
+                        "wasser-maerz.pdf",
+                        b"%PDF-1.4 wasser",
+                        content_type="application/pdf",
+                    ),
+                },
+                follow=False,
+            )
+
+        beleg = BetriebskostenBeleg.objects.get(buchungstext="Wasser März")
+        expected_redirect = "{}?{}".format(
+            reverse("betriebskostenbeleg_update", args=[beleg.pk]),
+            urlencode({"next": reverse("betriebskostenbeleg_list")}),
+        )
+        self.assertRedirects(response, expected_redirect, fetch_redirect_response=False)
+        beleg.refresh_from_db()
+        self.assertIsNone(beleg.paperless_document_id)
+        self.assertEqual(beleg.paperless_task_id, "bk-task-pending")
 
 
 class BetriebskostenGruppeViewTests(TestCase):
@@ -2516,6 +2787,39 @@ class BetriebskostenBelegListViewTests(TestCase):
         self.assertNotContains(response, "Dateien (1)")
         self.assertContains(response, reverse("datei_open", args=[uploaded_datei.pk]))
         self.assertNotContains(response, "Datei hinzufügen")
+
+    def test_list_prefers_paperless_open_link_over_local_attachment(self):
+        current_year = date.today().year
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(current_year, 9, 12),
+            netto=Decimal("30.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("36.00"),
+            ausgabengruppe=self.ungrouped_group,
+            paperless_document_id=321,
+        )
+        local_datei = DateiService.upload(
+            user=None,
+            uploaded_file=SimpleUploadedFile(
+                "lokal.pdf",
+                b"%PDF",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.DOKUMENT,
+            target_object=beleg,
+        )
+
+        response = self.client.get(reverse("betriebskostenbeleg_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            reverse("paperless_document_download", kwargs={"document_id": 321}),
+        )
+        self.assertNotContains(response, reverse("datei_open", args=[local_datei.pk]))
+        self.assertContains(response, "Legacy-Bulk-Weg")
 
     def test_bulk_attach_file_assigns_one_upload_to_multiple_belege(self):
         beleg_one = BetriebskostenBeleg.objects.create(
@@ -2746,6 +3050,79 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
             "Dokumente im DMS",
         )
         self.assertContains(response, "Im DMS öffnen")
+
+    def test_update_view_resolves_pending_paperless_task_on_get(self):
+        self.beleg.paperless_task_id = "bk-task-open"
+        self.beleg.save(update_fields=["paperless_task_id"])
+
+        with patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-open",
+                "status": "success",
+                "document_id": 777,
+                "message": "",
+            },
+        ):
+            response = self.client.get(reverse("betriebskostenbeleg_update", args=[self.beleg.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.beleg.refresh_from_db()
+        self.assertEqual(self.beleg.paperless_document_id, 777)
+        self.assertEqual(self.beleg.paperless_task_id, "")
+        self.assertContains(response, "Dokument #777")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=11,
+    )
+    def test_update_with_paperless_upload_replaces_existing_document_id(self):
+        self.beleg.paperless_document_id = 111
+        self.beleg.save(update_fields=["paperless_document_id"])
+
+        with patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="bk-task-update",
+        ), patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-update",
+                "status": "success",
+                "document_id": 222,
+                "message": "",
+            },
+        ):
+            response = self.client.post(
+                reverse("betriebskostenbeleg_update", args=[self.beleg.pk]),
+                {
+                    "liegenschaft": str(self.property.pk),
+                    "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                    "ausgabengruppe": str(self.beleg.ausgabengruppe_id),
+                    "datum": "2026-01-15",
+                    "netto": "100.00",
+                    "ust_prozent": "20.00",
+                    "brutto": "120.00",
+                    "buchungstext": "Strom Jänner",
+                    "paperless_document": SimpleUploadedFile(
+                        "strom-neu.pdf",
+                        b"%PDF-1.4 neu",
+                        content_type="application/pdf",
+                    ),
+                    "next": reverse("betriebskostenbeleg_list"),
+                },
+                follow=False,
+            )
+
+        expected_redirect = "{}?{}".format(
+            reverse("betriebskostenbeleg_update", args=[self.beleg.pk]),
+            urlencode({"next": reverse("betriebskostenbeleg_list")}),
+        )
+        self.assertRedirects(response, expected_redirect, fetch_redirect_response=False)
+        self.beleg.refresh_from_db()
+        self.assertEqual(self.beleg.paperless_document_id, 222)
+        self.assertEqual(self.beleg.paperless_task_id, "")
 
 
 class BankImportWorkflowTests(TestCase):
@@ -4157,6 +4534,101 @@ class AnnualStatementLetterRunTests(TestCase):
         manifest_csv = archive.read("manifest.csv").decode("utf-8")
         self.assertIn(first_token, manifest_csv)
         self.assertIn(second_token, manifest_csv)
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+    )
+    def test_portal_export_prefers_paperless_and_keeps_local_fallback(self):
+        run = self._ensure_run()
+        run.brief_nummer_start = 702
+        run.save(update_fields=["brief_nummer_start", "updated_at"])
+
+        paperless_beleg = BetriebskostenBeleg.objects.filter(
+            liegenschaft=self.property,
+            datum__year=2026,
+        ).first()
+        self.assertIsNotNone(paperless_beleg)
+        local_fallback_beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.STROM,
+            datum=date(2026, 4, 10),
+            netto=Decimal("50.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("60.00"),
+            buchungstext="Wien Energie April",
+        )
+
+        ignored_local_file = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "lokal-ignoriert.pdf",
+                b"%PDF-1.4 ignored",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.RECHNUNG,
+            target_object=paperless_beleg,
+            beschreibung="Soll durch Paperless ersetzt werden",
+        )
+        fallback_local_file = DateiService.upload(
+            uploaded_file=SimpleUploadedFile(
+                "fallback-lokal.pdf",
+                b"%PDF-1.4 fallback",
+                content_type="application/pdf",
+            ),
+            kategorie=Datei.Kategorie.RECHNUNG,
+            target_object=local_fallback_beleg,
+            beschreibung="Lokaler Fallback",
+        )
+        paperless_beleg.paperless_document_id = 555
+        paperless_beleg.save(update_fields=["paperless_document_id"])
+
+        with patch(
+            "webapp.services.annual_statement_portal_export_service.PaperlessService.download_document",
+            return_value=(b"%PDF-1.4 paperless", "application/pdf", "paperless-beleg.pdf"),
+        ) as mocked_download:
+            response = self.client.post(reverse("annual_statement_run_export_portal", kwargs={"pk": run.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        mocked_download.assert_called_once_with(document_id=555)
+
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = archive.namelist()
+        letter = run.schreiben.first()
+        prefix = AnnualStatementRunService(run=run).build_portal_relative_path(letter=letter).rstrip("/")
+        paperless_name = AnnualStatementPortalExportService._safe_attachment_name_from_values(
+            original_name="paperless-beleg.pdf",
+            mime_type="application/pdf",
+            fallback_stem="paperless-555",
+            suffix="555",
+        )
+        fallback_name = AnnualStatementPortalExportService._safe_attachment_name(fallback_local_file)
+        ignored_local_name = AnnualStatementPortalExportService._safe_attachment_name(ignored_local_file)
+
+        self.assertIn(f"{prefix}/belege/{paperless_name}", names)
+        self.assertIn(f"{prefix}/belege/{fallback_name}", names)
+        self.assertNotIn(f"{prefix}/belege/{ignored_local_name}", names)
+
+    @override_settings(
+        BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
+        BK_PORTAL_PATH_PREFIX="BHG14",
+        BK_PORTAL_TOKEN_SECRET="test-portal-secret",
+    )
+    def test_portal_export_fails_with_clear_error_when_paperless_document_cannot_be_downloaded(self):
+        run = self._ensure_run()
+        beleg = BetriebskostenBeleg.objects.filter(liegenschaft=self.property, datum__year=2026).first()
+        self.assertIsNotNone(beleg)
+        beleg.paperless_document_id = 777
+        beleg.save(update_fields=["paperless_document_id"])
+
+        with patch(
+            "webapp.services.annual_statement_portal_export_service.PaperlessService.download_document",
+            side_effect=PaperlessSearchError("Dokument wurde in Paperless nicht gefunden."),
+        ):
+            with self.assertRaises(RuntimeError) as raised_error:
+                AnnualStatementPortalExportService(run=run).build_zip()
+
+        self.assertIn("Paperless-Dokument kann nicht geladen werden", str(raised_error.exception))
 
     @override_settings(
         BK_PORTAL_BASE_URL="https://portal.example.invalid/belege",
@@ -8079,6 +8551,87 @@ class PaperlessSearchViewTests(TestCase):
             f"meterreading:{reading.source_uuid}",
         )
         self.assertEqual(str(response.context["upload_form"]["created"].value()), "2026-02-01")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=9,
+    )
+    def test_source_context_prefills_search_for_betriebskostenbeleg(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.BETRIEBSKOSTEN,
+            datum=date(2026, 2, 10),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            buchungstext="EVN Februar",
+        )
+
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "5", "name": "Betriebskostenbeleg"}],
+        ), patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ) as mocked_search:
+            response = self.client.get(
+                reverse("paperless_search"),
+                {
+                    "source_model": "betriebskostenbeleg",
+                    "source_id": str(beleg.pk),
+                },
+            )
+
+        mocked_search.assert_called_once_with(
+            query="",
+            q_liegenschaft="BHG14",
+            q_einheit="",
+            q_mieter="",
+            q_source_ref=f"betriebskostenbeleg:{beleg.source_uuid}",
+            tags=["Betriebskostenbeleg"],
+            document_type_id=9,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DMS-Kontext: Betriebskostenbeleg 10.02.2026")
+        self.assertEqual(
+            response.context["upload_form"]["q_source_ref"].value(),
+            f"betriebskostenbeleg:{beleg.source_uuid}",
+        )
+        self.assertEqual(str(response.context["upload_form"]["created"].value()), "2026-02-10")
+        self.assertEqual(response.context["search_tags"], ["Betriebskostenbeleg"])
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_resolve_task_document_returns_related_document_id(self):
+        with patch.object(
+            PaperlessService,
+            "_request_json",
+            return_value={
+                "results": [
+                    {
+                        "task_id": "task-123",
+                        "status": "SUCCESS",
+                        "related_document": {"id": 654},
+                    }
+                ]
+            },
+        ):
+            resolution = PaperlessService.resolve_task_document(task_id="task-123")
+
+        self.assertEqual(
+            resolution,
+            {
+                "task_id": "task-123",
+                "status": "success",
+                "document_id": 654,
+                "message": "",
+            },
+        )
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",

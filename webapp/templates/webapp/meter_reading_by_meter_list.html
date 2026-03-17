@@ -70,9 +70,9 @@
                             </td>
                             <td>{{ reading.note|default:"—" }}</td>
                             <td class="text-center">
-                                {% if reading.paperless_photo and reading.paperless_photo.preview_url %}
+                                {% if reading.paperless_photo and reading.paperless_photo.download_url %}
                                 <a
-                                    href="{{ reading.paperless_photo.preview_url }}"
+                                    href="{{ reading.paperless_photo.download_url }}"
                                     class="btn btn-sm btn-outline-primary"
                                     target="_blank"
                                     rel="noopener noreferrer"

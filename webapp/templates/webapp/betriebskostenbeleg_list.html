@@ -160,6 +160,10 @@
                     <div class="col-12 text-muted small">
                         Mehrfachauswahl über die Checkboxen in der Tabelle.
                     </div>
+                    <div class="col-12 text-muted small">
+                        Gemeinsame Dokumente für mehrere Belege bleiben hier bewusst der Legacy-Bulk-Weg.
+                        Einzel-Belege ab {{ paperless_cutover_year }} können direkt im Beleg an Paperless hochgeladen werden.
+                    </div>
                 </div>
             </div>
         </div>
@@ -257,17 +261,15 @@
                                 </a>
                             </td>
                             <td class="text-center">
-                                {% if beleg.attachment_count %}
-                                {% if beleg.first_attachment_id %}
+                                {% if beleg.open_document_url %}
                                 <a
-                                    href="{% url 'datei_open' beleg.first_attachment_id %}"
+                                    href="{{ beleg.open_document_url }}"
                                     class="btn btn-sm btn-outline-primary"
                                     target="_blank"
                                     rel="noopener"
                                 >
                                     Beleg öffnen
                                 </a>
-                                {% endif %}
                                 {% else %}
                                 <span class="text-muted small">—</span>
                                 {% endif %}

@@ -26,6 +26,19 @@ from .models import (
 )
 from .services.files import DateiService
 
+
+PAPERLESS_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+
+
+def _validate_uploaded_file(uploaded_file, *, max_file_size_bytes: int):
+    file_size = getattr(uploaded_file, "size", 0) or 0
+    if file_size <= 0:
+        raise ValidationError("Bitte eine gültige Datei auswählen.")
+    if file_size > max_file_size_bytes:
+        raise ValidationError("Die Datei ist zu groß. Maximal erlaubt sind 25 MB.")
+    return uploaded_file
+
+
 class PropertyForm(forms.ModelForm):
     class Meta:
         model = Property
@@ -374,6 +387,35 @@ class MeterReadingForm(forms.ModelForm):
         return f"{unit_label} · {meter.get_meter_type_display()}"
 
 
+class MeterReadingWithPhotoForm(MeterReadingForm):
+    max_paperless_photo_size_bytes = PAPERLESS_MAX_FILE_SIZE_BYTES
+
+    paperless_photo = forms.FileField(
+        required=False,
+        label="Zählerfoto",
+        help_text="Optional. Wird beim Speichern direkt an Paperless geschickt.",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": ".jpg,.jpeg,.png,image/jpeg,image/png"}
+        ),
+    )
+
+    class Meta(MeterReadingForm.Meta):
+        fields = MeterReadingForm.Meta.fields
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.order_fields(["meter", "date", "value", "paperless_photo", "note"])
+
+    def clean_paperless_photo(self):
+        uploaded_file = self.cleaned_data.get("paperless_photo")
+        if not uploaded_file:
+            return uploaded_file
+        return _validate_uploaded_file(
+            uploaded_file,
+            max_file_size_bytes=self.max_paperless_photo_size_bytes,
+        )
+
+
 class UnitForm(forms.ModelForm):
     class Meta:
         model = Unit
@@ -642,6 +684,17 @@ class BuchungForm(forms.ModelForm):
 
 
 class BetriebskostenBelegForm(forms.ModelForm):
+    paperless_document = forms.FileField(
+        required=False,
+        label="Beleg an Paperless",
+        help_text="Optional. Ab Belegdatum 2026 wird der Beleg direkt an Paperless hochgeladen.",
+        widget=forms.ClearableFileInput(
+            attrs={
+                "class": "form-control",
+                "accept": ".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png",
+            }
+        ),
+    )
     datum = forms.DateField(
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
         input_formats=["%Y-%m-%d", "%d.%m.%Y"],
@@ -696,6 +749,20 @@ class BetriebskostenBelegForm(forms.ModelForm):
                 self.instance.netto,
                 self.instance.ust_prozent,
             )
+        self.order_fields(
+            [
+                "liegenschaft",
+                "bk_art",
+                "ausgabengruppe",
+                "datum",
+                "netto",
+                "ust_prozent",
+                "ust_betrag",
+                "brutto",
+                "buchungstext",
+                "paperless_document",
+            ]
+        )
 
     @staticmethod
     def _calculate_ust_betrag(netto: Decimal, ust_prozent: Decimal) -> Decimal:
@@ -705,7 +772,25 @@ class BetriebskostenBelegForm(forms.ModelForm):
         )
 
     def clean(self):
-        return super().clean()
+        cleaned_data = super().clean()
+        belegdatum = cleaned_data.get("datum")
+        uploaded_file = cleaned_data.get("paperless_document")
+        if uploaded_file and belegdatum and belegdatum.year < 2026:
+            self.add_error(
+                "paperless_document",
+                "Paperless-Upload ist erst ab Belegdatum 2026 möglich. "
+                "Für ältere Belege bitte den bisherigen Datei-/Bulk-Weg verwenden.",
+            )
+        return cleaned_data
+
+    def clean_paperless_document(self):
+        uploaded_file = self.cleaned_data.get("paperless_document")
+        if not uploaded_file:
+            return uploaded_file
+        return _validate_uploaded_file(
+            uploaded_file,
+            max_file_size_bytes=PAPERLESS_MAX_FILE_SIZE_BYTES,
+        )
 
 
 class BetriebskostenGruppeForm(forms.ModelForm):
@@ -720,7 +805,7 @@ class BetriebskostenGruppeForm(forms.ModelForm):
 
 
 class PaperlessUploadForm(forms.Form):
-    max_file_size_bytes = 25 * 1024 * 1024
+    max_file_size_bytes = PAPERLESS_MAX_FILE_SIZE_BYTES
 
     file = forms.FileField(
         label="Datei",
@@ -782,48 +867,7 @@ class PaperlessUploadForm(forms.Form):
 
     def clean_file(self):
         uploaded_file = self.cleaned_data["file"]
-        file_size = getattr(uploaded_file, "size", 0) or 0
-        if file_size <= 0:
-            raise ValidationError("Bitte eine gültige Datei auswählen.")
-        if file_size > self.max_file_size_bytes:
-            raise ValidationError("Die Datei ist zu groß. Maximal erlaubt sind 25 MB.")
-        return uploaded_file
-
-
-class MeterReadingPaperlessPhotoUploadForm(forms.Form):
-    max_file_size_bytes = PaperlessUploadForm.max_file_size_bytes
-
-    file = forms.FileField(
-        label="Foto",
-        widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".jpg,.jpeg,.png,image/jpeg,image/png"}),
-    )
-    title = forms.CharField(
-        required=False,
-        max_length=255,
-        label="Titel",
-        widget=forms.TextInput(attrs={"class": "form-control"}),
-    )
-    description = forms.CharField(
-        required=False,
-        max_length=255,
-        label="Beschreibung",
-        widget=forms.TextInput(attrs={"class": "form-control"}),
-        help_text="Wird beim Upload als Notiz in Paperless gespeichert.",
-    )
-    q_liegenschaft = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
-    q_einheit = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
-    q_source_ref = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
-    created = forms.DateField(
-        required=False,
-        widget=forms.HiddenInput(),
-        input_formats=["%Y-%m-%d"],
-    )
-
-    def clean_file(self):
-        uploaded_file = self.cleaned_data["file"]
-        file_size = getattr(uploaded_file, "size", 0) or 0
-        if file_size <= 0:
-            raise ValidationError("Bitte eine gültige Datei auswählen.")
-        if file_size > self.max_file_size_bytes:
-            raise ValidationError("Die Datei ist zu groß. Maximal erlaubt sind 25 MB.")
-        return uploaded_file
+        return _validate_uploaded_file(
+            uploaded_file,
+            max_file_size_bytes=self.max_file_size_bytes,
+        )

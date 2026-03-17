@@ -50,8 +50,7 @@ from .forms import (
     DateiUploadForm,
     LeaseAgreementForm,
     MeterForm,
-    MeterReadingForm,
-    MeterReadingPaperlessPhotoUploadForm,
+    MeterReadingWithPhotoForm,
     PaperlessUploadForm,
     PropertyForm,
     PropertyOwnershipFormSet,
@@ -74,6 +73,10 @@ from .services.settlement_adjustments import match_settlement_adjustment_text
 from .services.reminders import ReminderService
 from .services.vpi_adjustment_pdf_service import VpiAdjustmentPdfService
 from .services.vpi_adjustment_run_service import VpiAdjustmentRunService
+
+
+BETRIEBSKOSTEN_PAPERLESS_CUTOVER_YEAR = 2026
+BETRIEBSKOSTEN_PAPERLESS_TAG = "Betriebskostenbeleg"
 
 
 def build_attachments_panel_context(request, target_object, *, title: str):
@@ -176,11 +179,27 @@ def _meter_reading_paperless_document_type_id() -> int | None:
     return PaperlessService.document_type_id_by_name("Zählerstand")
 
 
+def _betriebskostenbeleg_paperless_document_type_id() -> int | None:
+    configured_document_type_id = PaperlessService._to_int(
+        getattr(settings, "PAPERLESS_BK_DOCUMENT_TYPE_ID", None)
+    )
+    if configured_document_type_id is not None:
+        return configured_document_type_id
+    return PaperlessService.document_type_id_by_name("Rechnung")
+
+
 def _meterreading_source_ref(reading: MeterReading) -> str:
     source_uuid = getattr(reading, "source_uuid", None)
     if not source_uuid:
         return ""
     return f"meterreading:{source_uuid}"
+
+
+def _betriebskostenbeleg_source_ref(beleg: BetriebskostenBeleg) -> str:
+    source_uuid = getattr(beleg, "source_uuid", None)
+    if not source_uuid:
+        return ""
+    return f"betriebskostenbeleg:{source_uuid}"
 
 
 def build_paperless_source_context(*, source_model: str | None, source_id: str | int | None):
@@ -284,11 +303,17 @@ def build_paperless_source_context(*, source_model: str | None, source_id: str |
         beleg = BetriebskostenBeleg.objects.select_related("liegenschaft").filter(pk=object_id).first()
         if beleg is None:
             return None
+        beleg_document_type_id = _betriebskostenbeleg_paperless_document_type_id()
         search_defaults = {
             "q_liegenschaft": beleg.liegenschaft.name if beleg.liegenschaft else "",
             "q_einheit": "",
             "q_mieter": "",
-            "tags": [],
+            "q_source_ref": _betriebskostenbeleg_source_ref(beleg),
+            "created": beleg.datum.isoformat(),
+            "tags": [BETRIEBSKOSTEN_PAPERLESS_TAG],
+            "document_type_id": beleg_document_type_id,
+            "document_type_label": "Rechnung" if beleg_document_type_id is not None else "",
+            "upload_document_type_id": beleg_document_type_id,
         }
         source_label = f"Betriebskostenbeleg {beleg.datum:%d.%m.%Y}"
     else:
@@ -447,6 +472,7 @@ def _paperless_preview_context(
     q_einheit: str = "",
     q_mieter: str = "",
     q_source_ref: str = "",
+    tags: list[str] | None = None,
     document_type_id: object | None = None,
     excluded_tags: list[str] | None = None,
 ) -> dict[str, object]:
@@ -454,6 +480,11 @@ def _paperless_preview_context(
     normalized_q_einheit = str(q_einheit or "").strip()
     normalized_q_mieter = str(q_mieter or "").strip()
     normalized_q_source_ref = str(q_source_ref or "").strip()
+    normalized_tags = [
+        str(tag or "").strip()
+        for tag in tags or []
+        if str(tag or "").strip()
+    ]
     normalized_document_type_ids = PaperlessService._normalize_document_type_ids(document_type_id)
     normalized_document_type_filter = _paperless_document_type_filter_value(document_type_id)
     preview_limit = 10
@@ -466,6 +497,7 @@ def _paperless_preview_context(
             normalized_q_einheit,
             normalized_q_mieter,
             normalized_q_source_ref,
+            normalized_tags,
             normalized_document_type_ids,
         ]
     ) or not PaperlessService.is_configured():
@@ -482,7 +514,7 @@ def _paperless_preview_context(
             q_einheit=normalized_q_einheit,
             q_mieter=normalized_q_mieter,
             q_source_ref=normalized_q_source_ref,
-            tags=[],
+            tags=normalized_tags,
             document_type_id=normalized_document_type_filter,
             limit=search_limit,
             sort="created",
@@ -551,24 +583,95 @@ def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]
     )
 
 
-def _meterreading_photo_panel_context(request, *, reading: MeterReading) -> dict[str, object]:
-    preview_context = _paperless_preview_context(
-        request,
+def _upload_meterreading_photo(*, reading: MeterReading, uploaded_file) -> str:
+    return PaperlessService.upload_document(
+        uploaded_file=uploaded_file,
+        title=f"Zählerfoto {reading.date:%d.%m.%Y}",
+        q_liegenschaft=(
+            reading.meter.property.name
+            if reading.meter and reading.meter.property
+            else ""
+        ),
+        q_einheit=(
+            reading.meter.unit.name
+            if reading.meter and reading.meter.unit
+            else ""
+        ),
         q_source_ref=_meterreading_source_ref(reading),
         document_type_id=_meter_reading_paperless_document_type_id(),
+        created=reading.date,
     )
-    preview_documents = list(preview_context.get("preview_documents", []))
-    current_document = preview_documents[0] if preview_documents else None
+
+
+def _betriebskostenbeleg_upload_title(beleg: BetriebskostenBeleg) -> str:
+    buchungstext = str(beleg.buchungstext or "").strip()
+    if buchungstext:
+        return buchungstext
+    return f"Betriebskostenbeleg {beleg.datum:%d.%m.%Y}"
+
+
+def _upload_betriebskostenbeleg_document(
+    *,
+    beleg: BetriebskostenBeleg,
+    uploaded_file,
+) -> str:
+    document_type_id = _betriebskostenbeleg_paperless_document_type_id()
+    if document_type_id is None:
+        raise PaperlessSearchError(
+            "Dokumenttyp 'Rechnung' wurde in Paperless nicht gefunden. "
+            "Bitte PAPERLESS_BK_DOCUMENT_TYPE_ID setzen oder den Typ in Paperless anlegen."
+        )
+
+    return PaperlessService.upload_document(
+        uploaded_file=uploaded_file,
+        title=_betriebskostenbeleg_upload_title(beleg),
+        q_liegenschaft=beleg.liegenschaft.name if beleg.liegenschaft else "",
+        q_source_ref=_betriebskostenbeleg_source_ref(beleg),
+        tags=[BETRIEBSKOSTEN_PAPERLESS_TAG],
+        document_type_id=document_type_id,
+        created=beleg.datum,
+    )
+
+
+def _refresh_betriebskostenbeleg_paperless_status(
+    *,
+    beleg: BetriebskostenBeleg,
+) -> dict[str, object]:
+    task_id = str(beleg.paperless_task_id or "").strip()
+    if not task_id:
+        return {
+            "status": "idle",
+            "document_id": beleg.paperless_document_id,
+            "message": "",
+        }
+
+    resolution = PaperlessService.resolve_task_document(task_id=task_id)
+    resolved_document_id = resolution.get("document_id")
+    if resolved_document_id is not None:
+        normalized_document_id = int(resolved_document_id)
+        update_fields = ["paperless_document_id", "paperless_task_id"]
+        beleg.paperless_document_id = normalized_document_id
+        beleg.paperless_task_id = ""
+        beleg.save(update_fields=update_fields)
+        return {
+            "status": "success",
+            "document_id": normalized_document_id,
+            "message": "",
+        }
+
+    if resolution.get("status") == "failure":
+        beleg.paperless_task_id = ""
+        beleg.save(update_fields=["paperless_task_id"])
+        return {
+            "status": "failure",
+            "document_id": beleg.paperless_document_id,
+            "message": str(resolution.get("message") or "").strip(),
+        }
+
     return {
-        "title": "Zählerfoto in Paperless",
-        "description": "Neue Zählerfotos werden direkt in Paperless gespeichert und mit dieser Ablesung verknüpft.",
-        "current_document": current_document,
-        "error_message": str(preview_context.get("preview_error_message") or ""),
-        "empty_message": (
-            ""
-            if current_document or preview_context.get("preview_error_message")
-            else "Noch kein Zählerfoto in Paperless verknüpft."
-        ),
+        "status": "pending",
+        "document_id": beleg.paperless_document_id,
+        "message": "",
     }
 
 
@@ -1942,9 +2045,35 @@ class MeterReadingByMeterListView(ListView):
         return context
 
 
-class MeterReadingCreateView(CreateView):
+class MeterReadingPaperlessPhotoUploadMixin:
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        uploaded_file = form.cleaned_data.get("paperless_photo")
+        if not uploaded_file:
+            return response
+
+        try:
+            task_id = _upload_meterreading_photo(
+                reading=self.object,
+                uploaded_file=uploaded_file,
+            )
+        except PaperlessSearchError as exc:
+            messages.error(
+                self.request,
+                f"Zählerstand wurde gespeichert, aber der Foto-Upload ist fehlgeschlagen: {exc}",
+            )
+            return redirect("meter_reading_update", pk=self.object.pk)
+
+        messages.success(
+            self.request,
+            f"Zählerfoto wurde an Paperless übergeben. Task-ID: {task_id}.",
+        )
+        return response
+
+
+class MeterReadingCreateView(MeterReadingPaperlessPhotoUploadMixin, CreateView):
     model = MeterReading
-    form_class = MeterReadingForm
+    form_class = MeterReadingWithPhotoForm
     template_name = "webapp/meter_reading_form.html"
     success_url = reverse_lazy("meter_list")
 
@@ -1959,31 +2088,10 @@ class MeterReadingCreateView(CreateView):
         return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
 
 
-class MeterReadingUpdateView(UpdateView):
+class MeterReadingUpdateView(MeterReadingPaperlessPhotoUploadMixin, UpdateView):
     model = MeterReading
-    form_class = MeterReadingForm
+    form_class = MeterReadingWithPhotoForm
     template_name = "webapp/meter_reading_form.html"
-
-    def _photo_upload_initial(self) -> dict[str, object]:
-        return {
-            "q_liegenschaft": (
-                self.object.meter.property.name
-                if self.object.meter and self.object.meter.property
-                else ""
-            ),
-            "q_einheit": (
-                self.object.meter.unit.name
-                if self.object.meter and self.object.meter.unit
-                else ""
-            ),
-            "q_source_ref": _meterreading_source_ref(self.object),
-            "created": self.object.date.isoformat(),
-        }
-
-    def _paperless_photo_upload_form(self, *, data=None, files=None):
-        if data is not None:
-            return MeterReadingPaperlessPhotoUploadForm(data, files)
-        return MeterReadingPaperlessPhotoUploadForm(initial=self._photo_upload_initial())
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -1997,57 +2105,7 @@ class MeterReadingUpdateView(UpdateView):
                 )
             )
         context["dms_context_panel"] = dms_context_panel
-        context["paperless_photo_panel"] = _meterreading_photo_panel_context(
-            self.request,
-            reading=self.object,
-        )
-        context["paperless_photo_upload_form"] = (
-            kwargs.get("paperless_photo_upload_form")
-            or self._paperless_photo_upload_form()
-        )
         return context
-
-    def post(self, request, *args, **kwargs):
-        self.object = self.get_object()
-        if "paperless_photo_upload" in request.POST:
-            upload_form = self._paperless_photo_upload_form(data=request.POST, files=request.FILES)
-            if not upload_form.is_valid():
-                messages.error(request, "Bitte prüfen Sie die Upload-Eingaben.")
-                return self.render_to_response(
-                    self.get_context_data(
-                        form=self.form_class(instance=self.object),
-                        paperless_photo_upload_form=upload_form,
-                    )
-                )
-
-            cleaned_data = upload_form.cleaned_data
-            try:
-                task_id = PaperlessService.upload_document(
-                    uploaded_file=cleaned_data["file"],
-                    title=cleaned_data.get("title", ""),
-                    description=cleaned_data.get("description", ""),
-                    q_liegenschaft=cleaned_data.get("q_liegenschaft", ""),
-                    q_einheit=cleaned_data.get("q_einheit", ""),
-                    q_source_ref=cleaned_data.get("q_source_ref", ""),
-                    document_type_id=_meter_reading_paperless_document_type_id(),
-                    created=cleaned_data.get("created"),
-                )
-            except PaperlessSearchError as exc:
-                messages.error(request, str(exc))
-                return self.render_to_response(
-                    self.get_context_data(
-                        form=self.form_class(instance=self.object),
-                        paperless_photo_upload_form=upload_form,
-                    )
-                )
-
-            messages.success(
-                request,
-                f"Zählerfoto wurde an Paperless übergeben. Task-ID: {task_id}.",
-            )
-            return redirect("meter_reading_update", pk=self.object.pk)
-
-        return super().post(request, *args, **kwargs)
 
     def get_success_url(self):
         return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
@@ -3511,6 +3569,15 @@ class BetriebskostenBelegListView(ListView):
         for beleg in belege:
             beleg.attachment_count = attachment_count_by_beleg_id.get(beleg.pk, 0)
             beleg.first_attachment_id = first_attachment_id_by_beleg_id.get(beleg.pk)
+            if int(beleg.paperless_document_id or 0) > 0:
+                beleg.open_document_url = _paperless_document_download_url(
+                    request=self.request,
+                    document_id=beleg.paperless_document_id,
+                )
+            elif beleg.first_attachment_id:
+                beleg.open_document_url = reverse("datei_open", args=[beleg.first_attachment_id])
+            else:
+                beleg.open_document_url = ""
 
         ungrouped_group, _created = BetriebskostenGruppe.get_or_create_ungrouped()
         context["bulk_group_choices"] = (
@@ -3528,6 +3595,7 @@ class BetriebskostenBelegListView(ListView):
         context["selected_art_filter"] = getattr(self, "selected_art_filter", "")
         context["filtered_sum_netto"] = totals["total_netto"]
         context["filtered_sum_brutto"] = totals["total_brutto"]
+        context["paperless_cutover_year"] = BETRIEBSKOSTEN_PAPERLESS_CUTOVER_YEAR
         return context
 
     def _year_choices_for_queryset(self, queryset):
@@ -3622,7 +3690,119 @@ class BetriebskostenBelegExcelExportView(BetriebskostenBelegListView):
         )
 
 
-class BetriebskostenBelegCreateView(CreateView):
+class BetriebskostenBelegNavigationMixin:
+    def _get_valid_next_url(self):
+        next_url = self.request.POST.get("next") or self.request.GET.get("next")
+        if not next_url:
+            return None
+        if url_has_allowed_host_and_scheme(
+            url=next_url,
+            allowed_hosts={self.request.get_host()},
+            require_https=self.request.is_secure(),
+        ):
+            return next_url
+        return None
+
+    def _default_next_url(self):
+        return reverse("betriebskostenbeleg_list")
+
+    def _update_redirect_response(self):
+        next_url = self._get_valid_next_url() or self._default_next_url()
+        return redirect(
+            "{}?{}".format(
+                reverse("betriebskostenbeleg_update", kwargs={"pk": self.object.pk}),
+                urlencode({"next": next_url}),
+            )
+        )
+
+
+class BetriebskostenBelegPaperlessMixin(BetriebskostenBelegNavigationMixin):
+    def _paperless_status_context(self) -> dict[str, str] | None:
+        paperless_task_id = str(self.object.paperless_task_id or "").strip()
+        document_id = int(self.object.paperless_document_id or 0)
+        if paperless_task_id:
+            if document_id > 0:
+                return {
+                    "level": "info",
+                    "text": (
+                        "Ein neuer Paperless-Upload läuft noch. Bis zur Fertigstellung bleibt das "
+                        "bisher verknüpfte Dokument aktiv."
+                    ),
+                }
+            return {
+                "level": "info",
+                "text": (
+                    f"Upload an Paperless läuft noch. Task-ID: {paperless_task_id}. "
+                    "Beim nächsten Öffnen wird der Status erneut geprüft."
+                ),
+            }
+        if document_id > 0:
+            return {
+                "level": "success",
+                "text": f"Dieser Beleg ist mit Paperless-Dokument #{document_id} verknüpft.",
+            }
+        return None
+
+    def _handle_paperless_upload(self, *, uploaded_file):
+        if not uploaded_file:
+            return None
+
+        try:
+            task_id = _upload_betriebskostenbeleg_document(
+                beleg=self.object,
+                uploaded_file=uploaded_file,
+            )
+        except PaperlessSearchError as exc:
+            messages.error(
+                self.request,
+                f"Betriebskostenbeleg wurde gespeichert, aber der Paperless-Upload ist fehlgeschlagen: {exc}",
+            )
+            return self._update_redirect_response()
+
+        self.object.paperless_task_id = task_id
+        try:
+            resolution = _refresh_betriebskostenbeleg_paperless_status(beleg=self.object)
+        except PaperlessSearchError as exc:
+            self.object.save(update_fields=["paperless_task_id"])
+            messages.warning(
+                self.request,
+                "Betriebskostenbeleg wurde gespeichert und an Paperless übergeben, "
+                f"aber der Status konnte noch nicht geprüft werden: {exc}",
+            )
+            return self._update_redirect_response()
+
+        if resolution["status"] == "success":
+            messages.success(
+                self.request,
+                f"Beleg wurde an Paperless übertragen und mit Dokument #{resolution['document_id']} verknüpft.",
+            )
+            return self._update_redirect_response()
+
+        if resolution["status"] == "failure":
+            messages.error(
+                self.request,
+                "Betriebskostenbeleg wurde gespeichert, aber Paperless meldet einen Fehler: "
+                f"{resolution['message'] or 'Upload fehlgeschlagen.'}",
+            )
+            return self._update_redirect_response()
+
+        self.object.paperless_task_id = task_id
+        self.object.save(update_fields=["paperless_task_id"])
+        messages.info(
+            self.request,
+            f"Beleg wurde an Paperless übergeben. Upload läuft noch (Task-ID: {task_id}).",
+        )
+        return self._update_redirect_response()
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        uploaded_file = form.cleaned_data.get("paperless_document")
+        if not uploaded_file:
+            return response
+        return self._handle_paperless_upload(uploaded_file=uploaded_file) or response
+
+
+class BetriebskostenBelegCreateView(BetriebskostenBelegPaperlessMixin, CreateView):
     model = BetriebskostenBeleg
     form_class = BetriebskostenBelegForm
     template_name = "webapp/betriebskostenbeleg_form.html"
@@ -3648,32 +3828,66 @@ class BetriebskostenBelegCreateView(CreateView):
             initial["liegenschaft"] = bhg14_property.pk
         return initial
 
-
-class BetriebskostenBelegUpdateView(UpdateView):
-    model = BetriebskostenBeleg
-    form_class = BetriebskostenBelegForm
-    template_name = "webapp/betriebskostenbeleg_form.html"
-
-    def _get_valid_next_url(self):
-        next_url = self.request.POST.get("next") or self.request.GET.get("next")
-        if not next_url:
-            return None
-        if url_has_allowed_host_and_scheme(
-            url=next_url,
-            allowed_hosts={self.request.get_host()},
-            require_https=self.request.is_secure(),
-        ):
-            return next_url
-        return None
-
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["next_url"] = self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
-        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
+        context["next_url"] = self._get_valid_next_url() or self._default_next_url()
+        context["paperless_status"] = None
         return context
 
     def get_success_url(self):
         return self._get_valid_next_url() or reverse_lazy("betriebskostenbeleg_list")
+
+
+class BetriebskostenBelegUpdateView(BetriebskostenBelegPaperlessMixin, UpdateView):
+    model = BetriebskostenBeleg
+    form_class = BetriebskostenBelegForm
+    template_name = "webapp/betriebskostenbeleg_form.html"
+
+    def get(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        if str(self.object.paperless_task_id or "").strip():
+            try:
+                resolution = _refresh_betriebskostenbeleg_paperless_status(beleg=self.object)
+            except PaperlessSearchError as exc:
+                messages.warning(
+                    request,
+                    f"Paperless-Status konnte nicht geprüft werden: {exc}",
+                )
+            else:
+                if resolution["status"] == "success":
+                    messages.success(
+                        request,
+                        f"Paperless-Upload wurde abgeschlossen. Dokument #{resolution['document_id']} ist jetzt verknüpft.",
+                    )
+                elif resolution["status"] == "failure":
+                    messages.error(
+                        request,
+                        "Paperless meldet einen Fehler für den letzten Upload: "
+                        f"{resolution['message'] or 'Upload fehlgeschlagen.'}",
+                    )
+        context = self.get_context_data(object=self.object)
+        return self.render_to_response(context)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["next_url"] = self._get_valid_next_url() or self._default_next_url()
+        dms_context_panel = build_dms_context_panel_context(self.request, self.object)
+        if dms_context_panel is not None:
+            dms_context_panel.update(
+                _paperless_preview_context(
+                    self.request,
+                    q_liegenschaft=self.object.liegenschaft.name if self.object.liegenschaft else "",
+                    q_source_ref=_betriebskostenbeleg_source_ref(self.object),
+                    tags=[BETRIEBSKOSTEN_PAPERLESS_TAG],
+                    document_type_id=_betriebskostenbeleg_paperless_document_type_id(),
+                )
+            )
+        context["dms_context_panel"] = dms_context_panel
+        context["paperless_status"] = self._paperless_status_context()
+        return context
+
+    def get_success_url(self):
+        return self._get_valid_next_url() or self._default_next_url()
 
 
 class BetriebskostenBelegDeleteView(DeleteView):

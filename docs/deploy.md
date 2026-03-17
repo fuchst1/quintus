@@ -151,6 +151,7 @@ Für die Testseite `Einstellungen -> Paperless DMS (Test)`:
 - `PAPERLESS_API_TOKEN` (API-Token eines Paperless-Benutzers mit Leserechten)
 - `PAPERLESS_TIMEOUT_SECONDS` (Timeout der Suchanfrage in Sekunden, Standard `10`)
 - `PAPERLESS_LEASE_DOCUMENT_TYPE_ID` (optional, Dokumenttyp-ID für Mietverträge; wenn leer, versucht Quintus den Typnamen `Mietvertrag` in Paperless aufzulösen)
+- `PAPERLESS_BK_DOCUMENT_TYPE_ID` (optional, Dokumenttyp-ID für Betriebskostenbelege; wenn leer, versucht Quintus den Typnamen `Rechnung` in Paperless aufzulösen)
 - `PAPERLESS_METER_READING_DOCUMENT_TYPE_ID` (optional, Dokumenttyp-ID für Zählerstand-Bilder, Standard `6`)
 
 Hinweis:

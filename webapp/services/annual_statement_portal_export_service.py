@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import mimetypes
 import os
 import zipfile
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from webapp.services.annual_statement_pdf_service import (
 from webapp.services.annual_statement_run_service import AnnualStatementRunService
 from webapp.services.annual_statement_storage_service import AnnualStatementStorageService
 from webapp.services.files import ALLOWED_MIME_BY_EXTENSION
+from webapp.services.paperless import PaperlessSearchError, PaperlessService
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,9 @@ class PortalAttachment:
 @dataclass(frozen=True)
 class PortalAttachmentSource:
     beleg: BetriebskostenBeleg
-    datei: Datei
+    file_name: str
+    content: bytes
+    fallback_text: str = ""
 
 
 class AnnualStatementPortalExportService:
@@ -59,11 +63,14 @@ class AnnualStatementPortalExportService:
         attachments = self._collect_relevant_attachments()
         attachment_payloads = [
             PortalAttachment(
-                file_name=self._safe_attachment_name(source.datei),
-                content=self._read_file_bytes(source.datei),
+                file_name=source.file_name,
+                content=source.content,
                 date_display=source.beleg.datum.strftime("%d.%m.%Y"),
                 brutto_display=self._format_brutto(source.beleg.brutto),
-                text_display=self._attachment_text(beleg=source.beleg, datei=source.datei),
+                text_display=self._attachment_text(
+                    beleg=source.beleg,
+                    fallback_text=source.fallback_text,
+                ),
             )
             for source in attachments
         ]
@@ -184,22 +191,45 @@ class AnnualStatementPortalExportService:
         )
 
         attachments_by_beleg: dict[int, list[Datei]] = {}
-        seen_ids: set[int] = set()
+        seen_local_file_ids: set[int] = set()
+        seen_paperless_document_ids: set[int] = set()
         for assignment in assignments:
             if assignment.object_id not in beleg_id_set:
                 continue
             datei = assignment.datei
-            if datei is None or datei.pk in seen_ids:
+            if datei is None or datei.pk in seen_local_file_ids:
                 continue
             if not self._is_allowed_attachment(datei):
                 continue
-            seen_ids.add(datei.pk)
+            seen_local_file_ids.add(datei.pk)
             attachments_by_beleg.setdefault(int(assignment.object_id), []).append(datei)
 
         result: list[PortalAttachmentSource] = []
         for beleg in belege:
+            paperless_document_id = int(beleg.paperless_document_id or 0)
+            if paperless_document_id > 0 and paperless_document_id not in seen_paperless_document_ids:
+                file_name, content, fallback_text = self._read_paperless_attachment(
+                    document_id=paperless_document_id
+                )
+                seen_paperless_document_ids.add(paperless_document_id)
+                result.append(
+                    PortalAttachmentSource(
+                        beleg=beleg,
+                        file_name=file_name,
+                        content=content,
+                        fallback_text=fallback_text,
+                    )
+                )
+                continue
             for datei in attachments_by_beleg.get(int(beleg.id), []):
-                result.append(PortalAttachmentSource(beleg=beleg, datei=datei))
+                result.append(
+                    PortalAttachmentSource(
+                        beleg=beleg,
+                        file_name=self._safe_attachment_name(datei),
+                        content=self._read_file_bytes(datei),
+                        fallback_text=str(datei.beschreibung or "").strip(),
+                    )
+                )
         return result
 
     @staticmethod
@@ -217,11 +247,41 @@ class AnnualStatementPortalExportService:
     @staticmethod
     def _safe_attachment_name(datei: Datei) -> str:
         original_name = datei.original_name or os.path.basename(datei.file.name or "")
+        return AnnualStatementPortalExportService._safe_attachment_name_from_values(
+            original_name=original_name,
+            mime_type=datei.mime_type,
+            fallback_stem=f"beleg-{datei.pk}",
+            suffix=str(datei.pk),
+        )
+
+    @staticmethod
+    def _safe_attachment_name_from_values(
+        *,
+        original_name: str,
+        mime_type: str = "",
+        fallback_stem: str,
+        suffix: str,
+    ) -> str:
         extension = Path(original_name).suffix.lower()
         if extension not in ALLOWED_MIME_BY_EXTENSION:
-            extension = ".pdf"
-        base_name = slugify(Path(original_name).stem) or f"beleg-{datei.pk}"
-        return f"{base_name}-{datei.pk}{extension}"
+            normalized_mime_type = str(mime_type or "").strip().lower()
+            for candidate_extension, allowed_mimes in ALLOWED_MIME_BY_EXTENSION.items():
+                if normalized_mime_type in allowed_mimes:
+                    extension = candidate_extension
+                    break
+            else:
+                guessed_extension = mimetypes.guess_extension(normalized_mime_type) or ""
+                guessed_extension = guessed_extension.lower()
+                if guessed_extension in ALLOWED_MIME_BY_EXTENSION:
+                    extension = guessed_extension
+                else:
+                    raise RuntimeError(
+                        f"Dokumentformat wird im BK-Portal nicht unterstützt: "
+                        f"{original_name or fallback_stem}"
+                    )
+
+        base_name = slugify(Path(original_name).stem) or fallback_stem
+        return f"{base_name}-{suffix}{extension}"
 
     @staticmethod
     def _format_brutto(value) -> str:
@@ -229,16 +289,16 @@ class AnnualStatementPortalExportService:
         return f"{display} EUR"
 
     @staticmethod
-    def _attachment_text(*, beleg: BetriebskostenBeleg, datei: Datei) -> str:
+    def _attachment_text(*, beleg: BetriebskostenBeleg, fallback_text: str = "") -> str:
         buchungstext = str(beleg.buchungstext or "").strip()
         if buchungstext:
             return buchungstext
         lieferant = str(beleg.lieferant_name or "").strip()
         if lieferant:
             return lieferant
-        beschreibung = str(datei.beschreibung or "").strip()
-        if beschreibung:
-            return beschreibung
+        normalized_fallback_text = str(fallback_text or "").strip()
+        if normalized_fallback_text:
+            return normalized_fallback_text
         return "—"
 
     @staticmethod
@@ -249,6 +309,28 @@ class AnnualStatementPortalExportService:
         except OSError as exc:
             readable_name = datei.original_name or os.path.basename(datei.file.name or "") or f"Datei #{datei.pk}"
             raise RuntimeError(f"Datei kann nicht gelesen werden: {readable_name}") from exc
+
+    @classmethod
+    def _read_paperless_attachment(
+        cls,
+        *,
+        document_id: int,
+    ) -> tuple[str, bytes, str]:
+        try:
+            content, content_type, filename = PaperlessService.download_document(document_id=document_id)
+        except PaperlessSearchError as exc:
+            raise RuntimeError(
+                f"Paperless-Dokument kann nicht geladen werden: #{document_id} ({exc})"
+            ) from exc
+
+        safe_name = cls._safe_attachment_name_from_values(
+            original_name=filename,
+            mime_type=content_type,
+            fallback_stem=f"paperless-{document_id}",
+            suffix=str(document_id),
+        )
+        fallback_text = str(filename or "").strip()
+        return safe_name, content, fallback_text
 
     @staticmethod
     def _root_index_html() -> str:
