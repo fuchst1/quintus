@@ -124,6 +124,8 @@
                 <h5 class="mb-3">Dokument hochladen</h5>
                 <form method="post" enctype="multipart/form-data" class="row g-3">
                     {% csrf_token %}
+                    {{ upload_form.q_source_ref }}
+                    {{ upload_form.created }}
                     <div class="col-12">
                         <label for="{{ upload_form.file.id_for_label }}" class="form-label">Datei</label>
                         {{ upload_form.file }}

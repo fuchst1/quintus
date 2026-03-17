@@ -21,6 +21,94 @@
                 </form>
             </div>
         </div>
+
+        {% if object and paperless_photo_panel and paperless_photo_upload_form %}
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                    <div>
+                        <h5 class="mb-1">{{ paperless_photo_panel.title }}</h5>
+                        <div class="text-muted small">{{ paperless_photo_panel.description }}</div>
+                    </div>
+                    {% if paperless_photo_panel.current_document.download_url %}
+                    <a href="{{ paperless_photo_panel.current_document.download_url }}" class="btn btn-outline-primary">
+                        Download
+                    </a>
+                    {% endif %}
+                </div>
+
+                {% if paperless_photo_panel.error_message %}
+                <div class="alert alert-danger mb-3">{{ paperless_photo_panel.error_message }}</div>
+                {% elif paperless_photo_panel.current_document %}
+                <div class="row g-3 align-items-start mb-4">
+                    <div class="col-12 col-lg-5">
+                        <a href="{{ paperless_photo_panel.current_document.download_url }}" class="d-block text-decoration-none">
+                            <img
+                                src="{{ paperless_photo_panel.current_document.preview_url }}"
+                                alt="{{ paperless_photo_panel.current_document.title }}"
+                                class="img-fluid rounded border"
+                            >
+                        </a>
+                    </div>
+                    <div class="col-12 col-lg-7">
+                        <div class="fw-semibold">{{ paperless_photo_panel.current_document.title }}</div>
+                        <div class="text-muted small mb-3">
+                            {{ paperless_photo_panel.current_document.created }}
+                            {% if paperless_photo_panel.current_document.document_type and paperless_photo_panel.current_document.document_type != "-" %}
+                                · {{ paperless_photo_panel.current_document.document_type }}
+                            {% endif %}
+                        </div>
+                        <div class="small text-muted mb-3">
+                            Bei erneutem Upload bleibt die Verknüpfung bestehen. Quintus zeigt automatisch immer das neueste Foto dieser Ablesung an.
+                        </div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <a href="{{ paperless_photo_panel.current_document.download_url }}" class="btn btn-outline-primary btn-sm">Datei öffnen</a>
+                            <a href="{{ dms_context_panel.open_url }}" class="btn btn-light btn-sm" target="_blank" rel="noopener noreferrer">Im DMS öffnen</a>
+                        </div>
+                    </div>
+                </div>
+                {% elif paperless_photo_panel.empty_message %}
+                <div class="text-muted mb-4">{{ paperless_photo_panel.empty_message }}</div>
+                {% endif %}
+
+                <form method="post" enctype="multipart/form-data" class="row g-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="paperless_photo_upload" value="1">
+                    {{ paperless_photo_upload_form.q_liegenschaft }}
+                    {{ paperless_photo_upload_form.q_einheit }}
+                    {{ paperless_photo_upload_form.q_source_ref }}
+                    {{ paperless_photo_upload_form.created }}
+                    <div class="col-12">
+                        <label for="{{ paperless_photo_upload_form.file.id_for_label }}" class="form-label">Foto</label>
+                        {{ paperless_photo_upload_form.file }}
+                        {% if paperless_photo_upload_form.file.errors %}
+                        <div class="invalid-feedback d-block">{{ paperless_photo_upload_form.file.errors|striptags }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label for="{{ paperless_photo_upload_form.title.id_for_label }}" class="form-label">Titel</label>
+                        {{ paperless_photo_upload_form.title }}
+                        {% if paperless_photo_upload_form.title.errors %}
+                        <div class="invalid-feedback d-block">{{ paperless_photo_upload_form.title.errors|striptags }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-6">
+                        <label for="{{ paperless_photo_upload_form.description.id_for_label }}" class="form-label">Beschreibung</label>
+                        {{ paperless_photo_upload_form.description }}
+                        {% if paperless_photo_upload_form.description.help_text %}
+                        <div class="form-text">{{ paperless_photo_upload_form.description.help_text }}</div>
+                        {% endif %}
+                        {% if paperless_photo_upload_form.description.errors %}
+                        <div class="invalid-feedback d-block">{{ paperless_photo_upload_form.description.errors|striptags }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="col-12 d-flex justify-content-end">
+                        <button type="submit" class="btn btn-primary">Foto an Paperless senden</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        {% endif %}
     </div>
     {% if dms_context_panel %}
         <div class="col-12 col-xl-5">

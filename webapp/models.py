@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import mimetypes
 import os
+import uuid
 
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -1638,6 +1639,13 @@ class MeterReading(models.Model):
         verbose_name=_("Wert / Zählerstand"),
     )
     note = models.TextField(blank=True, null=True, verbose_name=_("Notiz"))
+    source_uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        db_index=True,
+        verbose_name=_("Quellreferenz"),
+    )
 
     class Meta:
         verbose_name = _("Zählerstand")

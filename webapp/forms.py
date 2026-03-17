@@ -757,6 +757,18 @@ class PaperlessUploadForm(forms.Form):
         label="Mieter",
         widget=forms.TextInput(attrs={"class": "form-control", "list": "paperlessMieterList"}),
     )
+    q_source_ref = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Quellreferenz",
+        widget=forms.HiddenInput(),
+    )
+    created = forms.DateField(
+        required=False,
+        label="Dokumentdatum",
+        widget=forms.HiddenInput(),
+        input_formats=["%Y-%m-%d"],
+    )
     tags = forms.MultipleChoiceField(
         required=False,
         label="Tags",
@@ -767,6 +779,45 @@ class PaperlessUploadForm(forms.Form):
     def __init__(self, *args, tag_choices: list[tuple[str, str]] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["tags"].choices = tag_choices or []
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data["file"]
+        file_size = getattr(uploaded_file, "size", 0) or 0
+        if file_size <= 0:
+            raise ValidationError("Bitte eine gültige Datei auswählen.")
+        if file_size > self.max_file_size_bytes:
+            raise ValidationError("Die Datei ist zu groß. Maximal erlaubt sind 25 MB.")
+        return uploaded_file
+
+
+class MeterReadingPaperlessPhotoUploadForm(forms.Form):
+    max_file_size_bytes = PaperlessUploadForm.max_file_size_bytes
+
+    file = forms.FileField(
+        label="Foto",
+        widget=forms.ClearableFileInput(attrs={"class": "form-control", "accept": ".jpg,.jpeg,.png,image/jpeg,image/png"}),
+    )
+    title = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Titel",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    description = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Beschreibung",
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+        help_text="Wird beim Upload als Notiz in Paperless gespeichert.",
+    )
+    q_liegenschaft = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
+    q_einheit = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
+    q_source_ref = forms.CharField(required=False, max_length=255, widget=forms.HiddenInput())
+    created = forms.DateField(
+        required=False,
+        widget=forms.HiddenInput(),
+        input_formats=["%Y-%m-%d"],
+    )
 
     def clean_file(self):
         uploaded_file = self.cleaned_data["file"]

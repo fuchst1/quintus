@@ -10,7 +10,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Q
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -183,15 +183,17 @@ class VpiAdjustmentRunService:
         highest_reserved = 0
         reserved_runs = (
             VpiAdjustmentRun.objects.filter(brief_nummer_start__isnull=False)
-            .annotate(letter_count=Count("letters"))
+            .annotate(actionable_letter_count=Count("letters", filter=Q(letters__skip_reason="")))
             .only("brief_nummer_start")
         )
         for run in reserved_runs:
             start_number = int(run.brief_nummer_start or 0)
             if start_number <= 0:
                 continue
-            count = int(run.letter_count or 0)
-            reserved_end = start_number + max(count, 1) - 1
+            count = int(run.actionable_letter_count or 0)
+            if count <= 0:
+                continue
+            reserved_end = start_number + count - 1
             if reserved_end > highest_reserved:
                 highest_reserved = reserved_end
         return max(highest_assigned, highest_reserved) + 1
@@ -345,6 +347,23 @@ class VpiAdjustmentRunService:
                 "skip_reason": "Kein Erhöhungsfaktor (neuer Index nicht höher).",
             }
 
+        if delta_hmz_net <= ZERO:
+            return {
+                "unit": lease.unit,
+                "effective_date": effective_date,
+                "old_index_value": old_index_value,
+                "new_index_value": self.new_index_value,
+                "factor": factor,
+                "old_hmz_net": old_hmz_net,
+                "new_hmz_net": new_hmz_net,
+                "delta_hmz_net": delta_hmz_net,
+                "catchup_months": 0,
+                "catchup_net_total": ZERO,
+                "catchup_tax_percent": tax_percent,
+                "catchup_gross_total": ZERO,
+                "skip_reason": "Keine HMZ-Erhöhung (berechneter HMZ bleibt unverändert).",
+            }
+
         catchup = self._catchup_metrics(
             lease=lease,
             effective_date=effective_date,
@@ -367,6 +386,20 @@ class VpiAdjustmentRunService:
             "skip_reason": "",
         }
 
+    @staticmethod
+    def _is_actionable_letter(*, letter: VpiAdjustmentLetter) -> bool:
+        return not (letter.skip_reason or "").strip()
+
+    @classmethod
+    def _reset_skipped_letter_state(cls, *, letter: VpiAdjustmentLetter) -> None:
+        if cls._is_actionable_letter(letter=letter):
+            return
+        if letter.pdf_datei_id:
+            VpiAdjustmentStorageService._archive_existing_pdf(letter)
+        if letter.laufende_nummer is not None:
+            letter.laufende_nummer = None
+            letter.save(update_fields=["laufende_nummer", "updated_at"])
+
     def ensure_letters(self) -> list[VpiAdjustmentLetter]:
         active_letter_ids: list[int] = []
         for lease in self._leasedue_candidates():
@@ -379,6 +412,7 @@ class VpiAdjustmentRunService:
                 lease=lease,
                 defaults=snapshot,
             )
+            self._reset_skipped_letter_state(letter=letter)
             active_letter_ids.append(letter.id)
 
         stale_letters = self.run.letters.exclude(id__in=active_letter_ids).select_related("pdf_datei")
@@ -408,11 +442,21 @@ class VpiAdjustmentRunService:
             return False, "Bitte zuerst die Briefe erzeugen, bevor die Anpassung angewendet wird."
         return True, ""
 
-    @staticmethod
-    def _sequence_numbers_for_letters(*, letters: list[VpiAdjustmentLetter], start_number: int) -> dict[int, int]:
+    @classmethod
+    def _sequence_numbers_for_letters(
+        cls,
+        *,
+        letters: list[VpiAdjustmentLetter],
+        start_number: int,
+    ) -> dict[int, int]:
+        actionable_letters = [
+            letter
+            for letter in letters
+            if cls._is_actionable_letter(letter=letter)
+        ]
         return {
             letter.id: start_number + index
-            for index, letter in enumerate(letters)
+            for index, letter in enumerate(actionable_letters)
         }
 
     def _greeting(self, *, letter: VpiAdjustmentLetter) -> str:
@@ -485,7 +529,7 @@ class VpiAdjustmentRunService:
         letter: VpiAdjustmentLetter,
         sequence_number: int | None = None,
     ) -> dict[str, object]:
-        if sequence_number is None:
+        if sequence_number is None and self._is_actionable_letter(letter=letter):
             sequence_number = letter.laufende_nummer
 
         lease = letter.lease
@@ -741,12 +785,13 @@ class VpiAdjustmentRunService:
         with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
             for letter in letters:
                 sequence_number = sequence_numbers.get(letter.id)
+                if not self._is_actionable_letter(letter=letter):
+                    self._reset_skipped_letter_state(letter=letter)
+                    continue
+
                 if sequence_number and letter.laufende_nummer != sequence_number:
                     letter.laufende_nummer = sequence_number
                     letter.save(update_fields=["laufende_nummer", "updated_at"])
-
-                if (letter.skip_reason or "").strip():
-                    continue
 
                 payload = self.payload_for_letter(letter=letter, sequence_number=sequence_number)
                 filename = self.build_letter_filename(letter=letter, sequence_number=sequence_number)

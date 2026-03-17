@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from itertools import combinations
 from urllib.parse import urlencode
+from uuid import UUID
 
 from django.conf import settings
 from django.contrib import messages
@@ -50,6 +51,7 @@ from .forms import (
     LeaseAgreementForm,
     MeterForm,
     MeterReadingForm,
+    MeterReadingPaperlessPhotoUploadForm,
     PaperlessUploadForm,
     PropertyForm,
     PropertyOwnershipFormSet,
@@ -141,6 +143,46 @@ def _lease_paperless_document_type_id() -> int | None:
     return PaperlessService.document_type_id_by_name("Mietvertrag")
 
 
+def _lease_paperless_document_filter() -> dict[str, object]:
+    lease_document_type_id = _lease_paperless_document_type_id()
+    document_type_ids: list[int] = []
+    document_type_labels: list[str] = []
+
+    if lease_document_type_id is not None:
+        document_type_ids.append(lease_document_type_id)
+        document_type_labels.append("Mietvertrag")
+
+    billing_document_type_id = PaperlessService.document_type_id_by_name("Vorschreibung")
+    if billing_document_type_id is not None and billing_document_type_id not in document_type_ids:
+        document_type_ids.append(billing_document_type_id)
+        document_type_labels.append("Vorschreibung")
+
+    return {
+        "document_type_id": document_type_ids,
+        "document_type_label": ", ".join(document_type_labels),
+        "document_type_filter_label": (
+            "Dokumenttypen" if len(document_type_labels) > 1 else "Dokumenttyp"
+        ),
+        "upload_document_type_id": lease_document_type_id,
+    }
+
+
+def _meter_reading_paperless_document_type_id() -> int | None:
+    configured_document_type_id = PaperlessService._to_int(
+        getattr(settings, "PAPERLESS_METER_READING_DOCUMENT_TYPE_ID", 6)
+    )
+    if configured_document_type_id is not None:
+        return configured_document_type_id
+    return PaperlessService.document_type_id_by_name("Zählerstand")
+
+
+def _meterreading_source_ref(reading: MeterReading) -> str:
+    source_uuid = getattr(reading, "source_uuid", None)
+    if not source_uuid:
+        return ""
+    return f"meterreading:{source_uuid}"
+
+
 def build_paperless_source_context(*, source_model: str | None, source_id: str | int | None):
     normalized_model = str(source_model or "").strip().lower()
     if not normalized_model or source_id in {None, ""}:
@@ -183,14 +225,16 @@ def build_paperless_source_context(*, source_model: str | None, source_id: str |
         if lease is None:
             return None
         tenant_names = _lease_tenant_names(lease)
-        lease_document_type_id = _lease_paperless_document_type_id()
+        lease_document_filter = _lease_paperless_document_filter()
         search_defaults = {
             "q_liegenschaft": "",
             "q_einheit": lease.unit.name if lease.unit else "",
             "q_mieter": tenant_names,
             "tags": [],
-            "document_type_id": lease_document_type_id,
-            "document_type_label": "Mietvertrag" if lease_document_type_id is not None else "",
+            "document_type_id": lease_document_filter["document_type_id"],
+            "document_type_label": lease_document_filter["document_type_label"],
+            "document_type_filter_label": lease_document_filter["document_type_filter_label"],
+            "upload_document_type_id": lease_document_filter["upload_document_type_id"],
         }
         source_label = f"Mietverhältnis {lease.unit.name if lease.unit else '—'}"
         if tenant_names:
@@ -208,23 +252,32 @@ def build_paperless_source_context(*, source_model: str | None, source_id: str |
         }
         source_label = f"Mieter {tenant_name or tenant.pk}"
     elif normalized_model == "meterreading":
-        reading = MeterReading.objects.select_related("meter", "meter__property").filter(pk=object_id).first()
+        reading = (
+            MeterReading.objects.select_related("meter", "meter__property", "meter__unit")
+            .filter(pk=object_id)
+            .first()
+        )
         if reading is None:
             return None
-        meter_reading_document_type_id = PaperlessService._to_int(
-            getattr(settings, "PAPERLESS_METER_READING_DOCUMENT_TYPE_ID", 6)
-        )
+        meter_reading_document_type_id = _meter_reading_paperless_document_type_id()
         search_defaults = {
             "q_liegenschaft": (
                 reading.meter.property.name
                 if reading.meter and reading.meter.property
                 else ""
             ),
-            "q_einheit": "",
+            "q_einheit": (
+                reading.meter.unit.name
+                if reading.meter and reading.meter.unit
+                else ""
+            ),
             "q_mieter": "",
+            "q_source_ref": _meterreading_source_ref(reading),
+            "created": reading.date.isoformat(),
             "tags": [],
             "document_type_id": meter_reading_document_type_id,
             "document_type_label": "Zählerstand" if meter_reading_document_type_id is not None else "",
+            "upload_document_type_id": meter_reading_document_type_id,
         }
         source_label = f"Zählerstand {reading.date:%d.%m.%Y}"
     elif normalized_model == "betriebskostenbeleg":
@@ -245,7 +298,10 @@ def build_paperless_source_context(*, source_model: str | None, source_id: str |
         {"label": "Liegenschaft", "value": search_defaults["q_liegenschaft"]},
         {"label": "Einheit", "value": search_defaults["q_einheit"]},
         {"label": "Mieter", "value": search_defaults["q_mieter"]},
-        {"label": "Dokumenttyp", "value": search_defaults.get("document_type_label", "")},
+        {
+            "label": search_defaults.get("document_type_filter_label", "Dokumenttyp"),
+            "value": search_defaults.get("document_type_label", ""),
+        },
     ]
     filters = [item for item in filters if str(item["value"] or "").strip()]
 
@@ -271,6 +327,7 @@ def build_dms_context_panel_context(request, target_object):
         q_liegenschaft=search_defaults.get("q_liegenschaft", ""),
         q_einheit=search_defaults.get("q_einheit", ""),
         q_mieter=search_defaults.get("q_mieter", ""),
+        q_source_ref=search_defaults.get("q_source_ref", ""),
         document_type_id=search_defaults.get("document_type_id"),
         sort="created",
         reverse=True,
@@ -308,9 +365,110 @@ def _paperless_document_download_url(*, request, document_id: object) -> str:
     )
 
 
-def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]:
-    unit_name = str(unit.name or "").strip()
-    if not unit_name or not PaperlessService.is_configured():
+def _paperless_document_preview_url(*, request, document_id: object) -> str:
+    document_id_text = str(document_id or "").strip()
+    if not document_id_text.isdigit():
+        return ""
+    return "{}?{}".format(
+        reverse(
+            "paperless_document_preview",
+            kwargs={"document_id": int(document_id_text)},
+        ),
+        urlencode({"next": request.get_full_path()}),
+    )
+
+
+def _paperless_document_id(document: dict[str, object]) -> int:
+    document_id_text = str(document.get("id") or "").strip()
+    if document_id_text.isdigit():
+        return int(document_id_text)
+    return -1
+
+
+def _paperless_document_with_links(request, document: dict[str, object]) -> dict[str, object]:
+    return {
+        **document,
+        "download_url": _paperless_document_download_url(
+            request=request,
+            document_id=document.get("id"),
+        ),
+        "preview_url": _paperless_document_preview_url(
+            request=request,
+            document_id=document.get("id"),
+        ),
+    }
+
+
+def _paperless_document_type_filter_value(document_type_id: object | None) -> int | list[int] | None:
+    normalized_document_type_ids = PaperlessService._normalize_document_type_ids(document_type_id)
+    if not normalized_document_type_ids:
+        return None
+    if len(normalized_document_type_ids) == 1:
+        return normalized_document_type_ids[0]
+    return normalized_document_type_ids
+
+
+def _latest_paperless_document(documents: list[dict[str, object]]) -> dict[str, object] | None:
+    latest_document: dict[str, object] | None = None
+    latest_document_id = -1
+    for document in documents:
+        document_id = _paperless_document_id(document)
+        if latest_document is None or document_id > latest_document_id:
+            latest_document = document
+            latest_document_id = document_id
+    return latest_document
+
+
+def _document_has_any_tag(document: dict[str, object], excluded_tags: list[str] | None) -> bool:
+    normalized_excluded_tags = {
+        str(tag or "").strip().casefold()
+        for tag in excluded_tags or []
+        if str(tag or "").strip()
+    }
+    if not normalized_excluded_tags:
+        return False
+
+    raw_tags = str(document.get("tags") or "").strip()
+    if not raw_tags or raw_tags == "-":
+        return False
+
+    document_tags = {
+        tag.strip().casefold()
+        for tag in raw_tags.split(",")
+        if tag.strip()
+    }
+    return bool(document_tags & normalized_excluded_tags)
+
+
+def _paperless_preview_context(
+    request,
+    *,
+    q_liegenschaft: str = "",
+    q_einheit: str = "",
+    q_mieter: str = "",
+    q_source_ref: str = "",
+    document_type_id: object | None = None,
+    excluded_tags: list[str] | None = None,
+) -> dict[str, object]:
+    normalized_q_liegenschaft = str(q_liegenschaft or "").strip()
+    normalized_q_einheit = str(q_einheit or "").strip()
+    normalized_q_mieter = str(q_mieter or "").strip()
+    normalized_q_source_ref = str(q_source_ref or "").strip()
+    normalized_document_type_ids = PaperlessService._normalize_document_type_ids(document_type_id)
+    normalized_document_type_filter = _paperless_document_type_filter_value(document_type_id)
+    preview_limit = 10
+    search_limit = 50 if normalized_q_source_ref else preview_limit
+    if excluded_tags:
+        search_limit = max(search_limit, preview_limit * 5)
+    if not any(
+        [
+            normalized_q_liegenschaft,
+            normalized_q_einheit,
+            normalized_q_mieter,
+            normalized_q_source_ref,
+            normalized_document_type_ids,
+        ]
+    ) or not PaperlessService.is_configured():
         return {
             "preview_documents": [],
             "preview_error_message": "",
@@ -320,12 +478,13 @@ def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]
     try:
         documents = PaperlessService.search_documents(
             query="",
-            q_liegenschaft="",
-            q_einheit=unit_name,
-            q_mieter="",
+            q_liegenschaft=normalized_q_liegenschaft,
+            q_einheit=normalized_q_einheit,
+            q_mieter=normalized_q_mieter,
+            q_source_ref=normalized_q_source_ref,
             tags=[],
-            document_type_id=None,
-            limit=10,
+            document_type_id=normalized_document_type_filter,
+            limit=search_limit,
             sort="created",
             reverse=True,
         )
@@ -337,16 +496,17 @@ def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]
         }
 
     preview_documents: list[dict[str, object]] = []
-    for document in documents:
-        preview_documents.append(
-            {
-                **document,
-                "download_url": _paperless_document_download_url(
-                    request=request,
-                    document_id=document.get("id"),
-                ),
-            }
-        )
+    if normalized_q_source_ref:
+        latest_document = _latest_paperless_document(documents)
+        if latest_document is not None:
+            preview_documents.append(_paperless_document_with_links(request, latest_document))
+    else:
+        for document in documents:
+            if _document_has_any_tag(document, excluded_tags):
+                continue
+            preview_documents.append(_paperless_document_with_links(request, document))
+            if len(preview_documents) >= preview_limit:
+                break
 
     return {
         "preview_documents": preview_documents,
@@ -355,6 +515,148 @@ def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]
             ""
             if preview_documents
             else "Keine passenden Dokumente in Paperless gefunden."
+        ),
+    }
+
+
+def _property_paperless_preview_context(request, *, property_obj: Property) -> dict[str, object]:
+    return _paperless_preview_context(
+        request,
+        q_liegenschaft=property_obj.name,
+        excluded_tags=["Betriebskostenbeleg"],
+    )
+
+
+def _tenant_paperless_preview_context(request, *, tenant: Tenant) -> dict[str, object]:
+    return _paperless_preview_context(
+        request,
+        q_mieter=_tenant_full_name(tenant),
+    )
+
+
+def _lease_paperless_preview_context(request, *, lease: LeaseAgreement) -> dict[str, object]:
+    lease_document_filter = _lease_paperless_document_filter()
+    return _paperless_preview_context(
+        request,
+        q_einheit=lease.unit.name if lease.unit else "",
+        q_mieter=_lease_tenant_names(lease),
+        document_type_id=lease_document_filter["document_type_id"],
+    )
+
+
+def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]:
+    return _paperless_preview_context(
+        request,
+        q_einheit=unit.name,
+    )
+
+
+def _meterreading_photo_panel_context(request, *, reading: MeterReading) -> dict[str, object]:
+    preview_context = _paperless_preview_context(
+        request,
+        q_source_ref=_meterreading_source_ref(reading),
+        document_type_id=_meter_reading_paperless_document_type_id(),
+    )
+    preview_documents = list(preview_context.get("preview_documents", []))
+    current_document = preview_documents[0] if preview_documents else None
+    return {
+        "title": "Zählerfoto in Paperless",
+        "description": "Neue Zählerfotos werden direkt in Paperless gespeichert und mit dieser Ablesung verknüpft.",
+        "current_document": current_document,
+        "error_message": str(preview_context.get("preview_error_message") or ""),
+        "empty_message": (
+            ""
+            if current_document or preview_context.get("preview_error_message")
+            else "Noch kein Zählerfoto in Paperless verknüpft."
+        ),
+    }
+
+
+def _unit_paperless_photo_gallery_context(request, *, unit: Unit) -> dict[str, object]:
+    if not PaperlessService.is_configured():
+        return {
+            "documents": [],
+            "error_message": "",
+            "empty_message": "",
+        }
+
+    document_type_id = _meter_reading_paperless_document_type_id()
+    try:
+        documents = PaperlessService.search_documents(
+            query="",
+            q_liegenschaft=unit.property.name if unit.property else "",
+            q_einheit=unit.name,
+            q_mieter="",
+            q_source_ref="",
+            tags=[],
+            document_type_id=document_type_id,
+            limit=200,
+            sort="created",
+            reverse=True,
+        )
+    except PaperlessSearchError as exc:
+        return {
+            "documents": [],
+            "error_message": str(exc),
+            "empty_message": "",
+        }
+
+    latest_document_by_source_ref: dict[str, dict[str, object]] = {}
+    for document in documents:
+        source_ref = str(document.get("q_source_ref") or "").strip()
+        if not source_ref.startswith("meterreading:"):
+            continue
+        existing_document = latest_document_by_source_ref.get(source_ref)
+        if existing_document is None or _paperless_document_id(document) > _paperless_document_id(existing_document):
+            latest_document_by_source_ref[source_ref] = document
+
+    source_uuid_to_document: dict[UUID, dict[str, object]] = {}
+    for source_ref, document in latest_document_by_source_ref.items():
+        source_uuid_text = source_ref.partition(":")[2].strip()
+        try:
+            source_uuid = UUID(source_uuid_text)
+        except (TypeError, ValueError):
+            continue
+        source_uuid_to_document[source_uuid] = document
+
+    readings_by_source_uuid = {
+        reading.source_uuid: reading
+        for reading in (
+            MeterReading.objects.select_related("meter")
+            .filter(meter__unit=unit, source_uuid__in=list(source_uuid_to_document.keys()))
+        )
+    }
+
+    prepared_documents: list[dict[str, object]] = []
+    for source_uuid, document in source_uuid_to_document.items():
+        reading = readings_by_source_uuid.get(source_uuid)
+        if reading is None or reading.meter is None:
+            continue
+        prepared_documents.append(
+            {
+                **_paperless_document_with_links(request, document),
+                "meter_label": str(reading.meter or ""),
+                "reading_date_display": reading.date.strftime("%d.%m.%Y"),
+                "value_display": f"{reading.value} {reading.meter.get_unit_of_measure_display()}",
+                "meter_reading_url": reverse("meter_reading_update", kwargs={"pk": reading.pk}),
+            }
+        )
+
+    prepared_documents.sort(
+        key=lambda document: (
+            str(document.get("created") or ""),
+            _paperless_document_id(document),
+        ),
+        reverse=True,
+    )
+    prepared_documents = prepared_documents[:12]
+    return {
+        "documents": prepared_documents,
+        "error_message": "",
+        "empty_message": (
+            ""
+            if prepared_documents
+            else "Keine Zählerfotos in Paperless gefunden."
         ),
     }
 
@@ -783,7 +1085,15 @@ class PropertyDetailView(DetailView):
         context["unit_count"] = len(units)
         context["rented_unit_count"] = rented_unit_count
         context["vacant_unit_count"] = max(len(units) - rented_unit_count, 0)
-        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
+        dms_context_panel = build_dms_context_panel_context(self.request, self.object)
+        if dms_context_panel is not None:
+            dms_context_panel.update(
+                _property_paperless_preview_context(
+                    self.request,
+                    property_obj=self.object,
+                )
+            )
+        context["dms_context_panel"] = dms_context_panel
         return context
 
 
@@ -972,8 +1282,11 @@ class PaperlessSearchView(TemplateView):
             "q_liegenschaft": value_or_default("q_liegenschaft"),
             "q_einheit": value_or_default("q_einheit"),
             "q_mieter": value_or_default("q_mieter"),
+            "q_source_ref": value_or_default("q_source_ref"),
+            "created": value_or_default("created"),
             "tags": selected_tags,
             "document_type_id": defaults.get("document_type_id"),
+            "upload_document_type_id": defaults.get("upload_document_type_id"),
         }
 
     def _build_upload_form(
@@ -990,6 +1303,8 @@ class PaperlessSearchView(TemplateView):
             "q_liegenschaft": filters.get("q_liegenschaft", ""),
             "q_einheit": filters.get("q_einheit", ""),
             "q_mieter": filters.get("q_mieter", ""),
+            "q_source_ref": filters.get("q_source_ref", ""),
+            "created": filters.get("created", ""),
             "tags": filters.get("tags", []),
         }
         return PaperlessUploadForm(tag_choices=tag_choices, initial=initial)
@@ -1001,8 +1316,14 @@ class PaperlessSearchView(TemplateView):
         search_q_liegenschaft = str(filters["q_liegenschaft"])
         search_q_einheit = str(filters["q_einheit"])
         search_q_mieter = str(filters["q_mieter"])
+        search_q_source_ref = str(filters["q_source_ref"])
         search_tags = list(filters["tags"])
-        search_document_type_id = PaperlessService._to_int(filters.get("document_type_id"))
+        search_document_type_ids = PaperlessService._normalize_document_type_ids(
+            filters.get("document_type_id")
+        )
+        search_document_type_filter = _paperless_document_type_filter_value(
+            filters.get("document_type_id")
+        )
         documents: list[dict[str, object]] = []
         error_message = ""
         search_info_message = ""
@@ -1014,8 +1335,9 @@ class PaperlessSearchView(TemplateView):
             or search_q_liegenschaft
             or search_q_einheit
             or search_q_mieter
+            or search_q_source_ref
             or search_tags
-            or search_document_type_id is not None
+            or search_document_type_ids
         )
         if search_requested:
             if not is_paperless_configured:
@@ -1030,8 +1352,9 @@ class PaperlessSearchView(TemplateView):
                         q_liegenschaft=search_q_liegenschaft,
                         q_einheit=search_q_einheit,
                         q_mieter=search_q_mieter,
+                        q_source_ref=search_q_source_ref,
                         tags=search_tags,
-                        document_type_id=search_document_type_id,
+                        document_type_id=search_document_type_filter,
                     )
                 except PaperlessSearchError as exc:
                     error_message = str(exc)
@@ -1075,6 +1398,8 @@ class PaperlessSearchView(TemplateView):
         context["search_q_liegenschaft"] = search_q_liegenschaft
         context["search_q_einheit"] = search_q_einheit
         context["search_q_mieter"] = search_q_mieter
+        context["search_q_source_ref"] = search_q_source_ref
+        context["search_created"] = str(filters["created"])
         context["search_tags"] = search_tags
         context["search_requested"] = search_requested
         context["documents"] = documents
@@ -1109,6 +1434,13 @@ class PaperlessSearchView(TemplateView):
             return self.render_to_response(self.get_context_data(upload_form=upload_form))
 
         cleaned_data = upload_form.cleaned_data
+        upload_document_type_ids = PaperlessService._normalize_document_type_ids(
+            filters.get("upload_document_type_id")
+        )
+        if not upload_document_type_ids:
+            upload_document_type_ids = PaperlessService._normalize_document_type_ids(
+                filters.get("document_type_id")
+            )
         try:
             task_id = PaperlessService.upload_document(
                 uploaded_file=cleaned_data["file"],
@@ -1117,7 +1449,10 @@ class PaperlessSearchView(TemplateView):
                 q_liegenschaft=cleaned_data.get("q_liegenschaft", ""),
                 q_einheit=cleaned_data.get("q_einheit", ""),
                 q_mieter=cleaned_data.get("q_mieter", ""),
+                q_source_ref=cleaned_data.get("q_source_ref", ""),
                 tags=cleaned_data.get("tags", []),
+                document_type_id=upload_document_type_ids[0] if upload_document_type_ids else None,
+                created=cleaned_data.get("created"),
             )
         except PaperlessSearchError as exc:
             messages.error(request, str(exc))
@@ -1150,6 +1485,25 @@ class PaperlessDocumentDownloadView(View):
         return response
 
 
+class PaperlessDocumentPreviewView(View):
+    http_method_names = ["get"]
+
+    def get(self, request, *args, **kwargs):
+        document_id = int(kwargs["document_id"])
+        try:
+            content, content_type, _filename = PaperlessService.download_document(document_id=document_id)
+        except PaperlessSearchError as exc:
+            raise Http404(str(exc)) from None
+
+        normalized_content_type = str(content_type or "").strip().lower()
+        if not normalized_content_type.startswith("image/"):
+            raise Http404("Für dieses Paperless-Dokument ist keine Bildvorschau verfügbar.")
+
+        response = HttpResponse(content, content_type=normalized_content_type)
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
 class TenantListView(ListView):
     model = Tenant
     template_name = "webapp/tenant_list.html"
@@ -1171,7 +1525,15 @@ class TenantUpdateView(UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
+        dms_context_panel = build_dms_context_panel_context(self.request, self.object)
+        if dms_context_panel is not None:
+            dms_context_panel.update(
+                _tenant_paperless_preview_context(
+                    self.request,
+                    tenant=self.object,
+                )
+            )
+        context["dms_context_panel"] = dms_context_panel
         return context
 
 
@@ -1372,7 +1734,15 @@ class LeaseAgreementDetailView(DetailView):
         reminder_service = ReminderService(today=timezone.localdate())
         reminder_items = reminder_service.collect_items()
         context["lease_reminder_items"] = reminder_service.items_by_lease(reminder_items).get(self.object.pk, [])
-        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
+        dms_context_panel = build_dms_context_panel_context(self.request, self.object)
+        if dms_context_panel is not None:
+            dms_context_panel.update(
+                _lease_paperless_preview_context(
+                    self.request,
+                    lease=self.object,
+                )
+            )
+        context["dms_context_panel"] = dms_context_panel
         context["can_generate_history_package"] = self.object.status == LeaseAgreement.Status.BEENDET
         return context
 
@@ -1563,10 +1933,90 @@ class MeterReadingUpdateView(UpdateView):
     form_class = MeterReadingForm
     template_name = "webapp/meter_reading_form.html"
 
+    def _photo_upload_initial(self) -> dict[str, object]:
+        return {
+            "q_liegenschaft": (
+                self.object.meter.property.name
+                if self.object.meter and self.object.meter.property
+                else ""
+            ),
+            "q_einheit": (
+                self.object.meter.unit.name
+                if self.object.meter and self.object.meter.unit
+                else ""
+            ),
+            "q_source_ref": _meterreading_source_ref(self.object),
+            "created": self.object.date.isoformat(),
+        }
+
+    def _paperless_photo_upload_form(self, *, data=None, files=None):
+        if data is not None:
+            return MeterReadingPaperlessPhotoUploadForm(data, files)
+        return MeterReadingPaperlessPhotoUploadForm(initial=self._photo_upload_initial())
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["dms_context_panel"] = build_dms_context_panel_context(self.request, self.object)
+        dms_context_panel = build_dms_context_panel_context(self.request, self.object)
+        if dms_context_panel is not None:
+            dms_context_panel.update(
+                _paperless_preview_context(
+                    self.request,
+                    q_source_ref=_meterreading_source_ref(self.object),
+                    document_type_id=_meter_reading_paperless_document_type_id(),
+                )
+            )
+        context["dms_context_panel"] = dms_context_panel
+        context["paperless_photo_panel"] = _meterreading_photo_panel_context(
+            self.request,
+            reading=self.object,
+        )
+        context["paperless_photo_upload_form"] = (
+            kwargs.get("paperless_photo_upload_form")
+            or self._paperless_photo_upload_form()
+        )
         return context
+
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        if "paperless_photo_upload" in request.POST:
+            upload_form = self._paperless_photo_upload_form(data=request.POST, files=request.FILES)
+            if not upload_form.is_valid():
+                messages.error(request, "Bitte prüfen Sie die Upload-Eingaben.")
+                return self.render_to_response(
+                    self.get_context_data(
+                        form=self.form_class(instance=self.object),
+                        paperless_photo_upload_form=upload_form,
+                    )
+                )
+
+            cleaned_data = upload_form.cleaned_data
+            try:
+                task_id = PaperlessService.upload_document(
+                    uploaded_file=cleaned_data["file"],
+                    title=cleaned_data.get("title", ""),
+                    description=cleaned_data.get("description", ""),
+                    q_liegenschaft=cleaned_data.get("q_liegenschaft", ""),
+                    q_einheit=cleaned_data.get("q_einheit", ""),
+                    q_source_ref=cleaned_data.get("q_source_ref", ""),
+                    document_type_id=_meter_reading_paperless_document_type_id(),
+                    created=cleaned_data.get("created"),
+                )
+            except PaperlessSearchError as exc:
+                messages.error(request, str(exc))
+                return self.render_to_response(
+                    self.get_context_data(
+                        form=self.form_class(instance=self.object),
+                        paperless_photo_upload_form=upload_form,
+                    )
+                )
+
+            messages.success(
+                request,
+                f"Zählerfoto wurde an Paperless übergeben. Task-ID: {task_id}.",
+            )
+            return redirect("meter_reading_update", pk=self.object.pk)
+
+        return super().post(request, *args, **kwargs)
 
     def get_success_url(self):
         return reverse_lazy("meter_reading_by_meter_list", kwargs={"pk": self.object.meter_id})
@@ -4597,6 +5047,10 @@ class UnitDetailView(DetailView):
                 )
             )
         context["dms_context_panel"] = dms_context_panel
+        context["paperless_meter_photo_gallery"] = _unit_paperless_photo_gallery_context(
+            self.request,
+            unit=self.object,
+        )
         return context
 
 
