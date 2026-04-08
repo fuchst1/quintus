@@ -209,6 +209,7 @@
                                         <th>Einheit</th>
                                         <th>Mieter</th>
                                         <th>Score</th>
+                                        <th>Aktionen</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -239,6 +240,20 @@
                                         <td>{{ document.q_einheit }}</td>
                                         <td>{{ document.q_mieter }}</td>
                                         <td class="text-nowrap">{{ document.score }}</td>
+                                        <td class="text-nowrap" onclick="event.stopPropagation();">
+                                            {% if document.delete_url %}
+                                            <a
+                                                href="{{ document.delete_url }}"
+                                                class="btn btn-outline-danger btn-sm"
+                                                onclick="event.stopPropagation();"
+                                                onkeydown="event.stopPropagation();"
+                                            >
+                                                Löschen
+                                            </a>
+                                            {% else %}
+                                            <span class="text-muted">-</span>
+                                            {% endif %}
+                                        </td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>

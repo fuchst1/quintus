@@ -62,6 +62,44 @@ Optionaler Testlauf ohne Versand:
 python manage.py send_reminders --dry-run
 ```
 
+## Monatliche Mietkonto-SOLL-Buchungen
+
+### Voraussetzung
+
+Einmalig das Log-Verzeichnis anlegen, damit Cron-Ausgaben in `logs/*.log`
+geschrieben werden koennen:
+
+```bash
+mkdir -p /home/quintus/apps/quintus/logs
+```
+
+### Geplanter Monatslauf per Cron
+
+Monatlicher Lauf am 1. des Monats um 08:00
+(Server-Zeitzone: `Europe/Vienna`):
+
+```bash
+0 8 1 * * cd /home/quintus/apps/quintus && . .venv/bin/activate && python manage.py generate_monthly_soll >> logs/generate_monthly_soll.log 2>&1
+```
+
+Der kanonische Command fuer diesen Lauf ist `generate_monthly_soll`.
+Das Alias `generate_rent_debits` bleibt nur aus Kompatibilitaetsgruenden erhalten.
+
+### Manueller Nachhol-Lauf bei Ausfall
+
+Wenn der Monatslauf ausfaellt, werden fehlende Monate gezielt manuell nachgezogen:
+
+```bash
+python manage.py generate_monthly_soll --month 2026-01
+python manage.py generate_monthly_soll --month 2026-02
+python manage.py generate_monthly_soll --month 2026-03
+```
+
+Hinweis zum aktuellen Stand vom `2026-03-19`:
+Fuer `2026-01-01`, `2026-02-01` und `2026-03-01` fehlen derzeit die regulaeren
+Monats-SOLL-Buchungen. Mit den aktuell 10 aktiven Mietvertraegen sind fuer jeden
+dieser Monate derzeit 21 erzeugbare SOLL-Buchungen zu erwarten.
+
 ## VPI-Jahresprozess (VPI 2020)
 
 ### Operativer Ablauf

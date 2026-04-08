@@ -323,6 +323,39 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         PAPERLESS_TIMEOUT_SECONDS=10,
         PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
     )
+    def test_create_view_uploads_meter_photo_with_selected_tags(self):
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Zaehlerfoto"}, {"id": "2", "name": "2026"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="task-112",
+        ) as mocked_upload:
+            response = self.client.post(
+                reverse("meter_reading_create"),
+                {
+                    "meter": str(self.meter.pk),
+                    "date": "2026-02-01",
+                    "value": "123.000",
+                    "note": "",
+                    "paperless_tags": ["Zaehlerfoto", "2026"],
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(mocked_upload.call_args.kwargs["tags"], ["Zaehlerfoto", "2026"])
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
     def test_create_view_redirects_to_edit_when_photo_upload_fails(self):
         with patch(
             "webapp.views.PaperlessService.upload_document",
@@ -492,6 +525,45 @@ class MeterReadingAttachmentPanelViewTests(TestCase):
         self.assertEqual(mocked_upload.call_args.kwargs["document_type_id"], 6)
         self.assertEqual(mocked_upload.call_args.kwargs["created"], date(2026, 2, 1))
         self.assertEqual(mocked_upload.call_args.kwargs["title"], "Zählerfoto 01.02.2026")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_METER_READING_DOCUMENT_TYPE_ID=6,
+    )
+    def test_update_view_uploads_meter_photo_with_selected_tags(self):
+        reading = MeterReading.objects.create(
+            meter=self.meter,
+            date=date(2026, 2, 1),
+            value=Decimal("123.000"),
+        )
+
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Zaehlerfoto"}, {"id": "2", "name": "Abgelesen"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="task-556",
+        ) as mocked_upload:
+            response = self.client.post(
+                reverse("meter_reading_update", args=[reading.pk]),
+                {
+                    "meter": str(reading.meter_id),
+                    "date": "2026-02-01",
+                    "value": "123.000",
+                    "note": "",
+                    "paperless_tags": ["Zaehlerfoto", "Abgelesen"],
+                    "paperless_photo": SimpleUploadedFile(
+                        "zaehlerfoto.jpg",
+                        b"img",
+                        content_type="image/jpeg",
+                    ),
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(mocked_upload.call_args.kwargs["tags"], ["Zaehlerfoto", "Abgelesen"])
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -2561,6 +2633,55 @@ class BetriebskostenBelegCreateViewTests(TestCase):
         self.assertIsNone(beleg.paperless_document_id)
         self.assertEqual(beleg.paperless_task_id, "bk-task-pending")
 
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=11,
+    )
+    def test_create_with_paperless_upload_merges_selected_tags(self):
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Strom"}, {"id": "2", "name": "2026"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="bk-task-tags",
+        ) as mocked_upload, patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-tags",
+                "status": "success",
+                "document_id": 902,
+                "message": "",
+            },
+        ):
+            response = self.client.post(
+                reverse("betriebskostenbeleg_create"),
+                {
+                    "liegenschaft": str(self.bhg14.pk),
+                    "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                    "ausgabengruppe": str(BetriebskostenGruppe.get_or_create_ungrouped()[0].pk),
+                    "datum": "2026-03-03",
+                    "netto": "100.00",
+                    "ust_prozent": "20.00",
+                    "brutto": "120.00",
+                    "buchungstext": "EVN April",
+                    "paperless_tags": ["Strom", "2026"],
+                    "paperless_document": SimpleUploadedFile(
+                        "evn-april.pdf",
+                        b"%PDF-1.4 evn",
+                        content_type="application/pdf",
+                    ),
+                },
+                follow=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            mocked_upload.call_args.kwargs["tags"],
+            ["Betriebskostenbeleg", "Strom", "2026"],
+        )
+
 
 class BetriebskostenGruppeViewTests(TestCase):
     def test_create_and_update_group(self):
@@ -3123,6 +3244,56 @@ class BetriebskostenBelegUpdateViewTests(TestCase):
         self.beleg.refresh_from_db()
         self.assertEqual(self.beleg.paperless_document_id, 222)
         self.assertEqual(self.beleg.paperless_task_id, "")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+        PAPERLESS_BK_DOCUMENT_TYPE_ID=11,
+    )
+    def test_update_with_paperless_upload_merges_selected_tags(self):
+        with patch(
+            "webapp.views.PaperlessService.list_tags",
+            return_value=[{"id": "1", "name": "Strom"}, {"id": "2", "name": "Nachzahlung"}],
+        ), patch(
+            "webapp.views.PaperlessService.upload_document",
+            return_value="bk-task-update-tags",
+        ) as mocked_upload, patch(
+            "webapp.views.PaperlessService.resolve_task_document",
+            return_value={
+                "task_id": "bk-task-update-tags",
+                "status": "success",
+                "document_id": 333,
+                "message": "",
+            },
+        ):
+            response = self.client.post(
+                reverse("betriebskostenbeleg_update", args=[self.beleg.pk]),
+                {
+                    "liegenschaft": str(self.property.pk),
+                    "bk_art": BetriebskostenBeleg.BKArt.STROM,
+                    "ausgabengruppe": str(self.beleg.ausgabengruppe_id),
+                    "datum": "2026-01-15",
+                    "netto": "100.00",
+                    "ust_prozent": "20.00",
+                    "brutto": "120.00",
+                    "buchungstext": "Strom Jänner",
+                    "paperless_tags": ["Strom", "Nachzahlung"],
+                    "paperless_document": SimpleUploadedFile(
+                        "strom-neu.pdf",
+                        b"%PDF-1.4 neu",
+                        content_type="application/pdf",
+                    ),
+                    "next": reverse("betriebskostenbeleg_list"),
+                },
+                follow=False,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            mocked_upload.call_args.kwargs["tags"],
+            ["Betriebskostenbeleg", "Strom", "Nachzahlung"],
+        )
 
 
 class BankImportWorkflowTests(TestCase):
@@ -7887,9 +8058,20 @@ class PaperlessSearchViewTests(TestCase):
                 f"?next=%2Fdms%2Fpaperless%2F%3Fq%3Dstrom"
             ),
         )
+        self.assertEqual(
+            response.context["documents"][0]["delete_url"],
+            (
+                f"{reverse('paperless_document_delete', kwargs={'document_id': 101})}"
+                f"?next=%2Fdms%2Fpaperless%2F%3Fq%3Dstrom"
+            ),
+        )
         self.assertContains(
             response,
             reverse("paperless_document_download", kwargs={"document_id": 101}),
+        )
+        self.assertContains(
+            response,
+            reverse("paperless_document_delete", kwargs={"document_id": 101}),
         )
 
     def test_custom_field_token_values_are_translated(self):
@@ -8103,6 +8285,104 @@ class PaperlessSearchViewTests(TestCase):
         self.assertIn("Datei: zaehlerfoto.jpg (image/jpeg, 3 Byte)", error_message)
         self.assertIn('"Date has wrong format"', error_message)
         self.assertIn('"Invalid field"', error_message)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_get_document_normalizes_paperless_document_metadata(self):
+        with patch("webapp.services.paperless.urlopen") as mocked_urlopen, patch.object(
+            PaperlessService,
+            "_safe_fetch_lookup_map",
+            side_effect=[{11: "Rechnung"}, {5: "Betriebskostenbeleg"}],
+        ), patch.object(
+            PaperlessService,
+            "_safe_fetch_custom_field_metadata",
+            return_value=(
+                {9: "q_liegenschaft", 10: "q_source_ref"},
+                {"q_liegenschaft": {"opt-bhg14": "BHG14"}},
+            ),
+        ):
+            mocked_response = mocked_urlopen.return_value.__enter__.return_value
+            mocked_response.read.return_value = json.dumps(
+                {
+                    "id": 101,
+                    "title": "Stromrechnung Februar",
+                    "created": "2026-02-14T10:00:00+00:00",
+                    "document_type": 11,
+                    "tags": [{"id": 5}],
+                    "custom_fields": [
+                        {"name": "q_liegenschaft", "value": "opt-bhg14"},
+                        {"name": "q_source_ref", "value": "betriebskostenbeleg:abc-123"},
+                    ],
+                }
+            ).encode("utf-8")
+
+            document = PaperlessService.get_document(document_id=101)
+
+        self.assertEqual(document["id"], "101")
+        self.assertEqual(document["title"], "Stromrechnung Februar")
+        self.assertEqual(document["document_type"], "Rechnung")
+        self.assertEqual(document["tags"], "Betriebskostenbeleg")
+        self.assertEqual(document["q_liegenschaft"], "BHG14")
+        self.assertEqual(document["q_source_ref"], "betriebskostenbeleg:abc-123")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_get_document_returns_clear_message_for_http_404(self):
+        http_error = HTTPError(
+            url="https://paperless.example.invalid/api/documents/101/",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b""),
+        )
+
+        with patch("webapp.services.paperless.urlopen", side_effect=http_error):
+            with self.assertRaises(PaperlessSearchError) as raised_error:
+                PaperlessService.get_document(document_id=101)
+
+        self.assertEqual(str(raised_error.exception), "Dokument wurde in Paperless nicht gefunden.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_delete_document_sends_delete_request(self):
+        with patch("webapp.services.paperless.urlopen") as mocked_urlopen:
+            mocked_response = mocked_urlopen.return_value.__enter__.return_value
+            mocked_response.read.return_value = b""
+
+            PaperlessService.delete_document(document_id=101)
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(request.get_method(), "DELETE")
+        self.assertEqual(request.full_url, "https://paperless.example.invalid/api/documents/101/")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_delete_document_returns_clear_message_for_http_404(self):
+        http_error = HTTPError(
+            url="https://paperless.example.invalid/api/documents/101/",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b""),
+        )
+
+        with patch("webapp.services.paperless.urlopen", side_effect=http_error):
+            with self.assertRaises(PaperlessSearchError) as raised_error:
+                PaperlessService.delete_document(document_id=101)
+
+        self.assertEqual(str(raised_error.exception), "Dokument wurde in Paperless nicht gefunden.")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",
@@ -8649,6 +8929,112 @@ class PaperlessSearchViewTests(TestCase):
         self.assertEqual(response.context["documents"], [])
         self.assertEqual(response.context["result_count"], 0)
         self.assertContains(response, "Paperless antwortet mit HTTP-Status 500.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_delete_confirm_page_shows_standard_warning_for_unlinked_document(self):
+        with patch(
+            "webapp.views.PaperlessService.get_document",
+            return_value={
+                "id": "101",
+                "title": "Stromrechnung Februar",
+                "created": "2026-02-14",
+                "document_type": "Rechnung",
+                "tags": "-",
+                "q_liegenschaft": "-",
+                "q_einheit": "-",
+                "q_mieter": "-",
+                "q_source_ref": "-",
+                "score": "-",
+            },
+        ):
+            response = self.client.get(
+                reverse("paperless_document_delete", kwargs={"document_id": 101}),
+                {"next": "/dms/paperless/?q=strom"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Sind Sie sicher, dass dieses Dokument in Paperless gelöscht werden soll?")
+        self.assertNotContains(response, "Dieses Dokument ist mit Quintus-Daten verknüpft.")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_delete_confirm_page_shows_link_signals_for_linked_document(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.STROM,
+            datum=date(2026, 2, 14),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            buchungstext="Strom Februar",
+            paperless_document_id=101,
+        )
+
+        with patch(
+            "webapp.views.PaperlessService.get_document",
+            return_value={
+                "id": "101",
+                "title": "Stromrechnung Februar",
+                "created": "2026-02-14",
+                "document_type": "Rechnung",
+                "tags": "Betriebskostenbeleg",
+                "q_liegenschaft": "BHG14",
+                "q_einheit": "-",
+                "q_mieter": "-",
+                "q_source_ref": f"betriebskostenbeleg:{beleg.source_uuid}",
+                "score": "-",
+            },
+        ):
+            response = self.client.get(
+                reverse("paperless_document_delete", kwargs={"document_id": 101}),
+                {"next": "/dms/paperless/?q=strom"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Dieses Dokument ist mit Quintus-Daten verknüpft.")
+        self.assertContains(response, "Betriebskostenbeleg")
+        self.assertContains(response, "BHG14")
+        self.assertContains(response, f"betriebskostenbeleg:{beleg.source_uuid}")
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example.invalid",
+        PAPERLESS_API_TOKEN="dummy-token",
+        PAPERLESS_TIMEOUT_SECONDS=10,
+    )
+    def test_delete_post_deletes_document_and_clears_linked_beleg_ids(self):
+        beleg = BetriebskostenBeleg.objects.create(
+            liegenschaft=self.property,
+            bk_art=BetriebskostenBeleg.BKArt.STROM,
+            datum=date(2026, 2, 14),
+            netto=Decimal("100.00"),
+            ust_prozent=Decimal("20.00"),
+            brutto=Decimal("120.00"),
+            buchungstext="Strom Februar",
+            paperless_document_id=101,
+        )
+
+        with patch("webapp.views.PaperlessService.delete_document") as mocked_delete, patch(
+            "webapp.views.PaperlessService.search_documents",
+            return_value=[],
+        ):
+            response = self.client.post(
+                f"{reverse('paperless_document_delete', kwargs={'document_id': 101})}?next=%2Fdms%2Fpaperless%2F%3Fq%3Dstrom",
+                follow=True,
+            )
+
+        self.assertRedirects(response, "/dms/paperless/?q=strom")
+        mocked_delete.assert_called_once_with(document_id=101)
+        beleg.refresh_from_db()
+        self.assertIsNone(beleg.paperless_document_id)
+        self.assertContains(response, "Paperless-Dokument #101 wurde gelöscht.")
+        self.assertContains(response, "Betriebskostenbeleg-Verknüpfung in Quintus wurde entfernt.")
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example.invalid",

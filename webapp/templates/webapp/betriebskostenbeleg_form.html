@@ -123,6 +123,18 @@
                                 </div>
                             {% endif %}
                         </div>
+                        <div class="col-12">
+                            <label class="form-label">{{ form.paperless_tags.label }}</label>
+                            {{ form.paperless_tags }}
+                            {% if form.paperless_tags.help_text %}
+                                <div class="form-text">{{ form.paperless_tags.help_text }}</div>
+                            {% endif %}
+                            {% if form.paperless_tags.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.paperless_tags.errors|striptags }}
+                                </div>
+                            {% endif %}
+                        </div>
                     </div>
                     <div class="mt-4 d-flex gap-2">
                         <button type="submit" class="btn btn-primary">Speichern</button>

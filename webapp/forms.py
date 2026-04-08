@@ -398,13 +398,26 @@ class MeterReadingWithPhotoForm(MeterReadingForm):
             attrs={"class": "form-control", "accept": ".jpg,.jpeg,.png,image/jpeg,image/png"}
         ),
     )
+    paperless_tags = forms.MultipleChoiceField(
+        required=False,
+        label="Paperless-Tags",
+        choices=(),
+        help_text="Optional. Vorhandene Tags werden direkt beim Upload gesetzt.",
+        widget=forms.SelectMultiple(attrs={"class": "form-select", "size": "6"}),
+    )
 
     class Meta(MeterReadingForm.Meta):
         fields = MeterReadingForm.Meta.fields
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        paperless_tag_choices: list[tuple[str, str]] | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
-        self.order_fields(["meter", "date", "value", "paperless_photo", "note"])
+        self.fields["paperless_tags"].choices = paperless_tag_choices or []
+        self.order_fields(["meter", "date", "value", "paperless_photo", "paperless_tags", "note"])
 
     def clean_paperless_photo(self):
         uploaded_file = self.cleaned_data.get("paperless_photo")
@@ -695,6 +708,13 @@ class BetriebskostenBelegForm(forms.ModelForm):
             }
         ),
     )
+    paperless_tags = forms.MultipleChoiceField(
+        required=False,
+        label="Paperless-Tags",
+        choices=(),
+        help_text="Optional. Vorhandene Tags werden direkt beim Upload gesetzt.",
+        widget=forms.SelectMultiple(attrs={"class": "form-select", "size": "6"}),
+    )
     datum = forms.DateField(
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"),
         input_formats=["%Y-%m-%d", "%d.%m.%Y"],
@@ -731,8 +751,14 @@ class BetriebskostenBelegForm(forms.ModelForm):
             "buchungstext": forms.TextInput(attrs={"class": "form-control"}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        paperless_tag_choices: list[tuple[str, str]] | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        self.fields["paperless_tags"].choices = paperless_tag_choices or []
         group_queryset = BetriebskostenGruppe.objects.filter(is_active=True).order_by("sort_order", "name", "id")
         if self.instance.pk and self.instance.ausgabengruppe_id:
             group_queryset = BetriebskostenGruppe.objects.filter(
@@ -761,6 +787,7 @@ class BetriebskostenBelegForm(forms.ModelForm):
                 "brutto",
                 "buchungstext",
                 "paperless_document",
+                "paperless_tags",
             ]
         )
 

@@ -377,6 +377,24 @@ def build_dms_context_panel_context(request, target_object):
     }
 
 
+def _paperless_tag_choices() -> list[tuple[str, str]]:
+    return [
+        (tag["name"], tag["name"])
+        for tag in PaperlessService.list_tags()
+    ]
+
+
+def _paperless_next_url(request) -> str:
+    next_url = request.POST.get("next") or request.GET.get("next") or reverse("paperless_search")
+    if not url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return reverse("paperless_search")
+    return next_url
+
+
 def _paperless_document_download_url(*, request, document_id: object) -> str:
     document_id_text = str(document_id or "").strip()
     if not document_id_text.isdigit():
@@ -403,6 +421,19 @@ def _paperless_document_preview_url(*, request, document_id: object) -> str:
     )
 
 
+def _paperless_document_delete_url(*, request, document_id: object) -> str:
+    document_id_text = str(document_id or "").strip()
+    if not document_id_text.isdigit():
+        return ""
+    return "{}?{}".format(
+        reverse(
+            "paperless_document_delete",
+            kwargs={"document_id": int(document_id_text)},
+        ),
+        urlencode({"next": request.get_full_path()}),
+    )
+
+
 def _paperless_document_id(document: dict[str, object]) -> int:
     document_id_text = str(document.get("id") or "").strip()
     if document_id_text.isdigit():
@@ -421,6 +452,52 @@ def _paperless_document_with_links(request, document: dict[str, object]) -> dict
             request=request,
             document_id=document.get("id"),
         ),
+        "delete_url": _paperless_document_delete_url(
+            request=request,
+            document_id=document.get("id"),
+        ),
+    }
+
+
+def _paperless_document_link_analysis(*, document: dict[str, object]) -> dict[str, object]:
+    document_id = _paperless_document_id(document)
+    linked_belege_payload: list[dict[str, object]] = []
+    if document_id > 0:
+        linked_belege = (
+            BetriebskostenBeleg.objects.select_related("liegenschaft")
+            .filter(paperless_document_id=document_id)
+            .order_by("-datum", "-id")
+        )
+        for beleg in linked_belege:
+            description_parts = [f"{beleg.datum:%d.%m.%Y}"]
+            if beleg.liegenschaft is not None:
+                description_parts.append(str(beleg.liegenschaft))
+            title = str(beleg.buchungstext or "").strip() or f"Beleg #{beleg.pk}"
+            description_parts.append(title)
+            linked_belege_payload.append(
+                {
+                    "label": "Betriebskostenbeleg",
+                    "value": " · ".join(description_parts),
+                    "url": reverse("betriebskostenbeleg_update", kwargs={"pk": beleg.pk}),
+                }
+            )
+
+    custom_field_signals: list[dict[str, str]] = []
+    for field_name, label in (
+        ("q_liegenschaft", "Liegenschaft"),
+        ("q_einheit", "Einheit"),
+        ("q_mieter", "Mieter"),
+        ("q_source_ref", "Quellreferenz"),
+    ):
+        value = str(document.get(field_name) or "").strip()
+        if value and value != "-":
+            custom_field_signals.append({"label": label, "value": value})
+
+    link_signals = linked_belege_payload + custom_field_signals
+    return {
+        "is_linked": bool(link_signals),
+        "signals": link_signals,
+        "linked_belege": linked_belege_payload,
     }
 
 
@@ -583,7 +660,12 @@ def _unit_paperless_preview_context(request, *, unit: Unit) -> dict[str, object]
     )
 
 
-def _upload_meterreading_photo(*, reading: MeterReading, uploaded_file) -> str:
+def _upload_meterreading_photo(
+    *,
+    reading: MeterReading,
+    uploaded_file,
+    tags: list[str] | None = None,
+) -> str:
     return PaperlessService.upload_document(
         uploaded_file=uploaded_file,
         title=f"Zählerfoto {reading.date:%d.%m.%Y}",
@@ -598,6 +680,7 @@ def _upload_meterreading_photo(*, reading: MeterReading, uploaded_file) -> str:
             else ""
         ),
         q_source_ref=_meterreading_source_ref(reading),
+        tags=tags,
         document_type_id=_meter_reading_paperless_document_type_id(),
         created=reading.date,
     )
@@ -614,6 +697,7 @@ def _upload_betriebskostenbeleg_document(
     *,
     beleg: BetriebskostenBeleg,
     uploaded_file,
+    tags: list[str] | None = None,
 ) -> str:
     document_type_id = _betriebskostenbeleg_paperless_document_type_id()
     if document_type_id is None:
@@ -622,12 +706,15 @@ def _upload_betriebskostenbeleg_document(
             "Bitte PAPERLESS_BK_DOCUMENT_TYPE_ID setzen oder den Typ in Paperless anlegen."
         )
 
+    normalized_tags = PaperlessService._normalize_tag_names(
+        [BETRIEBSKOSTEN_PAPERLESS_TAG, *(tags or [])]
+    )
     return PaperlessService.upload_document(
         uploaded_file=uploaded_file,
         title=_betriebskostenbeleg_upload_title(beleg),
         q_liegenschaft=beleg.liegenschaft.name if beleg.liegenschaft else "",
         q_source_ref=_betriebskostenbeleg_source_ref(beleg),
-        tags=[BETRIEBSKOSTEN_PAPERLESS_TAG],
+        tags=normalized_tags,
         document_type_id=document_type_id,
         created=beleg.datum,
     )
@@ -1408,10 +1495,7 @@ class PaperlessSearchView(TemplateView):
     template_name = "webapp/paperless_search.html"
 
     def _tag_choices(self) -> list[tuple[str, str]]:
-        return [
-            (tag["name"], tag["name"])
-            for tag in PaperlessService.list_tags()
-        ]
+        return _paperless_tag_choices()
 
     def _tenant_choices(self) -> list[str]:
         seen_names: set[str] = set()
@@ -1535,19 +1619,10 @@ class PaperlessSearchView(TemplateView):
                             "Anfrage wurde ausgeführt, aber es wurden keine Treffer gefunden."
                         )
                     else:
-                        next_url = self.request.get_full_path()
-                        for document in documents:
-                            document_id = str(document.get("id") or "").strip()
-                            if not document_id.isdigit():
-                                document["download_url"] = ""
-                                continue
-                            document["download_url"] = "{}?{}".format(
-                                reverse(
-                                    "paperless_document_download",
-                                    kwargs={"document_id": int(document_id)},
-                                ),
-                                urlencode({"next": next_url}),
-                            )
+                        documents = [
+                            _paperless_document_with_links(self.request, document)
+                            for document in documents
+                        ]
 
         tag_choices = self._tag_choices() if is_paperless_configured else []
         property_codes = [
@@ -1641,9 +1716,7 @@ class PaperlessDocumentDownloadView(View):
 
     def get(self, request, *args, **kwargs):
         document_id = int(kwargs["document_id"])
-        next_url = request.GET.get("next") or reverse("paperless_search")
-        if not url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
-            next_url = reverse("paperless_search")
+        next_url = _paperless_next_url(request)
 
         try:
             content, content_type, filename = PaperlessService.download_document(document_id=document_id)
@@ -1673,6 +1746,54 @@ class PaperlessDocumentPreviewView(View):
         response = HttpResponse(content, content_type=normalized_content_type)
         response["X-Content-Type-Options"] = "nosniff"
         return response
+
+
+class PaperlessDocumentDeleteView(View):
+    http_method_names = ["get", "post"]
+    template_name = "webapp/paperless_document_confirm_delete.html"
+
+    def get(self, request, *args, **kwargs):
+        document_id = int(kwargs["document_id"])
+        next_url = _paperless_next_url(request)
+
+        try:
+            document = PaperlessService.get_document(document_id=document_id)
+        except PaperlessSearchError as exc:
+            messages.error(request, str(exc))
+            return redirect(next_url)
+
+        context = {
+            "document": _paperless_document_with_links(request, document),
+            "next_url": next_url,
+            "link_analysis": _paperless_document_link_analysis(document=document),
+        }
+        return render(request, self.template_name, context)
+
+    def post(self, request, *args, **kwargs):
+        document_id = int(kwargs["document_id"])
+        next_url = _paperless_next_url(request)
+
+        try:
+            PaperlessService.delete_document(document_id=document_id)
+        except PaperlessSearchError as exc:
+            messages.error(request, str(exc))
+            return redirect(next_url)
+
+        cleared_count = BetriebskostenBeleg.objects.filter(
+            paperless_document_id=document_id
+        ).update(paperless_document_id=None)
+
+        success_message = f"Paperless-Dokument #{document_id} wurde gelöscht."
+        if cleared_count == 1:
+            success_message = (
+                f"{success_message} 1 Betriebskostenbeleg-Verknüpfung in Quintus wurde entfernt."
+            )
+        elif cleared_count > 1:
+            success_message = (
+                f"{success_message} {cleared_count} Betriebskostenbeleg-Verknüpfungen in Quintus wurden entfernt."
+            )
+        messages.success(request, success_message)
+        return redirect(next_url)
 
 
 class TenantListView(ListView):
@@ -2046,6 +2167,13 @@ class MeterReadingByMeterListView(ListView):
 
 
 class MeterReadingPaperlessPhotoUploadMixin:
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["paperless_tag_choices"] = (
+            _paperless_tag_choices() if PaperlessService.is_configured() else []
+        )
+        return kwargs
+
     def form_valid(self, form):
         response = super().form_valid(form)
         uploaded_file = form.cleaned_data.get("paperless_photo")
@@ -2056,6 +2184,7 @@ class MeterReadingPaperlessPhotoUploadMixin:
             task_id = _upload_meterreading_photo(
                 reading=self.object,
                 uploaded_file=uploaded_file,
+                tags=form.cleaned_data.get("paperless_tags", []),
             )
         except PaperlessSearchError as exc:
             messages.error(
@@ -3717,6 +3846,13 @@ class BetriebskostenBelegNavigationMixin:
 
 
 class BetriebskostenBelegPaperlessMixin(BetriebskostenBelegNavigationMixin):
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["paperless_tag_choices"] = (
+            _paperless_tag_choices() if PaperlessService.is_configured() else []
+        )
+        return kwargs
+
     def _paperless_status_context(self) -> dict[str, str] | None:
         paperless_task_id = str(self.object.paperless_task_id or "").strip()
         document_id = int(self.object.paperless_document_id or 0)
@@ -3743,7 +3879,7 @@ class BetriebskostenBelegPaperlessMixin(BetriebskostenBelegNavigationMixin):
             }
         return None
 
-    def _handle_paperless_upload(self, *, uploaded_file):
+    def _handle_paperless_upload(self, *, uploaded_file, tags: list[str] | None = None):
         if not uploaded_file:
             return None
 
@@ -3751,6 +3887,7 @@ class BetriebskostenBelegPaperlessMixin(BetriebskostenBelegNavigationMixin):
             task_id = _upload_betriebskostenbeleg_document(
                 beleg=self.object,
                 uploaded_file=uploaded_file,
+                tags=tags,
             )
         except PaperlessSearchError as exc:
             messages.error(
@@ -3799,7 +3936,10 @@ class BetriebskostenBelegPaperlessMixin(BetriebskostenBelegNavigationMixin):
         uploaded_file = form.cleaned_data.get("paperless_document")
         if not uploaded_file:
             return response
-        return self._handle_paperless_upload(uploaded_file=uploaded_file) or response
+        return self._handle_paperless_upload(
+            uploaded_file=uploaded_file,
+            tags=form.cleaned_data.get("paperless_tags", []),
+        ) or response
 
 
 class BetriebskostenBelegCreateView(BetriebskostenBelegPaperlessMixin, CreateView):

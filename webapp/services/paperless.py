@@ -263,6 +263,124 @@ class PaperlessService:
         ]
 
     @classmethod
+    def get_document(cls, *, document_id: int) -> dict[str, Any]:
+        if not cls.is_configured():
+            raise PaperlessSearchError(
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            )
+
+        request_url = cls._build_url(endpoint=f"documents/{int(document_id)}/")
+        request = Request(
+            request_url,
+            headers={
+                "Authorization": f"Token {cls.api_token()}",
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=cls.timeout_seconds()) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            logger.warning("Paperless request failed with HTTP %s for %s", exc.code, request_url)
+            if exc.code in {401, 403}:
+                raise PaperlessSearchError(
+                    "Zugriff auf Paperless wurde abgelehnt. Bitte API-Token prüfen."
+                ) from None
+            if exc.code == 404:
+                raise PaperlessSearchError("Dokument wurde in Paperless nicht gefunden.") from None
+            raise PaperlessSearchError(
+                cls._format_http_error_message(
+                    exc=exc,
+                    request_method="GET",
+                    request_url=request_url,
+                    operation_label="Paperless-Anfrage",
+                )
+            ) from None
+        except URLError:
+            logger.warning("Paperless host not reachable for %s", request_url)
+            raise PaperlessSearchError(
+                "Paperless ist nicht erreichbar. Bitte Basis-URL und Netzwerk prüfen."
+            ) from None
+        except TimeoutError:
+            logger.warning("Paperless request timeout for %s", request_url)
+            raise PaperlessSearchError("Zeitüberschreitung bei der Anfrage an Paperless.") from None
+        except json.JSONDecodeError:
+            logger.warning("Paperless returned non-JSON payload for %s", request_url)
+            raise PaperlessSearchError("Ungültige Antwort von Paperless erhalten.") from None
+        except Exception:
+            logger.exception("Paperless request failed unexpectedly for %s", request_url)
+            raise PaperlessSearchError("Paperless-Suche konnte nicht ausgeführt werden.") from None
+
+        if not isinstance(payload, dict):
+            raise PaperlessSearchError("Unerwartete Antwort von Paperless (kein JSON-Objekt).")
+
+        document_type_lookup = cls._safe_fetch_lookup_map(endpoint="document_types/")
+        tag_lookup = cls._safe_fetch_lookup_map(endpoint="tags/")
+        custom_field_name_by_id, custom_field_option_lookup = cls._safe_fetch_custom_field_metadata()
+        custom_field_id_by_name = {
+            field_name: field_id
+            for field_id, field_name in custom_field_name_by_id.items()
+        }
+        return cls._normalize_document(
+            payload,
+            document_type_lookup=document_type_lookup,
+            tag_lookup=tag_lookup,
+            custom_field_id_by_name=custom_field_id_by_name,
+            custom_field_name_by_id=custom_field_name_by_id,
+            custom_field_option_lookup=custom_field_option_lookup,
+        )
+
+    @classmethod
+    def delete_document(cls, *, document_id: int) -> None:
+        if not cls.is_configured():
+            raise PaperlessSearchError(
+                "Paperless ist noch nicht konfiguriert. "
+                "Bitte PAPERLESS_BASE_URL und PAPERLESS_API_TOKEN in der .env setzen."
+            )
+
+        request_url = cls._build_url(endpoint=f"documents/{int(document_id)}/")
+        request = Request(
+            request_url,
+            headers={
+                "Authorization": f"Token {cls.api_token()}",
+                "Accept": "application/json, text/plain, */*",
+            },
+            method="DELETE",
+        )
+        try:
+            with urlopen(request, timeout=cls.timeout_seconds()) as response:
+                response.read()
+        except HTTPError as exc:
+            logger.warning("Paperless delete failed with HTTP %s for %s", exc.code, request_url)
+            if exc.code in {401, 403}:
+                raise PaperlessSearchError(
+                    "Zugriff auf Paperless wurde abgelehnt. Bitte API-Token prüfen."
+                ) from None
+            if exc.code == 404:
+                raise PaperlessSearchError("Dokument wurde in Paperless nicht gefunden.") from None
+            raise PaperlessSearchError(
+                cls._format_http_error_message(
+                    exc=exc,
+                    request_method="DELETE",
+                    request_url=request_url,
+                    operation_label="Paperless-Löschen",
+                )
+            ) from None
+        except URLError:
+            logger.warning("Paperless host not reachable for %s", request_url)
+            raise PaperlessSearchError(
+                "Paperless ist nicht erreichbar. Bitte Basis-URL und Netzwerk prüfen."
+            ) from None
+        except TimeoutError:
+            logger.warning("Paperless delete timeout for %s", request_url)
+            raise PaperlessSearchError("Zeitüberschreitung bei der Anfrage an Paperless.") from None
+        except Exception:
+            logger.exception("Paperless delete failed unexpectedly for %s", request_url)
+            raise PaperlessSearchError("Paperless-Löschen konnte nicht ausgeführt werden.") from None
+
+    @classmethod
     def download_document(cls, *, document_id: int) -> tuple[bytes, str, str]:
         if not cls.is_configured():
             raise PaperlessSearchError(
