@@ -1,0 +1,7 @@
+from django.apps import AppConfig
+
+
+class BookkeepingConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "bookkeeping"
+    verbose_name = "Buchhaltung"

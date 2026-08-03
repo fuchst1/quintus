@@ -1,0 +1,11 @@
+<aside class="bookkeeping-nav" aria-label="Buchhaltungsnavigation">
+    <a class="bookkeeping-brand" href="{% url 'bookkeeping:dashboard' %}">QUINTUS<br><span>BUCHHALTUNG</span></a>
+    <nav>
+        <a href="{% url 'bookkeeping:dashboard' %}" {% if request.resolver_match.url_name == 'dashboard' %}aria-current="page"{% endif %}>Dashboard</a>
+        <a href="{% url 'bookkeeping:stammdaten' %}" {% if 'stammdaten' in request.resolver_match.url_name or 'bankkonto' in request.resolver_match.url_name or 'kostenstelle' in request.resolver_match.url_name or 'kontenplan' in request.resolver_match.url_name %}aria-current="page"{% endif %}>Stammdaten</a>
+        <span class="nav-placeholder">Bankimporte<br><small>Phase 2</small></span>
+        <span class="nav-placeholder">Buchungen prüfen<br><small>Phase 3</small></span>
+        <span class="nav-placeholder">Belege<br><small>Phase 5</small></span>
+        <span class="nav-placeholder">Exporte<br><small>Phase 6</small></span>
+    </nav>
+</aside>

@@ -1,0 +1,13 @@
+{% extends 'bookkeeping/base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<header class="page-header"><p class="eyebrow">Eigenständiger Arbeitsbereich</p><h1>Bookkeeping</h1><p>Quartalsbuchhaltung für Ihre Mandanten.</p></header>
+<section class="metrics" aria-label="Stammdatenstatus">
+    <article><span>Aktive Mandanten</span><strong>{{ mandanten|length }}</strong></article>
+    <article><span>Bankkonten</span><strong>{{ bankkonto_count }}</strong></article>
+    <article><span>Kostenstellen</span><strong>{{ kostenstelle_count }}</strong></article>
+    <article><span>Aktive Kontenpläne</span><strong>{{ aktive_kontenplaene|length }}</strong></article>
+</section>
+<section class="card"><h2>Aktiver Kontenplan</h2>{% for version in aktive_kontenplaene %}<p>{{ version.mandant }} · {{ version.bezeichnung }} (ab {{ version.gueltig_ab|date:'d.m.Y' }})</p>{% empty %}<p>Noch keine Vorlage importiert.</p>{% endfor %}<a class="button" href="{% url 'bookkeeping:kontenplan_import' %}">Vorlage importieren</a></section>
+<section class="card"><h2>Letzte Änderungen</h2>{% for event in audit_ereignisse %}<p>{{ event.zeitpunkt|date:'d.m.Y H:i' }} · {{ event.aktion }} · {{ event.objekt_typ }}</p>{% empty %}<p>Noch keine Audit-Ereignisse.</p>{% endfor %}</section>
+{% endblock %}

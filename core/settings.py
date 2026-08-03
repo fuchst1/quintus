@@ -98,6 +98,7 @@ INSTALLED_APPS = [
     'crispy_bootstrap5',
     'simple_history',
     'webapp',
+    'bookkeeping',
 ]
 
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"

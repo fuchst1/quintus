@@ -1,5 +1,21 @@
 # Deployment Hinweise
 
+## Bookkeeping
+
+Die Bookkeeping-App läuft in derselben Quintus-Installation, Virtualenv und
+Gunicorn/systemd-Instanz wie die Hausverwaltung. Es wird kein separater Server
+und keine zusätzliche Datenbank betrieben.
+
+`requirements.txt` enthält `openpyxl` für den Import der versionierten
+Steuerberater-Vorlagen. Nach einem regulären Deployment müssen die
+Abhängigkeiten wie bisher in der bestehenden Virtualenv installiert werden.
+
+Die hochgeladenen Kontenplanvorlagen liegen geschützt unter
+`media/bookkeeping/`. Dieses Verzeichnis ist zusammen mit Datenbank,
+Konfiguration und Exportdateien in die bestehenden Backups aufzunehmen. Django
+liefert Medien im Debug-Betrieb nicht direkt aus; Bookkeeping-Vorlagen werden
+in Phase 1 nicht als öffentliche Dateien angeboten.
+
 ## PDF-Erzeugung für BK-Briefe (WeasyPrint)
 
 Die BK-Mieterbriefe verwenden WeasyPrint für die PDF-Ausgabe.

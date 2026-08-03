@@ -1,0 +1,6 @@
+{% extends 'bookkeeping/base.html' %}
+{% block title %}Stammdaten bearbeiten{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Stammdaten bearbeiten</h1></header>
+<form method="post" class="card form-card">{% csrf_token %}{{ form.as_div }}<div class="form-actions"><button class="button" type="submit">Speichern</button><a href="{% url 'bookkeeping:stammdaten' %}">Abbrechen</a></div></form>
+{% endblock %}

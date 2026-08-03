@@ -25,6 +25,7 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('bookkeeping/', include(('bookkeeping.urls', 'bookkeeping'), namespace='bookkeeping')),
     # Das hier hat gefehlt: Leite alles, was auf der Hauptseite ('') landet,
     # an die webapp weiter.
     path('', include('webapp.urls')),

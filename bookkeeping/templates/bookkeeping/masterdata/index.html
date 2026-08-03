@@ -1,0 +1,11 @@
+{% extends 'bookkeeping/base.html' %}
+{% block title %}Stammdaten{% endblock %}
+{% block content %}
+<header class="page-header"><p class="eyebrow">Konfiguration</p><h1>Stammdaten</h1></header>
+<section class="action-grid">
+    <a class="card-link" href="{% url 'bookkeeping:bankkonto_list' %}"><h2>Bankkonten</h2><p>{{ bankkonten|length }} erfasst</p></a>
+    <a class="card-link" href="{% url 'bookkeeping:kostenstelle_list' %}"><h2>Kostenstellen</h2><p>{{ kostenstellen|length }} erfasst</p></a>
+    <a class="card-link" href="{% url 'bookkeeping:kontenplanversion_list' %}"><h2>Kontenplanversionen</h2><p>{{ kontenplaene|length }} importiert</p></a>
+</section>
+<section class="card"><h2>Mandanten</h2><ul>{% for mandant in mandanten %}<li>{{ mandant.name }} <a href="{% url 'bookkeeping:mandant_update' mandant.pk %}">Bearbeiten</a></li>{% empty %}<li>Keine Mandanten vorhanden.</li>{% endfor %}</ul></section>
+{% endblock %}

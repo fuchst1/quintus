@@ -1,0 +1,6 @@
+{% extends 'bookkeeping/base.html' %}
+{% block title %}Kontenplanversionen{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Kontenplanversionen</h1><a class="button" href="{% url 'bookkeeping:kontenplan_import' %}">Vorlage importieren</a></header>
+<section class="card"><table><thead><tr><th>Mandant</th><th>Version</th><th>Gültig ab</th><th>Kategorien</th><th>Status</th></tr></thead><tbody>{% for version in kontenplaene %}<tr><td>{{ version.mandant }}</td><td>{{ version.bezeichnung }}</td><td>{{ version.gueltig_ab|date:'d.m.Y' }}</td><td>{{ version.eintraege.count }}</td><td>{% if version.aktiv %}Aktiv{% else %}Historisch{% endif %}</td></tr>{% empty %}<tr><td colspan="5">Keine Vorlage importiert.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends 'bookkeeping/base.html' %}
+{% block title %}Kontenplan importieren{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Kontenplan importieren</h1><p>Die Originalvorlage wird unverändert gespeichert; nur Kategorien aus <code>Kontenplan!D</code> werden übernommen.</p></header>
+<form method="post" enctype="multipart/form-data" class="card form-card">{% csrf_token %}{{ form.as_div }}<div class="form-actions"><button class="button" type="submit">Importieren</button><a href="{% url 'bookkeeping:kontenplanversion_list' %}">Abbrechen</a></div></form>
+{% endblock %}
