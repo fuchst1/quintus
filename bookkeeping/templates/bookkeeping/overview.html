@@ -1,0 +1,91 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block content %}
+<section id="bank-import" class="bookkeeping-upload-section" aria-labelledby="upload-heading">
+    <h2 id="upload-heading" class="bookkeeping-section-title">Transaktionen importieren</h2>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="row g-2 align-items-end">
+            <div class="col-md-8">
+                <label for="json-file" class="form-label">JSON-Datei</label>
+                <input id="json-file" type="file" name="json_file" accept=".json,application/json" class="form-control">
+            </div>
+            <div class="col-md-auto">
+                <button type="submit" class="btn btn-primary">Hochladen</button>
+            </div>
+        </div>
+    </form>
+    <form method="post" class="bookkeeping-matching-action-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="run_matching">
+        <button type="submit" class="btn btn-outline-primary">Matching ausführen</button>
+    </form>
+</section>
+
+{% if messages %}
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+    {% endfor %}
+{% endif %}
+
+{% if error_message %}
+<div class="alert alert-danger" role="alert">{{ error_message }}</div>
+{% endif %}
+
+<section id="transactions" aria-labelledby="transactions-heading">
+<h2 id="transactions-heading" class="visually-hidden">Transaktionen</h2>
+{% if show_preview %}
+<p class="bookkeeping-preview-count">{{ transactions|length }} Transaktionen angezeigt</p>
+<div class="bookkeeping-table-wrap" role="region" aria-label="Transaktionsvorschau" tabindex="0">
+    <table class="table table-hover align-middle mb-0 bookkeeping-data-table bookkeeping-transaction-table">
+        <thead class="table-light">
+            <tr>
+                <th class="bookkeeping-date">Buchungsdatum</th>
+                <th class="bookkeeping-name">Name</th>
+                <th class="bookkeeping-iban">IBAN</th>
+                <th class="bookkeeping-direction">Richtung</th>
+                <th class="bookkeeping-amount">Betrag</th>
+                <th class="bookkeeping-purpose">Verwendungszweck</th>
+                <th class="bookkeeping-status">Status</th>
+                <th class="bookkeeping-matching-rule">Matching-Regel</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for transaction in transactions %}
+            <tr>
+                <td class="bookkeeping-date">{{ transaction.booking_date }}</td>
+                <td class="bookkeeping-name">{{ transaction.name }}</td>
+                <td class="bookkeeping-iban">{{ transaction.iban }}</td>
+                <td class="bookkeeping-direction">
+                    {% if transaction.direction_code == "incoming" %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-incoming">{{ transaction.direction }}</span>
+                    {% elif transaction.direction_code == "outgoing" %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-outgoing">{{ transaction.direction }}</span>
+                    {% else %}
+                    <span>{{ transaction.direction }}</span>
+                    {% endif %}
+                </td>
+                <td class="bookkeeping-amount">
+                    {% if transaction.amount|slice:":1" == "-" %}
+                    <span class="bookkeeping-amount-negative">{{ transaction.amount }}</span>
+                    {% elif transaction.amount != "–" %}
+                    <span class="bookkeeping-amount-positive">{{ transaction.amount }}</span>
+                    {% else %}
+                    <span>{{ transaction.amount }}</span>
+                    {% endif %}
+                </td>
+                <td class="bookkeeping-purpose">{{ transaction.purpose }}</td>
+                <td class="bookkeeping-status">
+                    <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.status }}</span>
+                </td>
+                <td class="bookkeeping-matching-rule">{{ transaction.matched_rule }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="bookkeeping-empty-state">Noch keine Transaktionen importiert.</p>
+{% endif %}
+</section>
+{% endblock %}

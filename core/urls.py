@@ -28,6 +28,7 @@ urlpatterns = [
     # Das hier hat gefehlt: Leite alles, was auf der Hauptseite ('') landet,
     # an die webapp weiter.
     path('', include('webapp.urls')),
+    path('bookkeeping/', include('bookkeeping.urls')),
 ]
 
 if settings.DEBUG and getattr(settings, "SERVE_MEDIA_IN_DEBUG", False):

@@ -1,0 +1,25 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Matching-Regel bearbeiten – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="matching-rule-edit-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="matching-rule-edit-heading" class="bookkeeping-section-title">Matching-Regel bearbeiten</h1>
+        </div>
+        <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+
+    {% if form.errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in form.non_field_errors %}{% ifchanged error %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endifchanged %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" class="bookkeeping-rule-form">
+        {% include "bookkeeping/_matching_rule_form.html" with matching_rule_form=form submit_label="Speichern" %}
+    </form>
+</section>
+{% endblock %}

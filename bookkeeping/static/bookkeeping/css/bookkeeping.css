@@ -1,0 +1,409 @@
+.bookkeeping-body {
+    background: #f4f6f9;
+    color: #243447;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.bookkeeping-shell {
+    min-height: 100vh;
+}
+
+.bookkeeping-sidebar {
+    background: #1e3a5f;
+    color: #ffffff;
+    min-height: 100vh;
+    padding: 1rem 1rem 1.5rem;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    width: 260px;
+    z-index: 10;
+}
+
+.bookkeeping-page {
+    margin-left: 260px;
+    min-height: 100vh;
+}
+
+.bookkeeping-brand {
+    align-items: center;
+    color: #ffffff;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.45rem 0 0.65rem;
+    width: 100%;
+}
+
+.bookkeeping-brand-logo {
+    filter: brightness(0) invert(1);
+    height: auto;
+    width: 88px;
+}
+
+.bookkeeping-brand-title {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    margin-top: 0.38rem;
+}
+
+.bookkeeping-brand-subtitle {
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    margin-top: 0.5rem;
+}
+
+.bookkeeping-sidebar-divider {
+    border-color: rgba(255, 255, 255, 0.2);
+    margin: 0.4rem 0 1rem;
+}
+
+.bookkeeping-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.bookkeeping-nav-link {
+    align-items: center;
+    border-left: 4px solid transparent;
+    border-radius: 0.25rem;
+    color: rgba(255, 255, 255, 0.82);
+    display: flex;
+    gap: 0.65rem;
+    padding: 0.62rem 0.75rem;
+    text-decoration: none;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.bookkeeping-nav-link:hover,
+.bookkeeping-nav-link:focus-visible,
+.bookkeeping-nav-link-active {
+    background: rgba(255, 255, 255, 0.1);
+    border-left-color: #3b82f6;
+    color: #ffffff;
+}
+
+.bookkeeping-header {
+    background: #1e3a5f;
+    color: #ffffff;
+    padding: 1rem clamp(24px, 3vw, 32px);
+}
+
+.bookkeeping-header-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.3;
+    margin: 0;
+}
+
+.bookkeeping-main {
+    padding: 1.5rem clamp(24px, 3vw, 32px) 2rem;
+    width: 100%;
+}
+
+.bookkeeping-upload-section {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    margin-bottom: 1.25rem;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-rules-section {
+    margin-top: 2rem;
+}
+
+.bookkeeping-page-heading {
+    align-items: flex-start;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.bookkeeping-page-description {
+    color: #5f6b78;
+    margin: 0;
+}
+
+.bookkeeping-rule-form {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    margin-bottom: 1rem;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-rule-form .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-active-field {
+    padding-bottom: 0.55rem;
+}
+
+.bookkeeping-rule-help {
+    padding-top: 1.7rem;
+}
+
+.bookkeeping-empty-state {
+    color: #5f6b78;
+    font-size: 0.875rem;
+    margin: 0;
+}
+
+.bookkeeping-rule-form .is-invalid {
+    border-color: #dc3545;
+}
+
+.bookkeeping-rule-form .invalid-feedback {
+    color: #b02a37;
+    display: block;
+    font-size: 0.78rem;
+    line-height: 1.3;
+    margin-top: 0.25rem;
+}
+
+.bookkeeping-validation-alert {
+    background: #fff1f2;
+    border: 1px solid #f1b8be;
+    color: #842029;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+    padding: 0.55rem 0.75rem;
+}
+
+.bookkeeping-non-field-error {
+    margin-top: 0.2rem;
+}
+
+.bookkeeping-section-title {
+    color: #34495e;
+    font-size: 1rem;
+    font-weight: 700;
+    margin: 0 0 0.75rem;
+}
+
+.bookkeeping-upload-section .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-matching-action-form {
+    margin-top: 0.85rem;
+}
+
+.bookkeeping-preview-count {
+    color: #5f6b78;
+    font-size: 0.875rem;
+    margin: 0 0 0.5rem;
+}
+
+.bookkeeping-table-wrap {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    overflow-x: auto;
+}
+
+.bookkeeping-transaction-table {
+    border-collapse: collapse;
+    margin: 0;
+    min-width: 1120px;
+    width: 100%;
+}
+
+.bookkeeping-data-table {
+    border-collapse: collapse;
+    margin: 0;
+    width: 100%;
+}
+
+.bookkeeping-rules-table {
+    min-width: 760px;
+}
+
+.bookkeeping-data-table th,
+.bookkeeping-data-table td {
+    border-bottom: 1px solid #e1e5e9;
+    padding: 0.46rem 0.62rem;
+    vertical-align: middle;
+}
+
+.bookkeeping-data-table thead th {
+    background: #f1f3f5;
+    border-bottom: 1px solid #cfd5db;
+    border-right: 1px solid #dfe3e8;
+    color: #273849;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table thead th:last-child {
+    border-right: 0;
+}
+
+.bookkeeping-data-table tbody tr:nth-child(even) {
+    background: #f8f9fa;
+}
+
+.bookkeeping-data-table tbody tr:hover {
+    background: #eef4fb;
+}
+
+.bookkeeping-data-table .bookkeeping-name,
+.bookkeeping-data-table .bookkeeping-purpose {
+    text-align: left;
+}
+
+.bookkeeping-data-table .bookkeeping-date {
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table .bookkeeping-name,
+.bookkeeping-data-table .bookkeeping-purpose {
+    min-width: 10rem;
+    white-space: normal;
+}
+
+.bookkeeping-data-table .bookkeeping-iban {
+    text-align: left;
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table .bookkeeping-amount {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table .bookkeeping-direction,
+.bookkeeping-data-table .bookkeeping-status {
+    text-align: center;
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table .bookkeeping-matching-rule {
+    min-width: 10rem;
+    text-align: left;
+}
+
+.bookkeeping-data-table .bookkeeping-actions {
+    min-width: 10rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-action-buttons,
+.bookkeeping-confirmation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.bookkeeping-confirmation {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    padding: 1.25rem;
+}
+
+.bookkeeping-confirmation p {
+    margin: 0 0 1rem;
+}
+
+.bookkeeping-badge {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    padding: 0.22rem 0.55rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-badge-incoming {
+    background: #e7f4eb;
+    color: #237a4b;
+}
+
+.bookkeeping-badge-outgoing {
+    background: #fbe9eb;
+    color: #b02a37;
+}
+
+.bookkeeping-badge-status {
+    background: #e9eef5;
+    color: #4a6078;
+}
+
+.bookkeeping-badge-active {
+    background: #e7f4eb;
+    color: #237a4b;
+}
+
+.bookkeeping-badge-inactive {
+    background: #f1f3f5;
+    color: #66717d;
+}
+
+.bookkeeping-amount-positive {
+    color: #237a4b;
+}
+
+.bookkeeping-amount-negative {
+    color: #b02a37;
+}
+
+@media (max-width: 767.98px) {
+    .bookkeeping-sidebar {
+        min-height: auto;
+        position: relative;
+        width: 100%;
+    }
+
+    .bookkeeping-page {
+        margin-left: 0;
+    }
+
+    .bookkeeping-brand {
+        align-items: flex-start;
+        flex-direction: row;
+        gap: 0.7rem;
+        justify-content: flex-start;
+    }
+
+    .bookkeeping-brand-logo {
+        width: 56px;
+    }
+
+    .bookkeeping-brand-title {
+        font-size: 1.45rem;
+    }
+
+    .bookkeeping-brand-subtitle {
+        align-self: center;
+        margin-top: 0;
+    }
+
+    .bookkeeping-nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .bookkeeping-nav-link {
+        flex: 1 1 auto;
+    }
+
+    .bookkeeping-page-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}

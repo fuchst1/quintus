@@ -1,0 +1,77 @@
+{% csrf_token %}
+<div class="row g-2 align-items-end">
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.name.id_for_label }}" class="form-label">{{ matching_rule_form.name.label }}</label>
+        {{ matching_rule_form.name }}
+        {% if matching_rule_form.name.errors %}
+        <div id="{{ matching_rule_form.name.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.name.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.direction.id_for_label }}" class="form-label">{{ matching_rule_form.direction.label }}</label>
+        {{ matching_rule_form.direction }}
+        {% if matching_rule_form.direction.errors %}
+        <div id="{{ matching_rule_form.direction.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.direction.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.match_type.id_for_label }}" class="form-label">{{ matching_rule_form.match_type.label }}</label>
+        {{ matching_rule_form.match_type }}
+        {% if matching_rule_form.match_type.errors %}
+        <div id="{{ matching_rule_form.match_type.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.match_type.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.iban.id_for_label }}" class="form-label">{{ matching_rule_form.iban.label }}</label>
+        {{ matching_rule_form.iban }}
+        {% if matching_rule_form.iban.errors %}
+        <div id="{{ matching_rule_form.iban.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.iban.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.expected_amount.id_for_label }}" class="form-label">{{ matching_rule_form.expected_amount.label }}</label>
+        {{ matching_rule_form.expected_amount }}
+        {% if matching_rule_form.expected_amount.errors %}
+        <div id="{{ matching_rule_form.expected_amount.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.expected_amount.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-1">
+        <div class="form-check bookkeeping-active-field">
+            {{ matching_rule_form.active }}
+            <label for="{{ matching_rule_form.active.id_for_label }}" class="form-check-label">{{ matching_rule_form.active.label }}</label>
+        </div>
+        {% if matching_rule_form.active.errors %}
+        <div id="{{ matching_rule_form.active.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.active.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-1">
+        <button type="submit" class="btn btn-primary w-100">{{ submit_label|default:"Anlegen" }}</button>
+    </div>
+</div>
+<div class="row g-2 mt-1">
+    <div class="col-md-6">
+        <label for="{{ matching_rule_form.text_pattern.id_for_label }}" class="form-label">{{ matching_rule_form.text_pattern.label }}</label>
+        {{ matching_rule_form.text_pattern }}
+        {% if matching_rule_form.text_pattern.errors %}
+        <div id="{{ matching_rule_form.text_pattern.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.text_pattern.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-6 bookkeeping-rule-help">
+        <div class="form-text">Exakt: IBAN und Betrag müssen exakt passen.</div>
+        <div class="form-text">Regex: Sucht im Namen und Verwendungszweck; IBAN ist optional.</div>
+    </div>
+</div>

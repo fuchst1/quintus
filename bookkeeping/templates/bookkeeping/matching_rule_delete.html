@@ -1,0 +1,19 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Matching-Regel löschen – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="matching-rule-delete-heading">
+    <div class="bookkeeping-page-heading">
+        <h1 id="matching-rule-delete-heading" class="bookkeeping-section-title">Matching-Regel löschen</h1>
+    </div>
+    <div class="bookkeeping-confirmation">
+        <p>Matching-Regel „{{ object.name }}“ wirklich löschen?</p>
+        <form method="post" class="bookkeeping-confirmation-actions">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Löschen</button>
+            <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+        </form>
+    </div>
+</section>
+{% endblock %}

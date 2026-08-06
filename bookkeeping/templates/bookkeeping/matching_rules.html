@@ -1,0 +1,33 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Matching-Regeln – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="matching-rules-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="matching-rules-heading" class="bookkeeping-section-title">Matching-Regeln</h1>
+            <p class="bookkeeping-page-description">Matching-Regeln ordnen Banktransaktionen anhand von IBAN, Betrag oder Textmuster zu.</p>
+        </div>
+        <a href="{% url 'bookkeeping_overview' %}" class="btn btn-outline-secondary">Zurück zu den Transaktionen</a>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+    {% if matching_rule_form.errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in matching_rule_form.non_field_errors %}{% ifchanged error %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endifchanged %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" class="bookkeeping-rule-form">
+        {% include "bookkeeping/_matching_rule_form.html" with submit_label="Anlegen" %}
+    </form>
+
+    {% include "bookkeeping/_matching_rule_table.html" %}
+</section>
+{% endblock %}

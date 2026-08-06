@@ -1,0 +1,51 @@
+{% if matching_rules %}
+<div class="bookkeeping-table-wrap" role="region" aria-label="Matching-Regeln" tabindex="0">
+    <table class="table table-hover align-middle mb-0 bookkeeping-data-table bookkeeping-rules-table">
+        <thead class="table-light">
+            <tr>
+                <th class="bookkeeping-actions">Aktionen</th>
+                <th>Bezeichnung</th>
+                <th class="bookkeeping-direction">Richtung</th>
+                <th>Regeltyp</th>
+                <th class="bookkeeping-iban">IBAN</th>
+                <th class="bookkeeping-amount">Erwarteter Betrag</th>
+                <th>Textmuster</th>
+                <th class="bookkeeping-status">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rule in matching_rules %}
+            <tr>
+                <td class="bookkeeping-actions">
+                    <div class="bookkeeping-action-buttons">
+                        <a href="{% url 'matching_rule_edit' rule.id %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
+                        <a href="{% url 'matching_rule_delete' rule.id %}" class="btn btn-sm btn-outline-danger">Löschen</a>
+                    </div>
+                </td>
+                <td>{{ rule.name }}</td>
+                <td class="bookkeeping-direction">
+                    {% if rule.direction_code == "incoming" %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-incoming">{{ rule.direction }}</span>
+                    {% else %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-outgoing">{{ rule.direction }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ rule.match_type }}</td>
+                <td class="bookkeeping-iban">{{ rule.iban }}</td>
+                <td class="bookkeeping-amount">{{ rule.expected_amount }}</td>
+                <td>{{ rule.text_pattern }}</td>
+                <td class="bookkeeping-status">
+                    {% if rule.active %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-active">{{ rule.status }}</span>
+                    {% else %}
+                    <span class="badge bookkeeping-badge bookkeeping-badge-inactive">{{ rule.status }}</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="bookkeeping-empty-state">Noch keine Matching-Regeln angelegt.</p>
+{% endif %}
