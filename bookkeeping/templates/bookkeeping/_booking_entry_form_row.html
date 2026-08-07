@@ -1,0 +1,58 @@
+<tr class="bookkeeping-entry-row{% if is_existing %} bookkeeping-entry-row-existing{% endif %}" data-existing="{% if is_existing %}true{% else %}false{% endif %}">
+    <td class="bookkeeping-entry-actions">
+        {% for hidden_field in entry_form.hidden_fields %}{{ hidden_field }}{% endfor %}
+        <span class="bookkeeping-entry-delete-field">{{ entry_form.DELETE }}</span>
+        <button type="button" class="btn btn-sm btn-outline-danger bookkeeping-entry-remove" title="Löschen" aria-label="Löschen">
+            <i class="bi bi-trash" aria-hidden="true"></i>
+            <span class="visually-hidden">Löschen</span>
+        </button>
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.receipt_group.id_for_label }}">Belegkreis</label>
+        {{ entry_form.receipt_group }}
+        <input type="hidden" name="{{ entry_form.receipt_group.html_name }}" value="{{ entry_form.receipt_group.initial|default_if_none:'' }}">
+        {% if entry_form.receipt_group.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.receipt_group.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.receipt_number.id_for_label }}">Belegnummer</label>
+        {{ entry_form.receipt_number }}
+        <input type="hidden" name="{{ entry_form.receipt_number.html_name }}" value="{{ entry_form.receipt_number.initial|default_if_none:'' }}">
+        {% if entry_form.receipt_number.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.receipt_number.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.payment_date.id_for_label }}">Zahlungsdatum</label>
+        {{ entry_form.payment_date }}
+        <input type="hidden" name="{{ entry_form.payment_date.html_name }}" value="{{ entry_form.payment_date.initial|date:'Y-m-d' }}">
+        {% if entry_form.payment_date.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.payment_date.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.booking_text.id_for_label }}">Buchungstext</label>
+        {{ entry_form.booking_text }}
+        {% if entry_form.booking_text.errors %}<div id="{{ entry_form.booking_text.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.booking_text.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.invoice_number.id_for_label }}">Rechnungsnummer</label>
+        {{ entry_form.invoice_number }}
+        {% if entry_form.invoice_number.errors %}<div id="{{ entry_form.invoice_number.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.invoice_number.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.partner_name.id_for_label }}">Lieferant/Kunde</label>
+        {{ entry_form.partner_name }}
+        {% if entry_form.partner_name.errors %}<div id="{{ entry_form.partner_name.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.partner_name.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.gross_amount.id_for_label }}">Bruttobetrag</label>
+        {{ entry_form.gross_amount }}
+        {% if entry_form.gross_amount.errors %}<div id="{{ entry_form.gross_amount.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.gross_amount.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.vat_symbol.id_for_label }}">USt</label>
+        {{ entry_form.vat_symbol }}
+        {% if entry_form.vat_symbol.errors %}<div id="{{ entry_form.vat_symbol.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.vat_symbol.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+    <td>
+        <label class="visually-hidden" for="{{ entry_form.category.id_for_label }}">Kategorie</label>
+        {{ entry_form.category }}
+        {% if entry_form.category.errors %}<div id="{{ entry_form.category.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.category.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
+    </td>
+</tr>

@@ -3,15 +3,26 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
 
 from .choices import CATEGORY_CHOICES, RECEIPT_GROUP_BANK, VAT_SYMBOL_CHOICES
+from .category_display import category_description
 from .formatting import format_austrian_decimal
-from .forms import BookingEntryForm, MatchingRuleForm
+from .forms import (
+    BookingEntryForm,
+    MatchingRuleBookingTemplateForm,
+    MatchingRuleForm,
+)
 from .matching import match_imported_transactions
-from .models import BankTransaction, BookingEntry, MatchingRule
+from .models import (
+    BankTransaction,
+    BookingEntry,
+    MatchingRule,
+    MatchingRuleBookingTemplate,
+)
 from .views import BookkeepingOverviewView
 
 
@@ -133,7 +144,7 @@ class BookkeepingOverviewUploadTests(TestCase):
         self.assertContains(response, "16.03.2026")
         self.assertContains(response, "Eingang")
         self.assertContains(response, "Ausgang")
-        self.assertContains(response, "Eingelesen")
+        self.assertContains(response, "Kein Treffer")
         self.assertContains(response, "2 Transaktionen angezeigt")
         self.assertContains(response, "2 Transaktionen importiert, 0 bereits vorhanden.")
         self.assertEqual(response.context["transactions"][0]["direction"], "Ausgang")
@@ -364,7 +375,7 @@ class BookkeepingOverviewFilteringTests(TestCase):
     def get_overview(self, **query):
         return self.client.get(reverse("bookkeeping_overview"), query)
 
-    def test_default_filter_shows_only_open_transactions_in_newest_month(self):
+    def test_default_filter_shows_all_open_transactions_in_newest_month(self):
         self.create_transaction(
             date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
         )
@@ -377,12 +388,17 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         response = self.get_overview()
 
-        self.assertEqual(response.context["selected_status"], "imported")
+        self.assertEqual(response.context["selected_status"], "open")
         self.assertEqual(response.context["selected_month"], "2026-07")
         self.assertContains(response, "Offene Transaktionen – Juli 2026")
         self.assertContains(response, "Offen Juli")
+        self.assertContains(response, "Zugeordnet Juli")
         self.assertNotContains(response, "Offen Juni")
-        self.assertNotContains(response, "Zugeordnet Juli")
+
+        self.assertEqual(
+            {row["name"] for row in response.context["transactions"]},
+            {"Offen Juli", "Zugeordnet Juli"},
+        )
 
     def test_each_valid_status_filter_shows_only_that_status(self):
         transactions = {
@@ -410,7 +426,91 @@ class BookkeepingOverviewFilteringTests(TestCase):
         self.assertContains(booked_response, "Exportiert")
         self.assertNotContains(booked_response, "Gebucht")
 
-    def test_invalid_status_falls_back_to_imported(self):
+    def test_open_filter_includes_imported_and_matched_but_not_completed(self):
+        transactions = {
+            BankTransaction.Status.IMPORTED: "Offen",
+            BankTransaction.Status.MATCHED: "Unvollständig",
+            BankTransaction.Status.REVIEWED: "Buchungsfertig",
+            BankTransaction.Status.BOOKED: "Exportiert",
+        }
+        for status, partner_name in transactions.items():
+            self.create_transaction(date(2026, 7, 15), status, partner_name)
+
+        response = self.get_overview(status="open", month="2026-07")
+
+        self.assertEqual(
+            {row["name"] for row in response.context["transactions"]},
+            {"Offen", "Unvollständig"},
+        )
+
+    def test_open_rows_show_reason_actions_and_matched_rule(self):
+        rule = MatchingRule.objects.create(
+            name="Unvollständige Regel",
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.REGEX,
+            text_pattern="Miete",
+            notes="Regelerklärung",
+        )
+        no_match = self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Kein Treffer"
+        )
+        ambiguous = self.create_transaction(
+            date(2026, 7, 16),
+            BankTransaction.Status.IMPORTED,
+            "Mehrdeutig",
+        )
+        ambiguous.matched_rule = rule
+        ambiguous.save(update_fields=("matched_rule",))
+        incomplete = self.create_transaction(
+            date(2026, 7, 17),
+            BankTransaction.Status.MATCHED,
+            "Buchungsdaten fehlen",
+        )
+        incomplete.matched_rule = rule
+        incomplete.save(update_fields=("matched_rule",))
+
+        response = self.get_overview(status="open", month="2026-07")
+
+        self.assertContains(response, "Kein Treffer")
+        self.assertContains(response, "Mehrdeutig")
+        self.assertContains(response, "Buchungsdaten unvollständig")
+        self.assertContains(response, "Buchung erfassen")
+        self.assertContains(response, "Buchungsdaten ergänzen")
+        self.assertContains(response, "Unvollständige Regel")
+        self.assertContains(response, "Regelerklärung")
+        self.assertContains(
+            response,
+            f'href="/bookkeeping/transactions/{no_match.pk}/booking/?status=open&amp;month=2026-07"',
+        )
+        self.assertContains(
+            response,
+            f'href="/bookkeeping/transactions/{incomplete.pk}/booking/?status=open&amp;month=2026-07"',
+        )
+
+        no_match.refresh_from_db()
+        ambiguous.refresh_from_db()
+        incomplete.refresh_from_db()
+        self.assertEqual(no_match.status, BankTransaction.Status.IMPORTED)
+        self.assertEqual(ambiguous.status, BankTransaction.Status.IMPORTED)
+        self.assertEqual(incomplete.status, BankTransaction.Status.MATCHED)
+
+    def test_matched_filter_remains_compatible_and_only_shows_matched(self):
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen"
+        )
+        self.create_transaction(
+            date(2026, 7, 16), BankTransaction.Status.MATCHED, "Zugeordnet"
+        )
+
+        response = self.get_overview(status="matched", month="2026-07")
+
+        self.assertEqual(response.context["selected_status"], "matched")
+        self.assertEqual(
+            [row["name"] for row in response.context["transactions"]],
+            ["Zugeordnet"],
+        )
+
+    def test_invalid_status_falls_back_to_open(self):
         self.create_transaction(
             date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen"
         )
@@ -420,9 +520,10 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         response = self.get_overview(status="unknown", month="2026-07")
 
-        self.assertEqual(response.context["selected_status"], "imported")
+        self.assertEqual(response.context["selected_status"], "open")
         self.assertEqual(
-            [row["name"] for row in response.context["transactions"]], ["Offen"]
+            {row["name"] for row in response.context["transactions"]},
+            {"Offen", "Zugeordnet"},
         )
 
     def test_month_filter(self):
@@ -486,7 +587,7 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertEqual(
             response.context["status_counts"],
-            {"imported": 1, "matched": 1, "reviewed": 1, "booked": 1},
+            {"open": 2, "reviewed": 1, "booked": 1},
         )
         self.assertContains(response, 'aria-label="1 Transaktionen"')
 
@@ -505,8 +606,42 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertEqual(
             response.context["status_counts"],
-            {"imported": 2, "matched": 1, "reviewed": 0, "booked": 0},
+            {"open": 3, "reviewed": 0, "booked": 0},
         )
+
+    def test_reviewed_label_and_booking_entry_summary_are_user_facing(self):
+        transaction = self.create_transaction(
+            date(2026, 7, 15),
+            BankTransaction.Status.REVIEWED,
+            "Buchungsfertige Zahlung",
+        )
+        transaction.amount = Decimal("1096.07")
+        transaction.save(update_fields=("amount",))
+        for position, gross_amount in enumerate(
+            (Decimal("868.24"), Decimal("193.92"), Decimal("33.91")),
+            start=1,
+        ):
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                receipt_number=str(position),
+                payment_date=transaction.booking_date,
+                booking_text=f"Zeile {position}",
+                partner_name="Mieter",
+                gross_amount=gross_amount,
+                vat_symbol="20",
+                category="7600",
+            )
+
+        response = self.get_overview(status="reviewed", month="2026-07")
+
+        self.assertContains(response, "Buchungsfertige Transaktionen")
+        self.assertContains(response, "Buchungsfertig")
+        self.assertContains(response, "3 Zeilen")
+        self.assertContains(response, "1.096,07 EUR")
+        self.assertContains(response, "Zeile 1")
+        self.assertContains(response, "Zeile 2")
+        self.assertContains(response, "Zeile 3")
 
     def test_sidebar_status_links_preserve_selected_month(self):
         self.create_transaction(
@@ -516,12 +651,13 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertContains(
             response,
-            'href="/bookkeeping/?status=imported&amp;month=2026-06"',
+            'href="/bookkeeping/?status=open&amp;month=2026-06"',
         )
         self.assertContains(
             response,
-            'href="/bookkeeping/?status=matched&amp;month=2026-06" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+            'href="/bookkeeping/?status=open&amp;month=2026-06" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
         )
+        self.assertNotContains(response, ">Zugeordnet<")
 
     def test_empty_state_message_uses_status_and_month(self):
         self.create_transaction(
@@ -561,7 +697,7 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertEqual(
             response["Location"],
-            "/bookkeeping/?status=imported&month=2026-07",
+            "/bookkeeping/?status=open&month=2026-07",
         )
 
 
@@ -745,7 +881,7 @@ class BookkeepingNoteTests(TestCase):
         self.assertEqual(first.notes, "Nur erste Transaktion")
         self.assertEqual(second.notes, "")
 
-    def test_matching_rule_note_is_displayed_live_without_copying_to_transaction(self):
+    def test_used_matching_rule_note_is_historical_and_not_editable(self):
         rule = MatchingRule.objects.create(
             name="Mietzahlung",
             direction=MatchingRule.Direction.INCOMING,
@@ -767,7 +903,7 @@ class BookkeepingNoteTests(TestCase):
         bank_transaction.refresh_from_db()
         self.assertEqual(bank_transaction.notes, "")
 
-        self.client.post(
+        response = self.client.post(
             reverse("matching_rule_edit", kwargs={"pk": rule.pk}),
             {
                 "name": rule.name,
@@ -779,17 +915,15 @@ class BookkeepingNoteTests(TestCase):
                 "notes": "Regelnotiz neu",
                 "active": "on",
             },
+            follow=True,
         )
 
+        self.assertEqual(response.status_code, 200)
         bank_transaction.refresh_from_db()
         self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
         self.assertEqual(bank_transaction.notes, "")
-        response = self.client.get(
-            reverse("bookkeeping_overview"),
-            {"status": "matched", "month": "2026-07"},
-        )
-        self.assertContains(response, "Regelnotiz neu")
-        self.assertNotContains(response, "Regelnotiz alt")
+        self.assertContains(response, "Regelnotiz alt")
+        self.assertNotContains(response, "Regelnotiz neu")
 
 
 class BookingEntryTests(TestCase):
@@ -831,6 +965,78 @@ class BookingEntryTests(TestCase):
         values.update(overrides)
         return values
 
+    def create_rule_with_templates(
+        self,
+        amount,
+        templates,
+        direction=BankTransaction.Direction.OUTGOING,
+    ):
+        rule = MatchingRule.objects.create(
+            name="Vorlage Buchungszeilen",
+            direction=direction,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban="AT611904300234573201",
+            expected_amount=abs(amount),
+        )
+        for position, template_values in enumerate(templates, start=1):
+            MatchingRuleBookingTemplate.objects.create(
+                matching_rule=rule,
+                position=position,
+                **template_values,
+            )
+        return rule
+
+    def entry_formset_data(
+        self,
+        bank_transaction,
+        rows,
+        action="save_draft",
+        initial_forms=0,
+        notes="",
+    ):
+        payment_date = bank_transaction.value_date or bank_transaction.booking_date
+        data = {
+            "action": action,
+            "entries-TOTAL_FORMS": str(len(rows)),
+            "entries-INITIAL_FORMS": str(initial_forms),
+            "entries-MIN_NUM_FORMS": "0",
+            "entries-MAX_NUM_FORMS": "1000",
+            "notes": notes,
+        }
+        for index, row in enumerate(rows):
+            values = {
+                "receipt_group": RECEIPT_GROUP_BANK,
+                "receipt_number": str(payment_date.month),
+                "payment_date": payment_date.isoformat(),
+                "booking_text": bank_transaction.purpose,
+                "invoice_number": "",
+                "partner_name": bank_transaction.partner_name,
+                "gross_amount": str(bank_transaction.amount),
+                "vat_symbol": "20",
+                "category": "7600",
+            }
+            values.update(row)
+            for field_name in BookingEntryForm.Meta.fields:
+                if field_name in values:
+                    value = values[field_name]
+                    if isinstance(value, Decimal):
+                        value = str(value)
+                    elif isinstance(value, date):
+                        value = value.isoformat()
+                    data[f"entries-{index}-{field_name}"] = value
+            if row.get("id"):
+                data[f"entries-{index}-id"] = str(row["id"])
+            if row.get("delete"):
+                data[f"entries-{index}-DELETE"] = "on"
+        return data
+
+    @staticmethod
+    def booking_table_body(response):
+        content = response.content.decode()
+        return content.split('<tbody id="booking-entry-rows">', 1)[1].split(
+            "</tbody>", 1
+        )[0]
+
     def test_form_defaults_are_taken_from_bank_transaction(self):
         bank_transaction = self.create_transaction(
             notes="Vorhandene Transaktionsnotiz"
@@ -851,6 +1057,133 @@ class BookingEntryTests(TestCase):
         self.assertContains(response, "Originale Banktransaktion")
         self.assertContains(response, "Anmerkung")
 
+    def test_booking_form_uses_full_width_layout_and_compact_optional_note(self):
+        bank_transaction = self.create_transaction()
+
+        response = self.client.get(self.booking_url(bank_transaction))
+        content = response.content.decode()
+
+        self.assertContains(response, 'class="bookkeeping-entry-form"')
+        self.assertContains(response, 'class="bookkeeping-entry-rows-section"')
+        self.assertContains(response, 'class="bookkeeping-entry-table-wrap"')
+        self.assertContains(response, 'class="bookkeeping-entry-form-actions"')
+        self.assertContains(response, "Anmerkung (optional)")
+        self.assertIn('name="notes"', content)
+        self.assertIn('rows="3"', content)
+
+    def test_booking_entries_render_as_compact_table_rows_in_requested_order(self):
+        bank_transaction = self.create_transaction()
+        for booking_text, gross_amount, category in (
+            ("Erste Zeile", Decimal("60.00"), "7600"),
+            ("Zweite Zeile", Decimal("40.00"), "7380"),
+        ):
+            BookingEntry.objects.create(
+                bank_transaction=bank_transaction,
+                receipt_group="BK",
+                payment_date=bank_transaction.booking_date,
+                booking_text=booking_text,
+                partner_name=bank_transaction.partner_name,
+                gross_amount=gross_amount,
+                vat_symbol="20",
+                category=category,
+            )
+
+        response = self.client.get(self.booking_url(bank_transaction))
+        content = response.content.decode()
+        table = content.split('<table class="table table-sm bookkeeping-entry-table">', 1)[1]
+        header = table.split("</thead>", 1)[0]
+        expected_columns = (
+            "Aktionen",
+            "Belegkreis",
+            "Belegnummer",
+            "Zahlungsdatum",
+            "Buchungstext",
+            "Rechnungsnummer",
+            "Lieferant/Kunde",
+            "Bruttobetrag",
+            "USt",
+            "Kategorie",
+        )
+        positions = [header.index(column) for column in expected_columns]
+
+        self.assertEqual(positions, sorted(positions))
+        body = self.booking_table_body(response)
+        self.assertEqual(body.count('<tr class="bookkeeping-entry-row'), 2)
+        self.assertNotIn("bookkeeping-entry-row-title", body)
+        self.assertLess(
+            body.index('<td class="bookkeeping-entry-actions">'),
+            body.index("<td>", body.index('<td class="bookkeeping-entry-actions">') + 1),
+        )
+        self.assertContains(response, "Buchungszeile hinzufügen")
+
+    def test_booking_table_uses_single_line_text_input_and_preserves_formset_controls(self):
+        bank_transaction = self.create_transaction()
+
+        response = self.client.get(self.booking_url(bank_transaction))
+        body = self.booking_table_body(response)
+
+        self.assertIn('name="entries-0-booking_text"', body)
+        self.assertIn('type="text" name="entries-0-booking_text"', body)
+        self.assertNotIn("<textarea", body)
+        self.assertIn('class="bi bi-trash"', body)
+        self.assertIn('aria-label="Löschen"', body)
+        self.assertIn("entries-TOTAL_FORMS", response.content.decode())
+        self.assertIn("insertAdjacentHTML", response.content.decode())
+        self.assertIn("entries-0-DELETE", body)
+        self.assertIn("entries-__prefix__-DELETE", response.content.decode())
+        self.assertContains(response, "Büromaterial und Drucksorten")
+        self.assertNotContains(response, "7600 – Büromaterial und Drucksorten")
+
+    def test_read_only_bank_values_have_hidden_submitted_values(self):
+        bank_transaction = self.create_transaction(value_date=date(2026, 7, 20))
+
+        response = self.client.get(self.booking_url(bank_transaction))
+        body = self.booking_table_body(response)
+
+        self.assertIn(
+            'name="entries-0-receipt_group" value="BK"',
+            body,
+        )
+        self.assertIn(
+            'name="entries-0-receipt_number" value="7"',
+            body,
+        )
+        self.assertIn(
+            'name="entries-0-payment_date" value="2026-07-20"',
+            body,
+        )
+        self.assertIn('value="20.07.2026"', body)
+
+    def test_booking_table_keeps_field_errors_in_their_row_cells(self):
+        bank_transaction = self.create_transaction(amount=Decimal("-100.00"))
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {
+                        "booking_text": "",
+                        "partner_name": "",
+                        "vat_symbol": "",
+                        "category": "",
+                        "gross_amount": Decimal("-60.00"),
+                    },
+                    {
+                        "booking_text": "Zweite Zeile",
+                        "gross_amount": Decimal("-40.00"),
+                    },
+                ],
+                action="finalize",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = self.booking_table_body(response)
+        first_row, second_row = body.split('<tr class="bookkeeping-entry-row', 2)[1:]
+        self.assertIn("id_entries-0-booking_text_error", first_row)
+        self.assertNotIn("id_entries-1-booking_text_error", second_row)
+        self.assertContains(response, "Bitte korrigieren Sie die markierten Felder.")
+
     def test_bank_form_uses_bk_and_read_only_month_based_receipt_values(self):
         bank_transaction = self.create_transaction(
             value_date=date(2026, 7, 20)
@@ -866,8 +1199,8 @@ class BookingEntryTests(TestCase):
         self.assertTrue(form.fields["receipt_number"].disabled)
         self.assertTrue(form.fields["payment_date"].disabled)
         self.assertContains(response, "BK – Bank")
-        self.assertContains(response, 'name="receipt_number" value="7"')
-        self.assertContains(response, 'name="payment_date" value="20.07.2026"')
+        self.assertContains(response, 'name="entries-0-receipt_number" value="7"')
+        self.assertContains(response, 'name="entries-0-payment_date" value="20.07.2026"')
 
         self.client.post(
             self.booking_url(bank_transaction),
@@ -952,11 +1285,19 @@ class BookingEntryTests(TestCase):
             [value for value, _label in form.fields["vat_symbol"].choices],
             ["", *(value for value, _label in VAT_SYMBOL_CHOICES)],
         )
-        self.assertEqual(
-            [value for value, _label in form.fields["category"].choices],
-            ["", *(value for value, _label in CATEGORY_CHOICES)],
+        expected_category_choices = sorted(
+            [
+                (value, category_description(value))
+                for value, _label in CATEGORY_CHOICES
+            ],
+            key=lambda item: item[1].casefold(),
         )
-        self.assertContains(response, "7600 – Büromaterial und Drucksorten")
+        self.assertEqual(
+            list(form.fields["category"].choices),
+            [("", ""), *expected_category_choices],
+        )
+        self.assertContains(response, "Büromaterial und Drucksorten")
+        self.assertNotContains(response, "7600 – Büromaterial und Drucksorten")
 
         self.client.post(
             self.booking_url(bank_transaction),
@@ -1134,7 +1475,8 @@ class BookingEntryTests(TestCase):
         )
 
         self.assertContains(response, "Buchungsdaten")
-        self.assertContains(response, "7600 – Büromaterial und Drucksorten")
+        self.assertContains(response, "Büromaterial und Drucksorten")
+        self.assertNotContains(response, "7600 – Büromaterial und Drucksorten")
         self.assertContains(response, "Bearbeiten")
         self.assertContains(
             response,
@@ -1203,6 +1545,419 @@ class BookingEntryTests(TestCase):
         self.assertEqual(entry.booking_text, "Eigener Buchungstext")
         self.assertEqual(entry.category, "7600")
         self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+
+    def test_matching_templates_prepare_signed_unsaved_booking_rows(self):
+        rule = self.create_rule_with_templates(
+            Decimal("1096.07"),
+            [
+                {
+                    "booking_text": "Miete",
+                    "invoice_number": "RG-1",
+                    "partner_name": "Hausverwaltung",
+                    "gross_amount": Decimal("868.24"),
+                    "vat_symbol": "20",
+                    "category": "4850",
+                },
+                {
+                    "booking_text": "Betriebskosten",
+                    "invoice_number": "RG-2",
+                    "partner_name": "Hausverwaltung",
+                    "gross_amount": Decimal("193.92"),
+                    "vat_symbol": "10",
+                    "category": "4851",
+                },
+                {
+                    "booking_text": "Rest",
+                    "invoice_number": "",
+                    "partner_name": "Hausverwaltung",
+                    "gross_amount": None,
+                    "vat_symbol": "20",
+                    "category": "4852",
+                },
+            ],
+        )
+        bank_transaction = self.create_transaction(
+            amount=Decimal("-1096.07"),
+            value_date=date(2026, 7, 20),
+            matched_rule=rule,
+            status=BankTransaction.Status.MATCHED,
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction, status="matched"))
+
+        self.assertEqual(response.status_code, 200)
+        forms = response.context["formset"].forms
+        self.assertEqual(len(forms), 3)
+        self.assertEqual(
+            [form.initial["gross_amount"] for form in forms],
+            [Decimal("-868.24"), Decimal("-193.92"), Decimal("-33.91")],
+        )
+        self.assertEqual(forms[0].initial["receipt_group"], "BK")
+        self.assertEqual(forms[0].initial["receipt_number"], "7")
+        self.assertEqual(forms[0].initial["payment_date"], date(2026, 7, 20))
+        self.assertEqual(forms[1].initial["booking_text"], "Betriebskosten")
+        self.assertEqual(forms[2].initial["category"], "4852")
+        self.assertEqual(BookingEntry.objects.count(), 0)
+        self.assertContains(response, "Buchungszeilen")
+        self.assertContains(response, "Buchungszeile hinzufügen")
+
+    def test_saved_template_snapshot_creates_independent_booking_entries(self):
+        rule = self.create_rule_with_templates(
+            Decimal("100.00"),
+            [
+                {
+                    "booking_text": "Teil 1",
+                    "invoice_number": "RG-1",
+                    "partner_name": "Lieferant 1",
+                    "gross_amount": Decimal("60.00"),
+                    "vat_symbol": "20",
+                    "category": "7600",
+                },
+                {
+                    "booking_text": "Teil 2",
+                    "invoice_number": "RG-2",
+                    "partner_name": "Lieferant 2",
+                    "gross_amount": Decimal("40.00"),
+                    "vat_symbol": "20",
+                    "category": "7380",
+                },
+            ],
+        )
+        bank_transaction = self.create_transaction(
+            amount=Decimal("-100.00"),
+            matched_rule=rule,
+            status=BankTransaction.Status.MATCHED,
+        )
+
+        response = self.client.post(
+            self.booking_url(bank_transaction, status="matched"),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {
+                        "booking_text": "Teil 1",
+                        "invoice_number": "RG-1",
+                        "partner_name": "Lieferant 1",
+                        "gross_amount": Decimal("-60.00"),
+                        "category": "7600",
+                    },
+                    {
+                        "booking_text": "Teil 2",
+                        "invoice_number": "RG-2",
+                        "partner_name": "Lieferant 2",
+                        "gross_amount": Decimal("-40.00"),
+                        "category": "7380",
+                    },
+                ],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(
+            set(
+                BookingEntry.objects.filter(bank_transaction=bank_transaction)
+                .values_list("booking_text", "invoice_number", "gross_amount")
+            ),
+            {
+                ("Teil 1", "RG-1", Decimal("-60.00")),
+                ("Teil 2", "RG-2", Decimal("-40.00")),
+            },
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction, status="matched"))
+
+        self.assertEqual(
+            set(
+                form.initial["booking_text"]
+                for form in response.context["formset"].forms
+            ),
+            {"Teil 1", "Teil 2"},
+        )
+
+    def test_matching_template_snapshot_uses_transaction_fallbacks(self):
+        rule = self.create_rule_with_templates(
+            Decimal("100.00"),
+            [
+                {
+                    "booking_text": "",
+                    "invoice_number": "",
+                    "partner_name": "",
+                    "gross_amount": Decimal("100.00"),
+                    "vat_symbol": "20",
+                    "category": "7600",
+                }
+            ],
+            direction=BankTransaction.Direction.INCOMING,
+        )
+        bank_transaction = self.create_transaction(
+            amount=Decimal("100.00"),
+            direction=BankTransaction.Direction.INCOMING,
+            value_date=None,
+            matched_rule=rule,
+            purpose="Mietzahlung Juli",
+            partner_name="Mieter",
+            booking_date=date(2026, 7, 15),
+            status=BankTransaction.Status.MATCHED,
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction, status="matched"))
+
+        form = response.context["formset"].forms[0]
+        self.assertEqual(form.initial["booking_text"], "Mietzahlung Juli")
+        self.assertEqual(form.initial["invoice_number"], "")
+        self.assertEqual(form.initial["partner_name"], "Mieter")
+        self.assertEqual(form.initial["gross_amount"], Decimal("100.00"))
+        self.assertEqual(form.initial["payment_date"], date(2026, 7, 15))
+
+    def test_invalid_template_snapshot_shows_error_and_allows_manual_rows(self):
+        rule = self.create_rule_with_templates(
+            Decimal("100.00"),
+            [
+                {
+                    "booking_text": "Zu klein",
+                    "invoice_number": "",
+                    "partner_name": "Lieferant",
+                    "gross_amount": Decimal("60.00"),
+                    "vat_symbol": "20",
+                    "category": "7600",
+                }
+            ],
+        )
+        bank_transaction = self.create_transaction(
+            matched_rule=rule,
+            status=BankTransaction.Status.MATCHED,
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction, status="matched"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "nicht verwendbar")
+        self.assertEqual(response.context["formset"].total_form_count(), 1)
+        self.assertFalse(BookingEntry.objects.exists())
+
+        response = self.client.post(
+            self.booking_url(bank_transaction, status="matched"),
+            self.complete_data(bank_transaction, gross_amount="100.00"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(
+            BookingEntry.objects.get(bank_transaction=bank_transaction).gross_amount,
+            Decimal("100.00"),
+        )
+
+    def test_draft_updates_adds_and_deletes_booking_rows_without_duplicates(self):
+        bank_transaction = self.create_transaction()
+        existing = BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Alt",
+            partner_name=bank_transaction.partner_name,
+            gross_amount=Decimal("60.00"),
+            vat_symbol="20",
+            category="7600",
+        )
+
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {"id": existing.pk, "booking_text": "Geändert", "gross_amount": Decimal("60.00")},
+                    {"booking_text": "Neu", "gross_amount": Decimal("40.00")},
+                ],
+                initial_forms=1,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(BookingEntry.objects.filter(bank_transaction=bank_transaction).count(), 2)
+        existing.refresh_from_db()
+        self.assertEqual(existing.booking_text, "Geändert")
+        new_entry = BookingEntry.objects.exclude(pk=existing.pk).get(
+            bank_transaction=bank_transaction
+        )
+
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {"id": existing.pk, "delete": True},
+                    {"id": new_entry.pk, "booking_text": "Neu gespeichert", "gross_amount": Decimal("40.00")},
+                ],
+                initial_forms=2,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(BookingEntry.objects.filter(pk=existing.pk).exists())
+        new_entry.refresh_from_db()
+        self.assertEqual(new_entry.booking_text, "Neu gespeichert")
+        self.assertEqual(BookingEntry.objects.filter(bank_transaction=bank_transaction).count(), 1)
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
+
+    def test_unmatched_transaction_can_be_finalized_with_multiple_manual_rows(self):
+        bank_transaction = self.create_transaction(amount=Decimal("-100.00"))
+
+        response = self.client.get(self.booking_url(bank_transaction))
+
+        self.assertEqual(response.context["formset"].total_form_count(), 1)
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {"booking_text": "Teil 1", "gross_amount": Decimal("-60.00")},
+                    {"booking_text": "Teil 2", "gross_amount": Decimal("-40.00")},
+                ],
+                action="finalize",
+                notes="Mehrzeilige Prüfung",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertIsNone(bank_transaction.matched_rule_id)
+        self.assertEqual(BookingEntry.objects.filter(bank_transaction=bank_transaction).count(), 2)
+
+    def test_finalization_rejects_wrong_signed_sum_for_multiple_rows(self):
+        bank_transaction = self.create_transaction(amount=Decimal("-100.00"))
+
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {"gross_amount": Decimal("-60.00")},
+                    {"gross_amount": Decimal("-30.00")},
+                ],
+                action="finalize",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "signierten Transaktionsbetrag")
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
+        self.assertFalse(BookingEntry.objects.exists())
+
+    def test_reviewed_transaction_loads_and_edits_all_saved_booking_rows(self):
+        rule = self.create_rule_with_templates(
+            Decimal("100.00"),
+            [
+                {
+                    "booking_text": "Vorlage 1",
+                    "invoice_number": "",
+                    "partner_name": "Lieferant",
+                    "gross_amount": Decimal("60.00"),
+                    "vat_symbol": "20",
+                    "category": "7600",
+                },
+                {
+                    "booking_text": "Vorlage 2",
+                    "invoice_number": "",
+                    "partner_name": "Lieferant",
+                    "gross_amount": Decimal("40.00"),
+                    "vat_symbol": "20",
+                    "category": "7380",
+                },
+            ],
+        )
+        bank_transaction = self.create_transaction(
+            status=BankTransaction.Status.REVIEWED,
+            matched_rule=rule,
+        )
+        first = BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Gespeichert 1",
+            partner_name="Eigener Partner",
+            gross_amount=Decimal("60.00"),
+            vat_symbol="20",
+            category="7600",
+        )
+        second = BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Gespeichert 2",
+            partner_name="Eigener Partner",
+            gross_amount=Decimal("40.00"),
+            vat_symbol="20",
+            category="7380",
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction, status="reviewed"))
+
+        self.assertEqual(len(response.context["formset"].forms), 2)
+        self.assertEqual(
+            sorted(
+                form.initial["booking_text"]
+                for form in response.context["formset"].forms
+            ),
+            ["Gespeichert 1", "Gespeichert 2"],
+        )
+        response = self.client.post(
+            self.booking_url(bank_transaction, status="reviewed"),
+            self.entry_formset_data(
+                bank_transaction,
+                [
+                    {"id": first.pk, "booking_text": "Bearbeitet 1", "gross_amount": Decimal("60.00")},
+                    {"id": second.pk, "booking_text": "Bearbeitet 2", "gross_amount": Decimal("40.00")},
+                ],
+                initial_forms=2,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(BookingEntry.objects.filter(bank_transaction=bank_transaction).count(), 2)
+        self.assertEqual(
+            sorted(
+                BookingEntry.objects.filter(bank_transaction=bank_transaction)
+                .order_by("created_at", "id")
+                .values_list("booking_text", flat=True)
+            ),
+            ["Bearbeitet 1", "Bearbeitet 2"],
+        )
+
+    def test_booking_formset_rejects_entry_from_another_transaction(self):
+        bank_transaction = self.create_transaction()
+        other_transaction = self.create_transaction(partner_name="Andere Transaktion")
+        other_entry = BookingEntry.objects.create(
+            bank_transaction=other_transaction,
+            receipt_group="BK",
+            payment_date=other_transaction.booking_date,
+            booking_text="Fremde Zeile",
+            partner_name=other_transaction.partner_name,
+            gross_amount=other_transaction.amount,
+            vat_symbol="20",
+            category="7600",
+        )
+
+        response = self.client.post(
+            self.booking_url(bank_transaction),
+            self.entry_formset_data(
+                bank_transaction,
+                [{"id": other_entry.pk, "gross_amount": bank_transaction.amount}],
+                initial_forms=1,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(BookingEntry.objects.filter(bank_transaction=bank_transaction).exists())
+        other_entry.refresh_from_db()
+        self.assertEqual(other_entry.booking_text, "Fremde Zeile")
 
 
 class BankTransactionModelTests(TestCase):
@@ -1296,6 +2051,20 @@ class TransactionMatchingTests(TestCase):
         values.update(overrides)
         return MatchingRule.objects.create(**values)
 
+    def add_template(self, rule, **overrides):
+        values = {
+            "matching_rule": rule,
+            "position": 1,
+            "booking_text": "Automatische Buchung",
+            "invoice_number": "RG-1",
+            "partner_name": "Automatischer Partner",
+            "gross_amount": Decimal("100.00"),
+            "vat_symbol": "20",
+            "category": "7600",
+        }
+        values.update(overrides)
+        return MatchingRuleBookingTemplate.objects.create(**values)
+
     def upload(self, payload):
         content = json.dumps(payload).encode()
         uploaded_file = SimpleUploadedFile(
@@ -1319,6 +2088,135 @@ class TransactionMatchingTests(TestCase):
         self.assertEqual(result, (1, 0, 0))
         self.assertEqual(bank_transaction.matched_rule_id, rule.id)
         self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+
+    def test_successful_exact_match_creates_template_rows_and_is_booking_ready(self):
+        rule = self.create_rule()
+        self.add_template(rule)
+        bank_transaction = self.create_transaction()
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        entry = BookingEntry.objects.get(bank_transaction=bank_transaction)
+        self.assertEqual(result, (1, 0, 0))
+        self.assertEqual(result.auto_ready_count, 1)
+        self.assertEqual(result.incomplete_count, 0)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.id)
+        self.assertEqual(entry.booking_text, "Automatische Buchung")
+        self.assertEqual(entry.gross_amount, Decimal("100.00"))
+
+        second_result = match_imported_transactions()
+
+        self.assertEqual(second_result, (0, 0, 0))
+        self.assertEqual(
+            BookingEntry.objects.filter(bank_transaction=bank_transaction).count(),
+            1,
+        )
+
+    def test_successful_regex_match_creates_template_rows(self):
+        rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="EVN",
+            iban="",
+        )
+        self.add_template(rule, gross_amount=None)
+        bank_transaction = self.create_transaction(
+            partner_name="EVN Vertrieb GmbH",
+            amount=Decimal("12.34"),
+        )
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        entry = BookingEntry.objects.get(bank_transaction=bank_transaction)
+        self.assertEqual(result.auto_ready_count, 1)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(entry.gross_amount, Decimal("12.34"))
+
+    def test_automatic_snapshot_calculates_signed_fixed_and_rest_rows(self):
+        rule = self.create_rule(
+            expected_amount=Decimal("100.00"),
+            direction=BankTransaction.Direction.OUTGOING,
+        )
+        self.add_template(rule, gross_amount=Decimal("60.00"), position=1)
+        self.add_template(
+            rule,
+            position=2,
+            booking_text="Restbetrag",
+            invoice_number="",
+            gross_amount=None,
+            category="7380",
+        )
+        bank_transaction = self.create_transaction(
+            amount=Decimal("-100.00"),
+            direction=BankTransaction.Direction.OUTGOING,
+        )
+
+        match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        entries = list(
+            BookingEntry.objects.filter(bank_transaction=bank_transaction)
+            .order_by("created_at", "id")
+            .values_list("gross_amount", flat=True)
+        )
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(entries, [Decimal("-60.00"), Decimal("-40.00")])
+        self.assertEqual(sum(entries, Decimal("0")), bank_transaction.amount)
+
+    def test_missing_templates_leave_successful_match_manual(self):
+        rule = self.create_rule()
+        bank_transaction = self.create_transaction()
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result.auto_ready_count, 0)
+        self.assertEqual(result.incomplete_count, 1)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.id)
+        self.assertFalse(BookingEntry.objects.exists())
+
+    def test_invalid_runtime_template_leaves_no_partial_rows(self):
+        rule = self.create_rule()
+        self.add_template(rule, gross_amount=Decimal("60.00"))
+        bank_transaction = self.create_transaction()
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result.auto_ready_count, 0)
+        self.assertEqual(result.incomplete_count, 1)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.id)
+        self.assertFalse(BookingEntry.objects.exists())
+
+    def test_existing_booking_draft_is_not_overwritten_or_finalized(self):
+        rule = self.create_rule()
+        self.add_template(rule)
+        bank_transaction = self.create_transaction()
+        entry = BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Manueller Entwurf",
+            partner_name="Eigener Partner",
+            gross_amount=Decimal("100.00"),
+            vat_symbol="13",
+            category="7380",
+        )
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        entry.refresh_from_db()
+        self.assertEqual(result.auto_ready_count, 0)
+        self.assertEqual(result.incomplete_count, 1)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(entry.booking_text, "Manueller Entwurf")
+        self.assertEqual(entry.category, "7380")
 
     def test_exact_matching_uses_the_stored_decimal_amount(self):
         rule = self.create_rule(expected_amount=Decimal("1096.07"))
@@ -1600,7 +2498,7 @@ class TransactionMatchingTests(TestCase):
         self.assertIsNone(booked.matched_rule_id)
         self.assertEqual(rule.transactions.count(), 0)
 
-    def test_rematching_clears_previous_incorrect_match(self):
+    def test_rematching_does_not_re_evaluate_matched_transactions(self):
         rule = self.create_rule(expected_amount=Decimal("872.03"))
         bank_transaction = self.create_transaction(
             amount=Decimal("46.46"),
@@ -1611,9 +2509,9 @@ class TransactionMatchingTests(TestCase):
         result = match_imported_transactions()
 
         bank_transaction.refresh_from_db()
-        self.assertEqual(result, (0, 1, 0))
-        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
-        self.assertIsNone(bank_transaction.matched_rule_id)
+        self.assertEqual(result, (0, 0, 0))
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
 
     def test_transactions_are_not_aggregated_for_matching(self):
         self.create_rule(expected_amount=Decimal("100.00"))
@@ -1630,6 +2528,7 @@ class TransactionMatchingTests(TestCase):
 
     def test_import_runs_matching_automatically(self):
         rule = self.create_rule()
+        self.add_template(rule)
         response = self.upload(
             [
                 {
@@ -1647,11 +2546,15 @@ class TransactionMatchingTests(TestCase):
 
         bank_transaction = BankTransaction.objects.get()
         self.assertEqual(bank_transaction.matched_rule_id, rule.id)
-        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
-        self.assertContains(response, "1 zugeordnet, 0 ohne Treffer, 0 mehrdeutig.")
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+        self.assertContains(
+            response,
+            "1 automatisch buchungsfertig, 0 zugeordnet, aber Buchungsdaten "
+            "unvollständig, 0 ohne Treffer, 0 mehrdeutig.",
+        )
         matched_response = self.client.get(
             reverse("bookkeeping_overview"),
-            {"status": BankTransaction.Status.MATCHED, "month": "2026-02"},
+            {"status": BankTransaction.Status.REVIEWED, "month": "2026-02"},
         )
         self.assertContains(matched_response, "Matching-Regel")
         self.assertContains(matched_response, rule.name)
@@ -1669,7 +2572,11 @@ class TransactionMatchingTests(TestCase):
         bank_transaction.refresh_from_db()
         self.assertEqual(bank_transaction.matched_rule_id, rule.id)
         self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
-        self.assertContains(response, "1 zugeordnet, 0 ohne Treffer, 0 mehrdeutig.")
+        self.assertContains(
+            response,
+            "0 automatisch buchungsfertig, 1 zugeordnet, aber Buchungsdaten "
+            "unvollständig, 0 ohne Treffer, 0 mehrdeutig.",
+        )
 
 
 class MatchingRuleTests(TestCase):
@@ -1877,13 +2784,13 @@ class MatchingRuleTests(TestCase):
             self.assertContains(response, 'href="/bookkeeping/"')
             self.assertContains(response, 'href="/bookkeeping/#bank-import"')
             self.assertContains(response, "Offen")
-            self.assertContains(response, "Zugeordnet")
-            self.assertContains(response, "Geprüft")
+            self.assertNotContains(response, ">Zugeordnet<")
+            self.assertContains(response, "Buchungsfertig")
             self.assertContains(response, "Exportiert")
             self.assertContains(response, 'href="/bookkeeping/matching-rules/"')
         self.assertContains(
             overview_response,
-            'href="/bookkeeping/?status=imported" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+            'href="/bookkeeping/?status=open" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
         )
         self.assertContains(
             rules_response,
@@ -2005,11 +2912,11 @@ class MatchingRuleManagementTests(TestCase):
         self.assertContains(response, "Bitte korrigieren Sie die markierten Felder.")
         self.assertContains(response, 'value="Geänderte Regel"')
 
-    def test_edit_resets_linked_matched_transactions(self):
+    def test_used_rule_cannot_be_edited_and_keeps_linked_matched_transactions(self):
         rule = self.create_rule()
         bank_transaction = self.create_transaction(rule)
 
-        self.client.post(
+        response = self.client.post(
             reverse("matching_rule_edit", kwargs={"pk": rule.pk}),
             {
                 "name": rule.name,
@@ -2022,9 +2929,16 @@ class MatchingRuleManagementTests(TestCase):
             },
         )
 
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+        )
         bank_transaction.refresh_from_db()
-        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
-        self.assertIsNone(bank_transaction.matched_rule_id)
+        rule.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(rule.expected_amount, Decimal("100.00"))
 
     def test_edit_is_blocked_for_reviewed_or_booked_transactions(self):
         rule = self.create_rule()
@@ -2035,8 +2949,8 @@ class MatchingRuleManagementTests(TestCase):
             follow=True,
         )
 
-        self.assertContains(response, "kann nicht bearbeitet werden")
-        self.assertContains(response, "geprüften oder gebuchten")
+        self.assertContains(response, "bereits verwendet")
+        self.assertContains(response, "schreibgeschützt")
 
     def test_delete_get_shows_confirmation_without_deleting(self):
         rule = self.create_rule()
@@ -2049,7 +2963,7 @@ class MatchingRuleManagementTests(TestCase):
         self.assertContains(response, "Matching-Regel „Mietzahlung“ wirklich löschen?")
         self.assertTrue(MatchingRule.objects.filter(pk=rule.pk).exists())
 
-    def test_delete_only_works_through_post_and_resets_matched_transactions(self):
+    def test_used_rule_cannot_be_deleted_and_keeps_matched_transactions(self):
         rule = self.create_rule()
         bank_transaction = self.create_transaction(rule)
         delete_url = reverse("matching_rule_delete", kwargs={"pk": rule.pk})
@@ -2060,11 +2974,11 @@ class MatchingRuleManagementTests(TestCase):
         response = self.client.post(delete_url, follow=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(MatchingRule.objects.filter(pk=rule.pk).exists())
+        self.assertTrue(MatchingRule.objects.filter(pk=rule.pk).exists())
         bank_transaction.refresh_from_db()
-        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
-        self.assertIsNone(bank_transaction.matched_rule_id)
-        self.assertContains(response, "Matching-Regel „Mietzahlung“ gelöscht.")
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertContains(response, "bereits verwendet")
 
     def test_delete_is_blocked_for_reviewed_or_booked_transactions(self):
         rule = self.create_rule()
@@ -2091,3 +3005,618 @@ class MatchingRuleManagementTests(TestCase):
         list_url = reverse("matching_rule_list")
         self.assertContains(edit_response, f'href="{list_url}"')
         self.assertContains(delete_response, f'href="{list_url}"')
+
+
+class MatchingRuleBookingTemplateTests(TestCase):
+    iban = "AT611904300234573201"
+
+    def parent_data(self, **overrides):
+        values = {
+            "name": "Mietzahlung",
+            "direction": MatchingRule.Direction.INCOMING,
+            "match_type": MatchingRule.MatchType.EXACT,
+            "iban": self.iban,
+            "expected_amount": "100,00",
+            "text_pattern": "",
+            "active": "on",
+        }
+        values.update(overrides)
+        return values
+
+    def template_data(self, rows, initial_forms=0):
+        values = {
+            "templates-TOTAL_FORMS": str(len(rows)),
+            "templates-INITIAL_FORMS": str(initial_forms),
+            "templates-MIN_NUM_FORMS": "0",
+            "templates-MAX_NUM_FORMS": "1000",
+        }
+        for index, row in enumerate(rows):
+            for field, value in row.items():
+                values[f"templates-{index}-{field}"] = value
+        return values
+
+    def test_template_form_accepts_austrian_decimal_input(self):
+        form = MatchingRuleBookingTemplateForm(
+            {
+                "position": "1",
+                "booking_text": "Büromaterial",
+                "invoice_number": "RG-1",
+                "partner_name": "Lieferant",
+                "gross_amount": "1.096,07",
+                "vat_symbol": "20",
+                "category": "300",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIsInstance(form.cleaned_data["gross_amount"], Decimal)
+        self.assertEqual(form.cleaned_data["gross_amount"], Decimal("1096.07"))
+
+    def test_template_category_choices_are_description_only_sorted_and_dynamic(self):
+        form = MatchingRuleBookingTemplateForm()
+        expected_choices = sorted(
+            [
+                (value, category_description(value))
+                for value, _label in CATEGORY_CHOICES
+            ],
+            key=lambda item: item[1].casefold(),
+        )
+
+        self.assertEqual(
+            list(form.fields["category"].choices),
+            [("", ""), *expected_choices],
+        )
+        self.assertEqual(form.fields["category"].choices[0], ("", ""))
+        self.assertEqual(
+            form.fields["category"].choices[
+                next(
+                    index
+                    for index, (value, _label) in enumerate(
+                        form.fields["category"].choices
+                    )
+                    if value == "4856"
+                )
+            ][1],
+            "Betriebskostenerlös Bahngasse 10%",
+        )
+
+        response = self.client.get(reverse("matching_rule_list"))
+
+        self.assertContains(
+            response,
+            '<option value="4856">Betriebskostenerlös Bahngasse 10%</option>',
+        )
+        self.assertNotContains(
+            response,
+            "4856 – Betriebskostenerlös Bahngasse 10%",
+        )
+
+    def test_template_submission_keeps_the_category_code(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "1",
+                            "booking_text": "Betriebskosten",
+                            "invoice_number": "",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "100,00",
+                            "vat_symbol": "20",
+                            "category": "4856",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            MatchingRuleBookingTemplate.objects.get().category,
+            "4856",
+        )
+
+    def test_matching_rule_detail_displays_category_description(self):
+        rule = MatchingRule.objects.create(
+            name="Betriebskostenregel",
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban=self.iban,
+            expected_amount=Decimal("100.00"),
+        )
+        MatchingRuleBookingTemplate.objects.create(
+            matching_rule=rule,
+            position=1,
+            booking_text="Betriebskosten",
+            partner_name="Lieferant",
+            gross_amount=Decimal("100.00"),
+            vat_symbol="20",
+            category="4856",
+        )
+
+        response = self.client.get(
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk})
+        )
+
+        self.assertContains(response, "Betriebskostenerlös Bahngasse 10%")
+        self.assertNotContains(
+            response,
+            "4856 – Betriebskostenerlös Bahngasse 10%",
+        )
+
+    def test_create_normalizes_positions_and_shows_template_count(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "8",
+                            "booking_text": "Fixbetrag",
+                            "invoice_number": "",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "60,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                        {
+                            "position": "2",
+                            "booking_text": "Rest",
+                            "invoice_number": "",
+                            "partner_name": "",
+                            "gross_amount": "",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        rule = MatchingRule.objects.get()
+        templates = list(
+            MatchingRuleBookingTemplate.objects.filter(matching_rule=rule)
+            .order_by("position")
+        )
+        self.assertEqual([template.position for template in templates], [1, 2])
+        self.assertEqual(templates[0].gross_amount, Decimal("60.00"))
+        self.assertIsNone(templates[1].gross_amount)
+
+        response = self.client.get(reverse("matching_rule_list"))
+        self.assertContains(response, "Excel-Zeilen")
+        self.assertEqual(
+            response.context["matching_rules"][0]["booking_template_count"],
+            2,
+        )
+
+    def test_exact_templates_without_rest_must_sum_to_expected_amount(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "1",
+                            "booking_text": "Zu viel",
+                            "invoice_number": "",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "60,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(
+            response,
+            "Die Summe der Ergebniszeilen muss dem erwarteten Betrag entsprechen.",
+        )
+        self.assertContains(response, 'value="60,00"')
+
+    def test_regex_templates_require_exactly_one_rest_amount(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(
+                    match_type=MatchingRule.MatchType.REGEX,
+                    iban="",
+                    expected_amount="",
+                    text_pattern="EVN",
+                ),
+                **self.template_data(
+                    [
+                        {
+                            "position": "1",
+                            "booking_text": "Fix",
+                            "invoice_number": "",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "10,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(
+            response,
+            "Textmuster-Regeln benötigen genau eine Ergebniszeile mit Restbetrag.",
+        )
+
+    def test_used_rule_templates_are_read_only(self):
+        rule = MatchingRule.objects.create(
+            name="Mietzahlung",
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban=self.iban,
+            expected_amount=Decimal("100.00"),
+        )
+        template = MatchingRuleBookingTemplate.objects.create(
+            matching_rule=rule,
+            position=1,
+            booking_text="Alt",
+            partner_name="Lieferant",
+            gross_amount=Decimal("100.00"),
+            vat_symbol="20",
+            category="300",
+        )
+        transaction = BankTransaction.objects.create(
+            booking_date=date(2026, 1, 1),
+            partner_iban=self.iban,
+            amount=Decimal("100.00"),
+            direction=BankTransaction.Direction.INCOMING,
+            status=BankTransaction.Status.MATCHED,
+            matched_rule=rule,
+        )
+
+        response = self.client.post(
+            reverse("matching_rule_edit", kwargs={"pk": rule.pk}),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "id": str(template.pk),
+                            "position": "1",
+                            "booking_text": "Neu",
+                            "invoice_number": "",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "100,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        }
+                    ],
+                    initial_forms=1,
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        transaction.refresh_from_db()
+        template.refresh_from_db()
+        self.assertEqual(transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(transaction.matched_rule_id, rule.pk)
+        self.assertEqual(template.booking_text, "Alt")
+
+
+class MatchingRuleVersionTests(TestCase):
+    iban = "AT611904300234573201"
+
+    def create_rule(self, **overrides):
+        values = {
+            "name": "Mietzahlung",
+            "direction": MatchingRule.Direction.INCOMING,
+            "match_type": MatchingRule.MatchType.EXACT,
+            "iban": self.iban,
+            "expected_amount": Decimal("100.00"),
+            "notes": "Alte Erklärung",
+            "active": True,
+        }
+        values.update(overrides)
+        return MatchingRule.objects.create(**values)
+
+    def create_used_rule(self):
+        rule = self.create_rule()
+        first_template = MatchingRuleBookingTemplate.objects.create(
+            matching_rule=rule,
+            position=1,
+            booking_text="Fixbetrag alt",
+            invoice_number="RG-1",
+            partner_name="Lieferant alt",
+            gross_amount=Decimal("60.00"),
+            vat_symbol="20",
+            category="300",
+        )
+        second_template = MatchingRuleBookingTemplate.objects.create(
+            matching_rule=rule,
+            position=2,
+            booking_text="Restbetrag alt",
+            partner_name="Lieferant alt",
+            gross_amount=None,
+            vat_symbol="20",
+            category="300",
+        )
+        bank_transaction = BankTransaction.objects.create(
+            booking_date=date(2026, 1, 1),
+            partner_iban=self.iban,
+            amount=Decimal("100.00"),
+            direction=BankTransaction.Direction.INCOMING,
+            status=BankTransaction.Status.MATCHED,
+            matched_rule=rule,
+        )
+        booking_entry = BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            payment_date=date(2026, 1, 1),
+            booking_text="Bestehende Buchung",
+            partner_name="Lieferant",
+            gross_amount=Decimal("100.00"),
+            vat_symbol="20",
+            category="300",
+        )
+        return rule, (first_template, second_template), bank_transaction, booking_entry
+
+    def template_data(self, rows, initial_forms=0):
+        values = {
+            "templates-TOTAL_FORMS": str(len(rows)),
+            "templates-INITIAL_FORMS": str(initial_forms),
+            "templates-MIN_NUM_FORMS": "0",
+            "templates-MAX_NUM_FORMS": "1000",
+        }
+        for index, row in enumerate(rows):
+            for field, value in row.items():
+                values[f"templates-{index}-{field}"] = value
+        return values
+
+    def version_data(self, rule, templates, **overrides):
+        values = {
+            "name": rule.name,
+            "direction": rule.direction,
+            "match_type": rule.match_type,
+            "iban": rule.iban,
+            "expected_amount": "120,00",
+            "text_pattern": "",
+            "notes": "Neue Erklärung",
+            "change_reason": "IBAN und Betrag angepasst",
+            "active": "on",
+        }
+        values.update(overrides)
+        values.update(
+            self.template_data(
+                templates,
+                initial_forms=0,
+            )
+        )
+        return values
+
+    def test_existing_rules_default_to_version_one(self):
+        rule = self.create_rule(change_reason="")
+
+        self.assertEqual(rule.version_number, 1)
+        self.assertIsNone(rule.previous_version_id)
+        self.assertEqual(rule.change_reason, "")
+
+    def test_used_rule_fields_and_templates_are_immutable(self):
+        rule, templates, _, _ = self.create_used_rule()
+
+        rule.notes = "Neue Erklärung"
+        with self.assertRaises(ValidationError):
+            rule.save()
+        templates[0].booking_text = "Neu"
+        with self.assertRaises(ValidationError):
+            templates[0].save()
+        with self.assertRaises(ValidationError):
+            templates[1].delete()
+
+    def test_version_form_prefills_all_copied_values(self):
+        rule, _, _, _ = self.create_used_rule()
+
+        response = self.client.get(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="Mietzahlung"')
+        self.assertContains(response, 'value="100,00"')
+        self.assertContains(response, "Alte Erklärung")
+        self.assertContains(response, "Fixbetrag alt")
+        self.assertContains(response, "Restbetrag alt")
+        self.assertContains(response, "Änderungsgrund")
+
+    def test_version_requires_change_reason(self):
+        rule, _, _, _ = self.create_used_rule()
+
+        response = self.client.post(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk}),
+            self.version_data(
+                rule,
+                [
+                    {
+                        "position": "1",
+                        "booking_text": "Fixbetrag alt",
+                        "invoice_number": "RG-1",
+                        "partner_name": "Lieferant alt",
+                        "gross_amount": "60,00",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                    {
+                        "position": "2",
+                        "booking_text": "Restbetrag alt",
+                        "invoice_number": "",
+                        "partner_name": "Lieferant alt",
+                        "gross_amount": "",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                ],
+                change_reason="",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bitte einen Änderungsgrund angeben.")
+        self.assertEqual(MatchingRule.objects.count(), 1)
+        rule.refresh_from_db()
+        self.assertTrue(rule.active)
+
+    def test_new_version_copies_templates_atomically_and_preserves_history(self):
+        rule, templates, bank_transaction, booking_entry = self.create_used_rule()
+        original_booking_entry_id = booking_entry.pk
+
+        response = self.client.post(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk}),
+            self.version_data(
+                rule,
+                [
+                    {
+                        "position": "1",
+                        "booking_text": "Fixbetrag neu",
+                        "invoice_number": "RG-2",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "80,00",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                    {
+                        "position": "2",
+                        "booking_text": "Restbetrag neu",
+                        "invoice_number": "",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                ],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MatchingRule.objects.count(), 2)
+        new_rule = MatchingRule.objects.get(previous_version=rule)
+        rule.refresh_from_db()
+        bank_transaction.refresh_from_db()
+        booking_entry.refresh_from_db()
+        new_templates = list(
+            new_rule.booking_templates.order_by("position", "id")
+        )
+        self.assertEqual(new_rule.version_number, 2)
+        self.assertEqual(new_rule.change_reason, "IBAN und Betrag angepasst")
+        self.assertEqual(new_rule.notes, "Neue Erklärung")
+        self.assertTrue(new_rule.active)
+        self.assertFalse(rule.active)
+        self.assertEqual([template.position for template in new_templates], [1, 2])
+        self.assertEqual(new_templates[0].booking_text, "Fixbetrag neu")
+        self.assertEqual(new_templates[1].gross_amount, None)
+        self.assertEqual(templates[0].booking_text, "Fixbetrag alt")
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(booking_entry.pk, original_booking_entry_id)
+        self.assertEqual(booking_entry.booking_text, "Bestehende Buchung")
+
+    def test_detail_page_navigates_previous_and_next_versions(self):
+        rule, _, _, _ = self.create_used_rule()
+        self.client.post(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk}),
+            self.version_data(
+                rule,
+                [
+                    {
+                        "position": "1",
+                        "booking_text": "Fixbetrag neu",
+                        "invoice_number": "RG-2",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "80,00",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                    {
+                        "position": "2",
+                        "booking_text": "Restbetrag neu",
+                        "invoice_number": "",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                ],
+            ),
+        )
+        new_rule = MatchingRule.objects.get(previous_version=rule)
+
+        old_response = self.client.get(
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk})
+        )
+        new_response = self.client.get(
+            reverse("matching_rule_detail", kwargs={"pk": new_rule.pk})
+        )
+
+        self.assertContains(old_response, "Version 1")
+        self.assertContains(old_response, "Inaktiv")
+        self.assertContains(old_response, "Nachfolgeversion: Version 2")
+        self.assertContains(new_response, "Vorgängerversion: Version 1")
+        self.assertContains(new_response, "Neue Erklärung")
+
+    def test_existing_successor_prevents_a_second_branch(self):
+        rule, _, _, _ = self.create_used_rule()
+        first_response = self.client.post(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk}),
+            self.version_data(
+                rule,
+                [
+                    {
+                        "position": "1",
+                        "booking_text": "Fixbetrag neu",
+                        "invoice_number": "RG-2",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "80,00",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                    {
+                        "position": "2",
+                        "booking_text": "Restbetrag neu",
+                        "invoice_number": "",
+                        "partner_name": "Lieferant neu",
+                        "gross_amount": "",
+                        "vat_symbol": "20",
+                        "category": "300",
+                    },
+                ],
+            ),
+        )
+        self.assertEqual(first_response.status_code, 302)
+
+        response = self.client.get(
+            reverse("matching_rule_version", kwargs={"pk": rule.pk}),
+            follow=True,
+        )
+
+        self.assertContains(response, "Nachfolgeversion: Version 2")
+        self.assertEqual(MatchingRule.objects.count(), 2)
+
+    def test_used_rule_can_be_deactivated_without_changing_history(self):
+        rule, _, bank_transaction, _ = self.create_used_rule()
+
+        response = self.client.post(
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+            {"action": "deactivate"},
+        )
+
+        bank_transaction.refresh_from_db()
+        rule.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(rule.active)
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)

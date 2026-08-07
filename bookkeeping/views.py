@@ -7,39 +7,41 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import urlencode
 
 from django.contrib import messages
+from django.db import IntegrityError
 from django.db.models import Count, Prefetch
 from django.db import transaction as db_transaction
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
-from .choices import RECEIPT_GROUP_BANK
 from .formatting import format_austrian_decimal, format_austrian_money
-from .matching import match_imported_transactions
-from .forms import BankTransactionNoteForm, BookingEntryForm, MatchingRuleForm
+from .category_display import category_description
+from .matching import build_booking_entry_snapshot, match_imported_transactions
+from .forms import (
+    BankTransactionNoteForm,
+    BookingEntryForm,
+    BookingEntryFormSet,
+    MatchingRuleBookingTemplateFormSet,
+    MatchingRuleForm,
+    MatchingRuleVersionForm,
+)
 from .models import BankTransaction, BookingEntry, MatchingRule
 
 
+OPEN_FILTER = "open"
 STATUS_NAVIGATION = (
     {
-        "value": BankTransaction.Status.IMPORTED,
+        "value": OPEN_FILTER,
         "label": "Offen",
         "heading": "Offene Transaktionen",
         "empty_label": "offenen",
         "icon": "bi-inbox",
     },
     {
-        "value": BankTransaction.Status.MATCHED,
-        "label": "Zugeordnet",
-        "heading": "Zugeordnete Transaktionen",
-        "empty_label": "zugeordneten",
-        "icon": "bi-check2-square",
-    },
-    {
         "value": BankTransaction.Status.REVIEWED,
-        "label": "Geprüft",
-        "heading": "Geprüfte Transaktionen",
-        "empty_label": "geprüften",
+        "label": "Buchungsfertig",
+        "heading": "Buchungsfertige Transaktionen",
+        "empty_label": "buchungsfertigen",
         "icon": "bi-search",
     },
     {
@@ -50,8 +52,35 @@ STATUS_NAVIGATION = (
         "icon": "bi-box-arrow-up-right",
     },
 )
-STATUS_VALUES = {item["value"] for item in STATUS_NAVIGATION}
-STATUS_DETAILS = {item["value"]: item for item in STATUS_NAVIGATION}
+STATUS_VALUES = {
+    OPEN_FILTER,
+    BankTransaction.Status.IMPORTED,
+    BankTransaction.Status.MATCHED,
+    BankTransaction.Status.REVIEWED,
+    BankTransaction.Status.BOOKED,
+}
+STATUS_DETAILS = {
+    item["value"]: item
+    for item in STATUS_NAVIGATION
+}
+STATUS_DETAILS.update(
+    {
+        BankTransaction.Status.IMPORTED: {
+            "value": BankTransaction.Status.IMPORTED,
+            "label": "Offen",
+            "heading": "Offene Transaktionen",
+            "empty_label": "offenen",
+            "icon": "bi-inbox",
+        },
+        BankTransaction.Status.MATCHED: {
+            "value": BankTransaction.Status.MATCHED,
+            "label": "Zugeordnet",
+            "heading": "Zugeordnete Transaktionen",
+            "empty_label": "zugeordneten",
+            "icon": "bi-check2-square",
+        },
+    }
+)
 NOTE_EDITABLE_STATUSES = frozenset(
     {
         BankTransaction.Status.MATCHED,
@@ -127,7 +156,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
     params = filter_params if filter_params is not None else request.GET
     requested_status = params.get("status")
     selected_status = (
-        requested_status if requested_status in STATUS_VALUES else BankTransaction.Status.IMPORTED
+        requested_status if requested_status in STATUS_VALUES else OPEN_FILTER
     )
 
     available_month_keys = sorted(
@@ -159,7 +188,12 @@ def _bookkeeping_navigation_context(request, filter_params=None):
     status_navigation = [
         {
             **item,
-            "count": counts_by_status.get(item["value"], 0),
+            "count": (
+                counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
+                + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
+                if item["value"] == OPEN_FILTER
+                else counts_by_status.get(item["value"], 0)
+            ),
             "url": _overview_url(
                 item["value"],
                 selected_month if selected_month or available_month_keys else None,
@@ -171,7 +205,17 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                     "bank_transaction_note",
                     "bank_transaction_booking",
                 }
-                and selected_status == item["value"]
+                and (
+                    selected_status == item["value"]
+                    or (
+                        item["value"] == OPEN_FILTER
+                        and selected_status
+                        in {
+                            BankTransaction.Status.IMPORTED,
+                            BankTransaction.Status.MATCHED,
+                        }
+                    )
+                )
             ),
         }
         for item in STATUS_NAVIGATION
@@ -189,7 +233,12 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             for month_key in available_month_keys
         ],
         "status_counts": {
-            item["value"]: counts_by_status.get(item["value"], 0)
+            item["value"]: (
+                counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
+                + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
+                if item["value"] == OPEN_FILTER
+                else counts_by_status.get(item["value"], 0)
+            )
             for item in STATUS_NAVIGATION
         },
         "status_navigation": status_navigation,
@@ -207,9 +256,15 @@ def _display_matching_rule(rule):
         else "–"
     )
     notes_preview, notes_truncated = _note_preview(rule.notes)
+    next_version = MatchingRule.objects.filter(previous_version=rule).first()
+    linked_transaction_count = getattr(rule, "_linked_transaction_count", None)
+    if linked_transaction_count is None:
+        linked_transaction_count = rule.transactions.count()
     return {
         "id": rule.pk,
         "name": rule.name,
+        "display_name": f"{rule.name} – Version {rule.version_number}",
+        "version_number": rule.version_number,
         "direction": rule.get_direction_display(),
         "direction_code": rule.direction,
         "match_type": rule.get_match_type_display(),
@@ -221,26 +276,62 @@ def _display_matching_rule(rule):
         "notes": rule.notes,
         "notes_preview": notes_preview,
         "notes_truncated": notes_truncated,
+        "booking_template_count": rule.booking_templates.count(),
+        "linked_transaction_count": linked_transaction_count,
+        "used": linked_transaction_count > 0,
+        "previous_version_id": rule.previous_version_id,
+        "next_version_id": next_version.pk if next_version else None,
     }
 
 
-def _protected_rule_transactions(rule):
-    return BankTransaction.objects.filter(
-        matched_rule=rule,
-        status__in=(
-            BankTransaction.Status.REVIEWED,
-            BankTransaction.Status.BOOKED,
-        ),
+def _matching_template_initials(rule):
+    return [
+        {
+            field_name: getattr(template, field_name)
+            for field_name in (
+                "position",
+                "booking_text",
+                "invoice_number",
+                "partner_name",
+                "gross_amount",
+                "vat_symbol",
+                "category",
+            )
+        }
+        for template in rule.booking_templates.order_by("position", "id")
+    ]
+
+
+def _matching_template_formset(request, instance, initial=None):
+    prefix = "templates"
+    data = request.POST if f"{prefix}-TOTAL_FORMS" in request.POST else None
+    formset = MatchingRuleBookingTemplateFormSet(
+        data,
+        instance=instance,
+        prefix=prefix,
+        initial=initial,
     )
+    if initial:
+        # A new version has no related template rows yet.  The copied rows
+        # therefore have to be rendered as extra forms, not as existing rows.
+        formset.extra = len(initial)
+    return formset
 
 
-def _reset_matched_rule_transactions(rule):
-    return BankTransaction.objects.filter(
-        matched_rule=rule,
-        status=BankTransaction.Status.MATCHED,
-    ).update(
-        matched_rule=None,
-        status=BankTransaction.Status.IMPORTED,
+def _matching_template_formset_is_valid(formset):
+    return not formset.is_bound or formset.is_valid()
+
+
+def _rule_is_used(rule):
+    return BankTransaction.objects.filter(matched_rule=rule).exists()
+
+
+def _matching_result_message(result):
+    return (
+        f"{result.auto_ready_count} automatisch buchungsfertig, "
+        f"{result.incomplete_count} zugeordnet, aber Buchungsdaten "
+        f"unvollständig, {result.unmatched_count} ohne Treffer, "
+        f"{result.ambiguous_count} mehrdeutig."
     )
 
 
@@ -262,7 +353,18 @@ class BookkeepingOverviewView(TemplateView):
                 queryset=BookingEntry.objects.order_by("created_at", "id"),
                 to_attr="booking_entries_for_display",
             )
-        ).filter(status=navigation_context["selected_status"])
+        )
+        if navigation_context["selected_status"] == OPEN_FILTER:
+            selected_transactions = selected_transactions.filter(
+                status__in=(
+                    BankTransaction.Status.IMPORTED,
+                    BankTransaction.Status.MATCHED,
+                )
+            )
+        else:
+            selected_transactions = selected_transactions.filter(
+                status=navigation_context["selected_status"]
+            )
         if navigation_context["selected_month"]:
             selected_transactions = selected_transactions.filter(
                 **_month_filter(navigation_context["selected_month"])
@@ -281,13 +383,10 @@ class BookkeepingOverviewView(TemplateView):
 
     def post(self, request, *args, **kwargs):
         if request.POST.get("action") == "run_matching":
-            matched_count, unmatched_count, ambiguous_count = (
-                match_imported_transactions()
-            )
+            matching_result = match_imported_transactions()
             messages.success(
                 request,
-                f"{matched_count} zugeordnet, {unmatched_count} ohne Treffer, "
-                f"{ambiguous_count} mehrdeutig.",
+                _matching_result_message(matching_result),
             )
             navigation_context = _bookkeeping_navigation_context(
                 request,
@@ -338,9 +437,7 @@ class BookkeepingOverviewView(TemplateView):
             )
 
         imported_count, existing_count = self._persist_transactions(import_payloads)
-        matched_count, unmatched_count, ambiguous_count = (
-            match_imported_transactions()
-        )
+        matching_result = match_imported_transactions()
         messages.success(
             request,
             f"{imported_count} Transaktionen importiert, "
@@ -348,8 +445,7 @@ class BookkeepingOverviewView(TemplateView):
         )
         messages.info(
             request,
-            f"{matched_count} zugeordnet, {unmatched_count} ohne Treffer, "
-            f"{ambiguous_count} mehrdeutig.",
+            _matching_result_message(matching_result),
         )
         newest_imported_month = max(
             (payload["booking_date"] for payload in import_payloads),
@@ -362,7 +458,7 @@ class BookkeepingOverviewView(TemplateView):
         )
         return redirect(
             _overview_url(
-                BankTransaction.Status.IMPORTED,
+                OPEN_FILTER,
                 newest_imported_month_key,
             )
         )
@@ -512,7 +608,14 @@ class BookkeepingOverviewView(TemplateView):
             matching_rule_notes
         )
         booking_entries = getattr(transaction, "booking_entries_for_display", ())
-        booking_entry = booking_entries[0] if booking_entries else None
+        booking_entry_data = [
+            cls._display_booking_entry(entry, transaction.currency)
+            for entry in booking_entries
+        ]
+        booking_entry_total = sum(
+            (entry.gross_amount for entry in booking_entries),
+            Decimal("0"),
+        )
         return {
             "id": transaction.pk,
             "booking_date": transaction.booking_date.strftime("%d.%m.%Y"),
@@ -522,15 +625,39 @@ class BookkeepingOverviewView(TemplateView):
             "direction_code": direction_code,
             "direction": direction,
             "purpose": cls._text_or_dash(transaction.purpose),
+            "status_code": transaction.status,
             "status": (
                 "Exportiert"
                 if transaction.status == BankTransaction.Status.BOOKED
-                else transaction.get_status_display()
+                else (
+                    "Buchungsfertig"
+                    if transaction.status == BankTransaction.Status.REVIEWED
+                    else transaction.get_status_display()
+                )
+            ),
+            "open_reason": (
+                "Buchungsdaten unvollständig"
+                if transaction.status == BankTransaction.Status.MATCHED
+                else (
+                    "Mehrdeutig"
+                    if transaction.status == BankTransaction.Status.IMPORTED
+                    and transaction.matched_rule_id
+                    else "Kein Treffer"
+                )
             ),
             "matched_rule": (
-                transaction.matched_rule.name
+                str(transaction.matched_rule)
                 if transaction.matched_rule_id
                 else "–"
+            ),
+            "matched_rule_id": transaction.matched_rule_id,
+            "matched_rule_url": (
+                reverse(
+                    "matching_rule_detail",
+                    kwargs={"pk": transaction.matched_rule_id},
+                )
+                if transaction.matched_rule_id
+                else ""
             ),
             "matching_rule_notes": matching_rule_notes,
             "matching_rule_notes_preview": matching_rule_notes_preview,
@@ -538,9 +665,16 @@ class BookkeepingOverviewView(TemplateView):
             "notes": transaction.notes,
             "notes_preview": transaction_notes_preview,
             "notes_truncated": transaction_notes_truncated,
-            "booking_data": cls._display_booking_entry(
-                booking_entry,
-                transaction.currency,
+            "booking_data": booking_entry_data[0] if booking_entry_data else None,
+            "booking_entries": booking_entry_data,
+            "booking_entry_count": len(booking_entry_data),
+            "booking_entry_total": (
+                cls._format_saved_amount(
+                    booking_entry_total,
+                    transaction.currency,
+                )
+                if booking_entry_data
+                else None
             ),
         }
 
@@ -550,7 +684,7 @@ class BookkeepingOverviewView(TemplateView):
             return None
         receipt_group = booking_entry.get_receipt_group_display()
         vat_symbol = booking_entry.get_vat_symbol_display()
-        category = booking_entry.get_category_display()
+        category = category_description(booking_entry.category)
         return {
             "receipt": " / ".join(
                 part for part in (receipt_group, booking_entry.receipt_number)
@@ -609,7 +743,7 @@ class BankTransactionNoteView(TemplateView):
             return None
         messages.error(
             request,
-            "Anmerkungen können nur bei zugeordneten oder geprüften "
+            "Anmerkungen können nur bei zugeordneten oder buchungsfertigen "
             "Transaktionen bearbeitet werden.",
         )
         return redirect(
@@ -679,33 +813,100 @@ class BankTransactionNoteView(TemplateView):
 
 class BookingEntryView(TemplateView):
     template_name = "bookkeeping/booking_entry.html"
+    formset_prefix = "entries"
 
     def _navigation_context(self):
         return _bookkeeping_navigation_context(self.request)
 
     @staticmethod
-    def _existing_entry(bank_transaction):
-        return bank_transaction.booking_entries.order_by("created_at", "id").first()
+    def _existing_entries(bank_transaction):
+        return list(
+            bank_transaction.booking_entries.order_by("created_at", "id")
+        )
+
+    def _initial_rows(self, bank_transaction, existing_entries):
+        if existing_entries:
+            return None, None
+        if (
+            bank_transaction.status == BankTransaction.Status.MATCHED
+            and bank_transaction.matched_rule_id
+        ):
+            snapshot, error = build_booking_entry_snapshot(bank_transaction)
+            if snapshot is not None or error:
+                return snapshot or [{}], error
+        return [{}], None
+
+    def _legacy_post_data(self, request, bank_transaction, existing_entries):
+        if f"{self.formset_prefix}-TOTAL_FORMS" in request.POST:
+            return request.POST
+
+        data = request.POST.copy()
+        data[f"{self.formset_prefix}-TOTAL_FORMS"] = "1"
+        data[f"{self.formset_prefix}-INITIAL_FORMS"] = (
+            "1" if existing_entries else "0"
+        )
+        if existing_entries:
+            data[f"{self.formset_prefix}-0-id"] = str(existing_entries[0].pk)
+        for field_name in BookingEntryForm.Meta.fields:
+            if field_name in request.POST:
+                data[f"{self.formset_prefix}-0-{field_name}"] = request.POST[
+                    field_name
+                ]
+        return data
+
+    def _formset(
+        self,
+        data,
+        bank_transaction,
+        final,
+        initial,
+    ):
+        formset = BookingEntryFormSet(
+            data,
+            instance=bank_transaction,
+            prefix=self.formset_prefix,
+            initial=initial,
+            form_kwargs={
+                "bank_transaction": bank_transaction,
+                "final": final,
+            },
+        )
+        if initial:
+            formset.extra = len(initial)
+            formset.initial_row_count = len(initial)
+            for form in formset.forms:
+                form.empty_permitted = False
+        return formset
 
     def _context_for_transaction(
         self,
         bank_transaction,
-        booking_entry,
-        form,
+        formset,
+        notes_form,
         navigation_context,
+        snapshot_error="",
     ):
         if bank_transaction.status == BankTransaction.Status.MATCHED:
-            page_heading = "Buchungsdaten prüfen"
+            page_heading = "Buchungsdaten ergänzen"
         elif bank_transaction.status == BankTransaction.Status.REVIEWED:
             page_heading = "Buchungsdaten bearbeiten"
         else:
             page_heading = "Buchung erfassen"
+        first_form = formset.forms[0] if formset.forms else None
         return {
             **navigation_context,
             "bank_transaction": bank_transaction,
-            "booking_entry": booking_entry,
-            "form": form,
+            "booking_entry": (
+                first_form.instance if first_form and first_form.instance.pk else None
+            ),
+            "booking_entries": [
+                form.instance for form in formset.forms if form.instance.pk
+            ],
+            "form": first_form,
+            "formset": formset,
+            "notes_form": notes_form,
             "page_heading": page_heading,
+            "booking_snapshot_error": snapshot_error,
             "return_url": _overview_url(
                 navigation_context["selected_status"],
                 navigation_context["selected_month"],
@@ -732,86 +933,56 @@ class BookingEntryView(TemplateView):
         )
 
     def get(self, request, *args, **kwargs):
-        bank_transaction = get_object_or_404(
-            BankTransaction,
-            pk=kwargs["pk"],
-        )
+        bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
         navigation_context = self._navigation_context()
         rejection = self._reject_if_booked(
-            request,
-            bank_transaction,
-            navigation_context,
+            request, bank_transaction, navigation_context
         )
         if rejection is not None:
             return rejection
-        booking_entry = self._existing_entry(bank_transaction)
-        form = BookingEntryForm(
-            instance=booking_entry,
-            bank_transaction=bank_transaction,
+        existing_entries = self._existing_entries(bank_transaction)
+        initial, snapshot_error = self._initial_rows(
+            bank_transaction, existing_entries
+        )
+        formset = self._formset(
+            None, bank_transaction, final=False, initial=initial
         )
         return self.render_to_response(
             self._context_for_transaction(
                 bank_transaction,
-                booking_entry,
-                form,
+                formset,
+                BankTransactionNoteForm(instance=bank_transaction),
                 navigation_context,
+                snapshot_error,
             )
         )
 
     def post(self, request, *args, **kwargs):
-        bank_transaction = get_object_or_404(
-            BankTransaction,
-            pk=kwargs["pk"],
-        )
+        bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
         navigation_context = self._navigation_context()
         rejection = self._reject_if_booked(
-            request,
-            bank_transaction,
-            navigation_context,
+            request, bank_transaction, navigation_context
         )
         if rejection is not None:
             return rejection
 
         action = request.POST.get("action", "save_draft")
         finalize = action == "finalize"
-        booking_entry = self._existing_entry(bank_transaction)
-        form = BookingEntryForm(
-            request.POST,
-            instance=booking_entry,
-            bank_transaction=bank_transaction,
-            final=finalize,
+        existing_entries = self._existing_entries(bank_transaction)
+        initial, snapshot_error = self._initial_rows(
+            bank_transaction, existing_entries
+        )
+        data = self._legacy_post_data(request, bank_transaction, existing_entries)
+        formset = self._formset(
+            data, bank_transaction, final=finalize, initial=initial
+        )
+        notes_form = BankTransactionNoteForm(
+            request.POST, instance=bank_transaction
         )
         if action not in {"save_draft", "finalize"}:
-            form.add_error(None, "Die gewünschte Aktion ist ungültig.")
+            notes_form.add_error(None, "Die gewünschte Aktion ist ungültig.")
 
-        if form.is_valid():
-            if finalize:
-                existing_entries = list(
-                    BookingEntry.objects.filter(
-                        bank_transaction=bank_transaction
-                    )
-                )
-                other_total = sum(
-                    (
-                        entry.gross_amount
-                        for entry in existing_entries
-                        if booking_entry is None or entry.pk != booking_entry.pk
-                    ),
-                    Decimal("0"),
-                )
-                entered_amount = form.cleaned_data["gross_amount"]
-                if (
-                    entered_amount != bank_transaction.amount
-                    or entered_amount + other_total != bank_transaction.amount
-                ):
-                    form.add_error(
-                        "gross_amount",
-                        "Der Bruttobetrag muss dem signierten Transaktionsbetrag "
-                        f"({format_austrian_money(bank_transaction.amount, bank_transaction.currency)}) "
-                        "entsprechen.",
-                    )
-
-        if form.is_valid():
+        if formset.is_valid() and notes_form.is_valid():
             with db_transaction.atomic():
                 locked_transaction = BankTransaction.objects.select_for_update().get(
                     pk=bank_transaction.pk
@@ -828,12 +999,9 @@ class BookingEntryView(TemplateView):
                         )
                     )
 
-                saved_entry = form.save(commit=False)
-                saved_entry.bank_transaction = locked_transaction
-                saved_entry.receipt_group = RECEIPT_GROUP_BANK
-                saved_entry.receipt_number = str(saved_entry.payment_date.month)
-                saved_entry.save()
-                locked_transaction.notes = form.cleaned_data["notes"]
+                formset.instance = locked_transaction
+                formset.save()
+                locked_transaction.notes = notes_form.cleaned_data["notes"]
                 update_fields = ["notes"]
                 if finalize:
                     locked_transaction.status = BankTransaction.Status.REVIEWED
@@ -859,9 +1027,10 @@ class BookingEntryView(TemplateView):
         return self.render_to_response(
             self._context_for_transaction(
                 bank_transaction,
-                booking_entry,
-                form,
+                formset,
+                notes_form,
                 navigation_context,
+                snapshot_error,
             )
         )
 
@@ -874,20 +1043,43 @@ class MatchingRuleListView(TemplateView):
         context.update(_bookkeeping_navigation_context(self.request))
         context["matching_rules"] = [
             _display_matching_rule(rule)
-            for rule in MatchingRule.objects.order_by("-created_at")
+            for rule in MatchingRule.objects.annotate(
+                _linked_transaction_count=Count("transactions", distinct=True)
+            ).order_by("-created_at")
         ]
         context.setdefault("matching_rule_form", MatchingRuleForm())
+        context.setdefault(
+            "matching_rule_formset",
+            MatchingRuleBookingTemplateFormSet(
+                instance=MatchingRule(),
+                prefix="templates",
+            ),
+        )
         return context
 
     def post(self, request, *args, **kwargs):
         matching_rule_form = MatchingRuleForm(request.POST)
         if matching_rule_form.is_valid():
-            matching_rule_form.save()
+            matching_rule = matching_rule_form.save(commit=False)
+        else:
+            matching_rule = MatchingRule()
+        matching_template_formset = _matching_template_formset(
+            request,
+            matching_rule,
+        )
+        if matching_rule_form.is_valid() and _matching_template_formset_is_valid(
+            matching_template_formset
+        ):
+            with db_transaction.atomic():
+                matching_rule.save()
+                matching_template_formset.instance = matching_rule
+                matching_template_formset.save()
             messages.success(request, "Matching-Regel angelegt.")
             return redirect("matching_rule_list")
         return self.render_to_response(
             self.get_context_data(
                 matching_rule_form=matching_rule_form,
+                matching_rule_formset=matching_template_formset,
                 matching_rule_error="Bitte prüfen Sie die Angaben zur Matching-Regel.",
             )
         )
@@ -902,27 +1094,195 @@ class MatchingRuleEditView(UpdateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context.update(_bookkeeping_navigation_context(self.request))
+        context.setdefault(
+            "matching_rule_formset",
+            MatchingRuleBookingTemplateFormSet(
+                instance=self.object,
+                prefix="templates",
+            ),
+        )
         return context
 
     def dispatch(self, request, *args, **kwargs):
         self.object = self.get_object()
-        if _protected_rule_transactions(self.object).exists():
+        if _rule_is_used(self.object):
             messages.error(
                 request,
-                "Diese Matching-Regel kann nicht bearbeitet werden, "
-                "weil sie geprüften oder gebuchten Transaktionen zugeordnet ist.",
+                "Diese Regel wurde bereits verwendet und ist daher "
+                "schreibgeschützt.",
             )
-            return redirect("matching_rule_list")
+            return redirect(
+                "matching_rule_detail",
+                pk=self.object.pk,
+            )
         return super().dispatch(request, *args, **kwargs)
 
-    def form_valid(self, form):
-        notes_only_change = set(form.changed_data) == {"notes"}
+    def post(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        form = self.get_form()
+        matching_template_formset = _matching_template_formset(
+            request,
+            self.object,
+        )
+        if form.is_valid() and _matching_template_formset_is_valid(
+            matching_template_formset
+        ):
+            return self._save_valid_forms(form, matching_template_formset)
+
+        return self.render_to_response(
+            self.get_context_data(
+                form=form,
+                matching_rule_formset=matching_template_formset,
+            )
+        )
+
+    def _save_valid_forms(self, form, matching_template_formset):
         with db_transaction.atomic():
-            response = super().form_valid(form)
-            if not notes_only_change:
-                _reset_matched_rule_transactions(self.object)
+            self.object = form.save()
+            matching_template_formset.instance = self.object
+            matching_template_formset.save()
         messages.success(self.request, "Matching-Regel gespeichert.")
-        return response
+        return redirect(self.get_success_url())
+
+
+class MatchingRuleDetailView(TemplateView):
+    template_name = "bookkeeping/matching_rule_detail.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.object = get_object_or_404(MatchingRule, pk=kwargs["pk"])
+        return super().dispatch(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if request.POST.get("action") == "deactivate" and self.object.active:
+            self.object.active = False
+            self.object.save(update_fields=("active", "updated_at"))
+            messages.success(request, "Matching-Regel deaktiviert.")
+        return redirect("matching_rule_detail", pk=self.object.pk)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
+        context["object"] = self.object
+        context["matching_rule"] = self.object
+        context["booking_templates"] = self.object.booking_templates.order_by(
+            "position", "id"
+        )
+        context["previous_version"] = self.object.previous_version
+        context["next_version"] = MatchingRule.objects.filter(
+            previous_version=self.object
+        ).first()
+        context["linked_transaction_count"] = self.object.linked_transaction_count
+        return context
+
+
+class MatchingRuleVersionView(TemplateView):
+    template_name = "bookkeeping/matching_rule_version.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.object = get_object_or_404(MatchingRule, pk=kwargs["pk"])
+        if not _rule_is_used(self.object):
+            messages.error(
+                request,
+                "Eine neue Version kann nur für eine bereits verwendete Regel "
+                "angelegt werden.",
+            )
+            return redirect("matching_rule_edit", pk=self.object.pk)
+        if self.object.has_successor:
+            messages.info(
+                request,
+                "Für diese Regel besteht bereits eine Nachfolgeversion.",
+            )
+            return redirect("matching_rule_detail", pk=self.object.pk)
+        return super().dispatch(request, *args, **kwargs)
+
+    def _build_new_rule(self, source=None):
+        source = source or self.object
+        return MatchingRule(
+            name=source.name,
+            direction=source.direction,
+            match_type=source.match_type,
+            iban=source.iban,
+            expected_amount=source.expected_amount,
+            text_pattern=source.text_pattern,
+            notes=source.notes,
+            active=True,
+            previous_version=source,
+            version_number=source.version_number + 1,
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
+        context["source_rule"] = self.object
+        context.setdefault(
+            "matching_rule_form",
+            MatchingRuleVersionForm(instance=self._build_new_rule()),
+        )
+        context.setdefault(
+            "matching_rule_formset",
+            _matching_template_formset(
+                self.request,
+                self._build_new_rule(),
+                initial=_matching_template_initials(self.object),
+            ),
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        new_rule = self._build_new_rule()
+        form = MatchingRuleVersionForm(request.POST, instance=new_rule)
+        matching_template_formset = _matching_template_formset(
+            request,
+            new_rule,
+            initial=_matching_template_initials(self.object),
+        )
+        if not form.is_valid() or not _matching_template_formset_is_valid(
+            matching_template_formset
+        ):
+            return self.render_to_response(
+                self.get_context_data(
+                    matching_rule_form=form,
+                    matching_rule_formset=matching_template_formset,
+                )
+            )
+
+        try:
+            with db_transaction.atomic():
+                source = MatchingRule.objects.select_for_update().get(
+                    pk=self.object.pk
+                )
+                if not _rule_is_used(source):
+                    messages.error(
+                        request,
+                        "Eine neue Version kann nur für eine bereits verwendete "
+                        "Regel angelegt werden.",
+                    )
+                    return redirect("matching_rule_edit", pk=source.pk)
+                if source.has_successor:
+                    messages.info(
+                        request,
+                        "Für diese Regel besteht bereits eine Nachfolgeversion.",
+                    )
+                    return redirect("matching_rule_detail", pk=source.pk)
+
+                new_rule = form.save(commit=False)
+                new_rule.previous_version = source
+                new_rule.version_number = source.version_number + 1
+                new_rule.active = True
+                source.active = False
+                source.save(update_fields=("active", "updated_at"))
+                new_rule.save()
+                matching_template_formset.instance = new_rule
+                matching_template_formset.save()
+        except IntegrityError:
+            messages.error(
+                request,
+                "Für diese Regel besteht bereits eine Nachfolgeversion.",
+            )
+            return redirect("matching_rule_detail", pk=self.object.pk)
+
+        messages.success(request, "Neue Version der Matching-Regel angelegt.")
+        return redirect("matching_rule_list")
 
 
 class MatchingRuleDeleteView(DeleteView):
@@ -937,11 +1297,17 @@ class MatchingRuleDeleteView(DeleteView):
 
     def dispatch(self, request, *args, **kwargs):
         self.object = self.get_object()
-        if _protected_rule_transactions(self.object).exists():
+        if _rule_is_used(self.object):
             messages.error(
                 request,
-                "Diese Matching-Regel kann nicht gelöscht werden, "
-                "weil sie geprüften oder gebuchten Transaktionen zugeordnet ist.",
+                "Diese Regel wurde bereits verwendet und kann nicht gelöscht werden.",
+            )
+            return redirect("matching_rule_list")
+        if self.object.has_successor:
+            messages.error(
+                request,
+                "Diese Regel ist eine Vorgängerversion und kann nicht gelöscht "
+                "werden.",
             )
             return redirect("matching_rule_list")
         return super().dispatch(request, *args, **kwargs)
@@ -949,7 +1315,6 @@ class MatchingRuleDeleteView(DeleteView):
     def form_valid(self, form):
         rule_name = self.object.name
         with db_transaction.atomic():
-            _reset_matched_rule_transactions(self.object)
             response = super().form_valid(form)
         messages.success(self.request, f'Matching-Regel „{rule_name}“ gelöscht.')
         return response

@@ -1,0 +1,105 @@
+{% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
+
+{% block title %}{{ object.name }} – Version {{ object.version_number }} – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="matching-rule-detail-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="matching-rule-detail-heading" class="bookkeeping-section-title">{{ object.name }} – Version {{ object.version_number }}</h1>
+            {% if object.is_used %}
+            <p class="bookkeeping-page-description">Diese Regel wurde bereits verwendet und ist daher schreibgeschützt.</p>
+            {% endif %}
+        </div>
+        <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Zurück zu den Matching-Regeln</a>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+
+    {% if object.is_used and object.active %}
+    <form method="post" class="bookkeeping-rule-status-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="deactivate">
+        <button type="submit" class="btn btn-outline-secondary">Regel deaktivieren</button>
+    </form>
+    {% endif %}
+
+    <div class="bookkeeping-rule-detail-card">
+        <div class="bookkeeping-rule-detail-heading">
+            <h2 class="h5 mb-0">Regeldetails</h2>
+            {% if object.active %}
+            <span class="badge bookkeeping-badge bookkeeping-badge-active">Aktiv</span>
+            {% else %}
+            <span class="badge bookkeeping-badge bookkeeping-badge-inactive">Inaktiv</span>
+            {% endif %}
+        </div>
+        <dl class="row mb-0 bookkeeping-rule-detail-list">
+            <dt class="col-sm-3">Richtung</dt><dd class="col-sm-9">{{ object.get_direction_display }}</dd>
+            <dt class="col-sm-3">Regeltyp</dt><dd class="col-sm-9">{{ object.get_match_type_display }}</dd>
+            <dt class="col-sm-3">IBAN</dt><dd class="col-sm-9">{{ object.iban|default:"–" }}</dd>
+            <dt class="col-sm-3">Erwarteter Betrag</dt><dd class="col-sm-9">{% if object.expected_amount is not None %}{{ object.expected_amount|austrian_decimal }}{% else %}–{% endif %}</dd>
+            <dt class="col-sm-3">Textmuster</dt><dd class="col-sm-9">{{ object.text_pattern|default:"–" }}</dd>
+            <dt class="col-sm-3">Anmerkung</dt><dd class="col-sm-9">{{ object.notes|default:"–"|linebreaksbr }}</dd>
+            <dt class="col-sm-3">Änderungsgrund</dt><dd class="col-sm-9">{{ object.change_reason|default:"–"|linebreaksbr }}</dd>
+            <dt class="col-sm-3">Verknüpfte Transaktionen</dt><dd class="col-sm-9">{{ linked_transaction_count }}</dd>
+        </dl>
+    </div>
+
+    <div class="bookkeeping-rule-detail-card">
+        <h2 class="h5">Versionsverlauf</h2>
+        <div class="bookkeeping-version-links">
+            {% if previous_version %}
+            <a href="{% url 'matching_rule_detail' previous_version.pk %}" class="btn btn-sm btn-outline-secondary">Vorgängerversion: Version {{ previous_version.version_number }}</a>
+            {% else %}
+            <span>Keine Vorgängerversion</span>
+            {% endif %}
+            {% if next_version %}
+            <a href="{% url 'matching_rule_detail' next_version.pk %}" class="btn btn-sm btn-outline-primary">Nachfolgeversion: Version {{ next_version.version_number }}</a>
+            {% else %}
+            <span>Keine Nachfolgeversion</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="bookkeeping-rule-detail-card">
+        <h2 class="h5">Excel-Ergebniszeilen</h2>
+        {% if booking_templates %}
+        <div class="bookkeeping-template-table-wrap">
+            <table class="table table-sm align-middle mb-0 bookkeeping-template-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>Position</th>
+                        <th>Buchungstext</th>
+                        <th>Rechnungsnummer</th>
+                        <th>Lieferant/Kunde</th>
+                        <th>Betrag</th>
+                        <th>USt</th>
+                        <th>Kategorie</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for template in booking_templates %}
+                    <tr>
+                        <td>{{ template.position }}</td>
+                        <td>{{ template.booking_text|default:"–" }}</td>
+                        <td>{{ template.invoice_number|default:"–" }}</td>
+                        <td>{{ template.partner_name|default:"–" }}</td>
+                        <td>{% if template.gross_amount is not None %}{{ template.gross_amount|austrian_decimal }}{% else %}Restbetrag{% endif %}</td>
+                        <td>{{ template.vat_symbol }}</td>
+                        <td>{{ template.category|category_description_display }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="bookkeeping-empty-state mb-0">Keine Excel-Ergebniszeilen vorhanden.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

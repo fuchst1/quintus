@@ -20,6 +20,7 @@
 
     <form method="post" class="bookkeeping-rule-form">
         {% include "bookkeeping/_matching_rule_form.html" with matching_rule_form=form submit_label="Speichern" %}
+        {% include "bookkeeping/_matching_rule_booking_templates.html" %}
     </form>
 </section>
 {% endblock %}

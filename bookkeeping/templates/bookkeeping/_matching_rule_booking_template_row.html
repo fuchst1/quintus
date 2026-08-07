@@ -1,0 +1,36 @@
+<tr class="bookkeeping-template-row" data-existing="{% if is_existing %}true{% else %}false{% endif %}">
+    {% for hidden_field in template_form.hidden_fields %}{{ hidden_field }}{% endfor %}
+    <td>
+        {{ template_form.position }}
+        {% for error in template_form.position.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.booking_text }}
+        {% for error in template_form.booking_text.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.invoice_number }}
+        {% for error in template_form.invoice_number.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.partner_name }}
+        {% for error in template_form.partner_name.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.gross_amount }}
+        {% for error in template_form.gross_amount.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.vat_symbol }}
+        {% for error in template_form.vat_symbol.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td>
+        {{ template_form.category }}
+        {% for error in template_form.category.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+    </td>
+    <td class="bookkeeping-template-delete">
+        <label class="visually-hidden" for="{{ template_form.DELETE.id_for_label }}">Löschen</label>
+        {{ template_form.DELETE }}
+        <button type="button" class="btn btn-sm btn-outline-danger bookkeeping-template-remove">Entfernen</button>
+    </td>
+</tr>

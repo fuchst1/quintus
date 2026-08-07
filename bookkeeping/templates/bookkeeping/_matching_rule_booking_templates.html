@@ -1,0 +1,77 @@
+<section class="bookkeeping-template-section" aria-labelledby="booking-template-heading">
+    <div class="bookkeeping-template-heading">
+        <div>
+            <h2 id="booking-template-heading" class="h5 mb-1">Excel-Ergebniszeilen</h2>
+            <p class="bookkeeping-template-help">Optional: Eine leere Betragsspalte steht für den Restbetrag.</p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" id="add-booking-template">Zeile hinzufügen</button>
+    </div>
+
+    {{ matching_rule_formset.management_form }}
+    {% if matching_rule_formset.non_form_errors %}
+    <div class="bookkeeping-formset-errors" role="alert">
+        {% for error in matching_rule_formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="bookkeeping-template-table-wrap">
+        <table class="table table-sm align-middle mb-0 bookkeeping-template-table">
+            <thead class="table-light">
+                <tr>
+                    <th>Position</th>
+                    <th>Buchungstext</th>
+                    <th>Rechnungsnummer</th>
+                    <th>Lieferant/Kunde</th>
+                    <th>Betrag</th>
+                    <th>USt</th>
+                    <th>Kategorie</th>
+                    <th>Löschen</th>
+                </tr>
+            </thead>
+            <tbody id="booking-template-rows">
+                {% for template_form in matching_rule_formset.forms %}
+                    {% include "bookkeeping/_matching_rule_booking_template_row.html" with template_form=template_form is_existing=True %}
+                {% empty %}
+                <tr id="booking-template-empty-row">
+                    <td colspan="8" class="bookkeeping-template-empty">Noch keine Excel-Ergebniszeilen.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<template id="booking-template-empty-form">
+    {% include "bookkeeping/_matching_rule_booking_template_row.html" with template_form=matching_rule_formset.empty_form is_existing=False %}
+</template>
+
+<script>
+(() => {
+    const addButton = document.getElementById("add-booking-template");
+    const rows = document.getElementById("booking-template-rows");
+    const template = document.getElementById("booking-template-empty-form");
+    const totalForms = document.getElementById("id_templates-TOTAL_FORMS");
+    if (!addButton || !rows || !template || !totalForms) return;
+
+    addButton.addEventListener("click", () => {
+        const index = Number(totalForms.value);
+        const html = template.innerHTML.replace(/__prefix__/g, index);
+        document.getElementById("booking-template-empty-row")?.remove();
+        rows.insertAdjacentHTML("beforeend", html);
+        totalForms.value = index + 1;
+    });
+
+    rows.addEventListener("click", (event) => {
+        const button = event.target.closest(".bookkeeping-template-remove");
+        if (!button) return;
+        const row = button.closest(".bookkeeping-template-row");
+        if (!row) return;
+        if (row.dataset.existing === "true") {
+            const deleteField = row.querySelector("input[name$='-DELETE']");
+            if (deleteField) deleteField.checked = true;
+            row.classList.add("d-none");
+        } else {
+            row.remove();
+        }
+    });
+})();
+</script>

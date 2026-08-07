@@ -11,6 +11,8 @@
                 <th class="bookkeeping-amount">Erwarteter Betrag</th>
                 <th>Textmuster</th>
                 <th class="bookkeeping-note">Matching-Erklärung</th>
+                <th class="bookkeeping-linked-count">Verknüpfte Transaktionen</th>
+                <th class="bookkeeping-template-count">Excel-Zeilen</th>
                 <th class="bookkeeping-status">Status</th>
             </tr>
         </thead>
@@ -19,11 +21,23 @@
             <tr>
                 <td class="bookkeeping-actions">
                     <div class="bookkeeping-action-buttons">
+                        {% if rule.used %}
+                        <a href="{% url 'matching_rule_detail' rule.id %}" class="btn btn-sm btn-outline-primary">Details</a>
+                        {% if rule.next_version_id %}
+                        <a href="{% url 'matching_rule_detail' rule.next_version_id %}" class="btn btn-sm btn-outline-secondary">Nachfolgeversion</a>
+                        {% else %}
+                        <a href="{% url 'matching_rule_version' rule.id %}" class="btn btn-sm btn-outline-primary">Neue Version</a>
+                        {% endif %}
+                        {% else %}
                         <a href="{% url 'matching_rule_edit' rule.id %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
                         <a href="{% url 'matching_rule_delete' rule.id %}" class="btn btn-sm btn-outline-danger">Löschen</a>
+                        {% endif %}
                     </div>
                 </td>
-                <td>{{ rule.name }}</td>
+                <td>
+                    <div>{{ rule.name }}</div>
+                    <div class="bookkeeping-rule-version">Version {{ rule.version_number }}</div>
+                </td>
                 <td class="bookkeeping-direction">
                     {% if rule.direction_code == "incoming" %}
                     <span class="badge bookkeeping-badge bookkeeping-badge-incoming">{{ rule.direction }}</span>
@@ -48,6 +62,8 @@
                     <span>–</span>
                     {% endif %}
                 </td>
+                <td class="bookkeeping-linked-count">{{ rule.linked_transaction_count }}</td>
+                <td class="bookkeeping-template-count">{{ rule.booking_template_count }}</td>
                 <td class="bookkeeping-status">
                     {% if rule.active %}
                     <span class="badge bookkeeping-badge bookkeeping-badge-active">{{ rule.status }}</span>

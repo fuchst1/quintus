@@ -1,0 +1,27 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Neue Version – {{ source_rule.name }} – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="matching-rule-version-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="matching-rule-version-heading" class="bookkeeping-section-title">Neue Version für {{ source_rule.name }}</h1>
+            <p class="bookkeeping-page-description">Die Werte von Version {{ source_rule.version_number }} wurden übernommen. Die neue Version wird nach dem Speichern aktiv.</p>
+        </div>
+        <a href="{% url 'matching_rule_detail' source_rule.pk %}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+
+    {% if matching_rule_form.errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in matching_rule_form.non_field_errors %}{% ifchanged error %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endifchanged %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" class="bookkeeping-rule-form">
+        {% include "bookkeeping/_matching_rule_form.html" with matching_rule_form=matching_rule_form submit_label="Neue Version speichern" %}
+        {% include "bookkeeping/_matching_rule_booking_templates.html" with matching_rule_formset=matching_rule_formset %}
+    </form>
+</section>
+{% endblock %}

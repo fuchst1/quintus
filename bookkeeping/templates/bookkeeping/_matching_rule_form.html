@@ -79,8 +79,20 @@
         </div>
         {% endif %}
     </div>
+    {% if matching_rule_form.change_reason %}
+    <div class="col-md-4">
+        <label for="{{ matching_rule_form.change_reason.id_for_label }}" class="form-label">{{ matching_rule_form.change_reason.label }}</label>
+        {{ matching_rule_form.change_reason }}
+        {% if matching_rule_form.change_reason.errors %}
+        <div id="{{ matching_rule_form.change_reason.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.change_reason.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
     <div class="col-md-4 bookkeeping-rule-help">
         <div class="form-text">Exakt: IBAN und Betrag müssen exakt passen.</div>
         <div class="form-text">Regex: Sucht im Namen und Verwendungszweck; IBAN ist optional.</div>
     </div>
+    {% endif %}
 </div>

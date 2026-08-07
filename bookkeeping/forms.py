@@ -2,9 +2,12 @@ import re
 from decimal import Decimal
 
 from django import forms
+from django.core.exceptions import ValidationError
 from django.forms.boundfield import BoundField
+from django.forms.models import BaseInlineFormSet, inlineformset_factory
 
 from .choices import DEFAULT_VAT_SYMBOL, RECEIPT_GROUP_BANK, RECEIPT_GROUP_CHOICES
+from .category_display import category_description_choices
 from .formatting import (
     format_austrian_decimal,
     normalize_austrian_decimal_input,
@@ -14,6 +17,7 @@ from .models import (
     BookingEntry,
     IBAN_PATTERN,
     MatchingRule,
+    MatchingRuleBookingTemplate,
     normalize_iban,
 )
 
@@ -157,16 +161,40 @@ class MatchingRuleForm(forms.ModelForm):
         return cleaned_data
 
 
+class MatchingRuleVersionForm(MatchingRuleForm):
+    change_reason = forms.CharField(
+        required=True,
+        label="Änderungsgrund",
+        widget=forms.Textarea(
+            attrs={"class": "form-control", "rows": 2}
+        ),
+    )
+
+    class Meta(MatchingRuleForm.Meta):
+        fields = MatchingRuleForm.Meta.fields + ("change_reason",)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["active"].initial = True
+        self.fields["active"].disabled = True
+
+    def clean_change_reason(self):
+        change_reason = self.cleaned_data.get("change_reason", "").strip()
+        if not change_reason:
+            raise forms.ValidationError("Bitte einen Änderungsgrund angeben.")
+        return change_reason
+
+
 class BankTransactionNoteForm(forms.ModelForm):
     bound_field_class = MatchingRuleBoundField
 
     class Meta:
         model = BankTransaction
         fields = ("notes",)
-        labels = {"notes": "Anmerkung"}
+        labels = {"notes": "Anmerkung (optional)"}
         widgets = {
             "notes": forms.Textarea(
-                attrs={"class": "form-control", "rows": 5}
+                attrs={"class": "form-control", "rows": 3}
             ),
         }
 
@@ -237,9 +265,7 @@ class BookingEntryForm(forms.ModelForm):
             "category": "Kategorie",
         }
         widgets = {
-            "booking_text": forms.Textarea(
-                attrs={"class": "form-control", "rows": 3}
-            ),
+            "booking_text": forms.TextInput(attrs={"class": "form-control"}),
             "invoice_number": forms.TextInput(attrs={"class": "form-control"}),
             "partner_name": forms.TextInput(attrs={"class": "form-control"}),
             "vat_symbol": forms.Select(attrs={"class": "form-select"}),
@@ -250,6 +276,7 @@ class BookingEntryForm(forms.ModelForm):
         self.bank_transaction = bank_transaction
         self.final = final
         super().__init__(*args, **kwargs)
+        self.fields["category"].choices = category_description_choices()
 
         required_fields = (
             "receipt_group",
@@ -304,3 +331,231 @@ class BookingEntryForm(forms.ModelForm):
                 if cleaned_data.get(field_name) in (None, ""):
                     cleaned_data[field_name] = default
         return cleaned_data
+
+
+class BookingEntryFormSetBase(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        valid_entry_ids = {
+            str(entry_id)
+            for entry_id in self.queryset.values_list("pk", flat=True)
+        }
+        submitted_entry_ids = [
+            self.data.get(f"{self.add_prefix(index)}-id")
+            for index in range(self.total_form_count())
+        ]
+        if any(
+            entry_id and entry_id not in valid_entry_ids
+            for entry_id in submitted_entry_ids
+        ):
+            raise ValidationError(
+                "Eine Buchungszeile gehört nicht zu dieser Banktransaktion."
+            )
+        if any(self.errors):
+            return
+
+        if not self.form_kwargs.get("final"):
+            return
+
+        active_forms = [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+        if not active_forms:
+            raise ValidationError("Mindestens eine Buchungszeile ist erforderlich.")
+
+        bank_transaction = self.form_kwargs.get("bank_transaction")
+        if bank_transaction is None:
+            return
+        total = sum(
+            (form.cleaned_data.get("gross_amount") or Decimal("0")
+             for form in active_forms),
+            Decimal("0"),
+        )
+        if total != bank_transaction.amount:
+            raise ValidationError(
+                "Die Summe der Buchungszeilen muss dem signierten "
+                "Transaktionsbetrag entsprechen."
+            )
+
+    def save_new_objects(self, commit=True):
+        self.new_objects = []
+        initial_row_count = getattr(self, "initial_row_count", 0)
+        for index, form in enumerate(self.extra_forms):
+            if not form.has_changed() and index >= initial_row_count:
+                continue
+            if not form.cleaned_data:
+                continue
+            if self.can_delete and self._should_delete_form(form):
+                continue
+            self.new_objects.append(self.save_new(form, commit=commit))
+        return self.new_objects
+
+
+BookingEntryFormSet = inlineformset_factory(
+    BankTransaction,
+    BookingEntry,
+    form=BookingEntryForm,
+    formset=BookingEntryFormSetBase,
+    extra=0,
+    can_delete=True,
+)
+
+
+class MatchingRuleBookingTemplateForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    position = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label="Position",
+        widget=forms.NumberInput(
+            attrs={"class": "form-control", "min": 1, "inputmode": "numeric"}
+        ),
+    )
+    gross_amount = AustrianDecimalField(
+        max_digits=14,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0.01"),
+        label="Betrag",
+        error_messages={"min_value": "Der Betrag muss positiv sein."},
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+
+    class Meta:
+        model = MatchingRuleBookingTemplate
+        fields = (
+            "position",
+            "booking_text",
+            "invoice_number",
+            "partner_name",
+            "gross_amount",
+            "vat_symbol",
+            "category",
+        )
+        labels = {
+            "position": "Position",
+            "booking_text": "Buchungstext",
+            "invoice_number": "Rechnungsnummer",
+            "partner_name": "Lieferant/Kunde",
+            "gross_amount": "Betrag",
+            "vat_symbol": "USt-Symbol",
+            "category": "Kategorie",
+        }
+        widgets = {
+            "booking_text": forms.TextInput(attrs={"class": "form-control"}),
+            "invoice_number": forms.TextInput(attrs={"class": "form-control"}),
+            "partner_name": forms.TextInput(attrs={"class": "form-control"}),
+            "vat_symbol": forms.Select(attrs={"class": "form-select"}),
+            "category": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["category"].choices = category_description_choices()
+        if self.instance._state.adding:
+            self.initial.setdefault("vat_symbol", DEFAULT_VAT_SYMBOL)
+
+    def clean_position(self):
+        return self.cleaned_data.get("position") or 1
+
+
+class MatchingRuleBookingTemplateBaseFormSet(BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+
+        active_forms = [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+        if not active_forms:
+            return
+
+        amounts = [form.cleaned_data.get("gross_amount") for form in active_forms]
+        rest_count = sum(amount is None for amount in amounts)
+        if rest_count > 1:
+            raise ValidationError(
+                "Es darf höchstens eine Ergebniszeile mit Restbetrag geben."
+            )
+
+        matching_rule = self.instance
+        if matching_rule.match_type == MatchingRule.MatchType.REGEX:
+            if rest_count != 1:
+                raise ValidationError(
+                    "Textmuster-Regeln benötigen genau eine Ergebniszeile mit Restbetrag."
+                )
+            return
+
+        if matching_rule.match_type != MatchingRule.MatchType.EXACT:
+            return
+        if matching_rule.expected_amount is None:
+            return
+
+        fixed_total = sum(
+            (amount for amount in amounts if amount is not None),
+            Decimal("0"),
+        )
+        if rest_count == 1 and fixed_total >= matching_rule.expected_amount:
+            raise ValidationError(
+                "Die festen Beträge müssen kleiner als der erwartete Betrag sein."
+            )
+        elif rest_count == 0 and fixed_total != matching_rule.expected_amount:
+            raise ValidationError(
+                "Die Summe der Ergebniszeilen muss dem erwarteten Betrag entsprechen."
+            )
+
+    def save(self, commit=True):
+        if not self.is_bound:
+            return []
+
+        active_instances = []
+        deleted_instances = []
+
+        for form in self.forms:
+            if not form.cleaned_data:
+                continue
+            instance = form.instance
+            if form.cleaned_data.get("DELETE"):
+                if instance.pk:
+                    deleted_instances.append(instance)
+                continue
+
+            instance = form.save(commit=False)
+            instance.matching_rule = self.instance
+            active_instances.append(instance)
+
+        if commit:
+            existing_instances = [
+                instance for instance in active_instances if instance.pk
+            ]
+            temporary_position = 1000000
+            for instance in existing_instances:
+                instance.position = temporary_position
+                temporary_position += 1
+                instance.save()
+            for instance in deleted_instances:
+                instance.delete()
+
+            for position, instance in enumerate(active_instances, start=1):
+                instance.position = position
+                instance.save()
+
+        self.deleted_objects = deleted_instances
+        return active_instances
+
+
+MatchingRuleBookingTemplateFormSet = inlineformset_factory(
+    MatchingRule,
+    MatchingRuleBookingTemplate,
+    form=MatchingRuleBookingTemplateForm,
+    formset=MatchingRuleBookingTemplateBaseFormSet,
+    extra=0,
+    can_delete=True,
+)

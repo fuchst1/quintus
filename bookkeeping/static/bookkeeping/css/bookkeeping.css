@@ -164,6 +164,131 @@
     padding-top: 1.7rem;
 }
 
+.bookkeeping-rule-version {
+    color: #5f6b78;
+    font-size: 0.78rem;
+}
+
+.bookkeeping-rule-detail-card {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    margin-bottom: 1rem;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-rule-detail-heading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.8rem;
+}
+
+.bookkeeping-rule-detail-list dt,
+.bookkeeping-rule-detail-list dd {
+    margin-bottom: 0.5rem;
+}
+
+.bookkeeping-version-links {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.bookkeeping-template-section {
+    border-top: 1px solid #dfe3e8;
+    margin-top: 1rem;
+    padding-top: 1rem;
+}
+
+.bookkeeping-template-heading {
+    align-items: flex-start;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.65rem;
+}
+
+.bookkeeping-template-help {
+    color: #5f6b78;
+    font-size: 0.8rem;
+    margin: 0;
+}
+
+.bookkeeping-template-table-wrap {
+    overflow-x: auto;
+}
+
+.bookkeeping-template-table {
+    min-width: 980px;
+}
+
+.bookkeeping-template-table th,
+.bookkeeping-template-table td {
+    padding: 0.35rem;
+    vertical-align: top;
+}
+
+.bookkeeping-template-table th {
+    white-space: nowrap;
+}
+
+.bookkeeping-template-table .form-control,
+.bookkeeping-template-table .form-select {
+    font-size: 0.82rem;
+    min-width: 7rem;
+}
+
+.bookkeeping-template-table td:first-child .form-control {
+    min-width: 4.5rem;
+    width: 4.5rem;
+}
+
+.bookkeeping-template-table td:nth-child(2) .form-control {
+    min-width: 12rem;
+}
+
+.bookkeeping-template-table td:nth-child(4) .form-control {
+    min-width: 10rem;
+}
+
+.bookkeeping-template-table td:nth-child(5) .form-control {
+    min-width: 7rem;
+}
+
+.bookkeeping-template-delete {
+    min-width: 6rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-template-delete input[type="checkbox"] {
+    display: none;
+}
+
+.bookkeeping-template-empty {
+    color: #5f6b78;
+    font-size: 0.82rem;
+    text-align: center;
+}
+
+.bookkeeping-formset-errors,
+.bookkeeping-formset-error {
+    color: #b02a37;
+    font-size: 0.78rem;
+    line-height: 1.3;
+}
+
+.bookkeeping-formset-errors {
+    background: #fbe9eb;
+    border: 1px solid #f1b0b7;
+    margin-bottom: 0.65rem;
+    padding: 0.45rem 0.6rem;
+}
+
+.bookkeeping-formset-error {
+    margin-top: 0.2rem;
+}
+
 .bookkeeping-empty-state {
     color: #5f6b78;
     font-size: 0.875rem;
@@ -245,36 +370,180 @@
 .bookkeeping-entry-form {
     background: #ffffff;
     border: 1px solid #dfe3e8;
-    max-width: 70rem;
     padding: 1rem 1.1rem;
+    width: 100%;
 }
 
-.bookkeeping-entry-form-grid {
-    display: grid;
-    gap: 0.75rem 1rem;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+.bookkeeping-entry-rows-section {
+    border-bottom: 1px solid #dfe3e8;
+    max-width: none;
+    padding-bottom: 0.8rem;
+    width: 100%;
 }
 
-.bookkeeping-entry-field {
+.bookkeeping-entry-rows-heading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.bookkeeping-entry-rows-heading {
+    margin-bottom: 0.7rem;
+}
+
+.bookkeeping-entry-table-wrap {
+    max-width: none;
+    overflow-x: auto;
+    width: 100%;
+}
+
+.bookkeeping-entry-table {
+    border-collapse: collapse;
+    margin: 0;
+    min-width: 1470px;
+    table-layout: fixed;
+    width: 100%;
+}
+
+.bookkeeping-entry-table th,
+.bookkeeping-entry-table td {
+    border-bottom: 1px solid #e1e5e9;
+    padding: 0.28rem 0.35rem;
+    vertical-align: top;
+}
+
+.bookkeeping-entry-table thead th {
+    background: #f1f3f5;
+    border-bottom: 1px solid #cfd5db;
+    border-right: 1px solid #dfe3e8;
+    color: #273849;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-entry-table thead th:last-child {
+    border-right: 0;
+}
+
+.bookkeeping-entry-table tbody tr:nth-child(even) {
+    background: #f8f9fa;
+}
+
+.bookkeeping-entry-table th:nth-child(1),
+.bookkeeping-entry-table td:nth-child(1) {
+    min-width: 60px;
+    width: 60px;
+}
+
+.bookkeeping-entry-table th:nth-child(2),
+.bookkeeping-entry-table td:nth-child(2) {
+    min-width: 100px;
+    width: 100px;
+}
+
+.bookkeeping-entry-table th:nth-child(3),
+.bookkeeping-entry-table td:nth-child(3) {
+    min-width: 90px;
+    width: 90px;
+}
+
+.bookkeeping-entry-table th:nth-child(4),
+.bookkeeping-entry-table td:nth-child(4) {
+    min-width: 115px;
+    width: 115px;
+}
+
+.bookkeeping-entry-table th:nth-child(5),
+.bookkeeping-entry-table td:nth-child(5) {
+    min-width: 260px;
+    width: 260px;
+}
+
+.bookkeeping-entry-table th:nth-child(6),
+.bookkeeping-entry-table td:nth-child(6) {
+    min-width: 150px;
+    width: 150px;
+}
+
+.bookkeeping-entry-table th:nth-child(7),
+.bookkeeping-entry-table td:nth-child(7) {
+    min-width: 190px;
+    width: 190px;
+}
+
+.bookkeeping-entry-table th:nth-child(8),
+.bookkeeping-entry-table td:nth-child(8) {
+    min-width: 120px;
+    width: 120px;
+}
+
+.bookkeeping-entry-table th:nth-child(9),
+.bookkeeping-entry-table td:nth-child(9) {
+    min-width: 85px;
+    width: 85px;
+}
+
+.bookkeeping-entry-table th:nth-child(10),
+.bookkeeping-entry-table td:nth-child(10) {
+    min-width: 300px;
+    width: 300px;
+}
+
+.bookkeeping-entry-table .form-control,
+.bookkeeping-entry-table .form-select {
+    border-radius: 0.2rem;
+    font-size: 0.78rem;
     min-width: 0;
+    overflow: hidden;
+    padding: 0.2rem 0.35rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
 }
 
-.bookkeeping-entry-field-wide {
-    grid-column: span 3;
+.bookkeeping-entry-table .form-control,
+.bookkeeping-entry-table .form-select {
+    height: 2.25rem;
 }
 
-.bookkeeping-entry-field .form-label {
+.bookkeeping-entry-table .bookkeeping-entry-actions {
+    text-align: center;
+    white-space: nowrap;
+}
+
+.bookkeeping-entry-delete-field {
+    display: none;
+}
+
+.bookkeeping-entry-remove {
+    padding: 0.2rem 0.35rem;
+}
+
+.bookkeeping-entry-cell-errors {
+    color: #b02a37;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    margin-top: 0.2rem;
+    overflow-wrap: anywhere;
+}
+
+.bookkeeping-entry-notes {
+    margin-top: 0.9rem;
+    max-width: none;
+    width: 100%;
+}
+
+.bookkeeping-entry-notes .form-label {
     font-size: 0.9rem;
     font-weight: 600;
     margin-bottom: 0.25rem;
 }
 
-.bookkeeping-entry-field .invalid-feedback {
-    color: #b02a37;
-    display: block;
-    font-size: 0.78rem;
-    line-height: 1.3;
-    margin-top: 0.25rem;
+.bookkeeping-entry-notes textarea {
+    height: 4.25rem;
+    min-height: 60px;
+    resize: vertical;
 }
 
 .bookkeeping-entry-form-actions {
@@ -282,6 +551,8 @@
     flex-wrap: wrap;
     gap: 0.35rem;
     margin-top: 1rem;
+    max-width: none;
+    width: 100%;
 }
 
 .bookkeeping-validation-alert {
@@ -366,7 +637,7 @@
 }
 
 .bookkeeping-rules-table {
-    min-width: 980px;
+    min-width: 1040px;
 }
 
 .bookkeeping-data-table th,
@@ -456,6 +727,13 @@
     cursor: pointer;
 }
 
+.bookkeeping-booking-data-line {
+    border-bottom: 1px solid #edf0f2;
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+    padding: 0.2rem 0;
+}
+
 .bookkeeping-booking-data-details dl {
     margin: 0.35rem 0 0;
 }
@@ -480,6 +758,16 @@
 .bookkeeping-data-table .bookkeeping-note {
     min-width: 13rem;
     text-align: left;
+}
+
+.bookkeeping-data-table .bookkeeping-template-count {
+    text-align: center;
+    white-space: nowrap;
+}
+
+.bookkeeping-data-table .bookkeeping-linked-count {
+    text-align: center;
+    white-space: nowrap;
 }
 
 .bookkeeping-data-table .bookkeeping-actions {
@@ -632,13 +920,11 @@
         min-width: 0;
     }
 
-    .bookkeeping-original-transaction-grid,
-    .bookkeeping-entry-form-grid {
+    .bookkeeping-original-transaction-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .bookkeeping-original-transaction-wide,
-    .bookkeeping-entry-field-wide {
+    .bookkeeping-original-transaction-wide {
         grid-column: span 1;
     }
 }
