@@ -1,9 +1,21 @@
 import re
+from decimal import Decimal
 
 from django import forms
 from django.forms.boundfield import BoundField
 
-from .models import BankTransaction, IBAN_PATTERN, MatchingRule, normalize_iban
+from .choices import DEFAULT_VAT_SYMBOL, RECEIPT_GROUP_BANK, RECEIPT_GROUP_CHOICES
+from .formatting import (
+    format_austrian_decimal,
+    normalize_austrian_decimal_input,
+)
+from .models import (
+    BankTransaction,
+    BookingEntry,
+    IBAN_PATTERN,
+    MatchingRule,
+    normalize_iban,
+)
 
 
 class MatchingRuleBoundField(BoundField):
@@ -21,15 +33,33 @@ class MatchingRuleBoundField(BoundField):
         return super().as_widget(widget, attrs, only_initial)
 
 
+class AustrianDecimalField(forms.DecimalField):
+    """Decimal input accepting Austrian separators without changing storage."""
+
+    default_error_messages = {
+        "invalid": "Bitte einen gültigen Betrag eingeben, zum Beispiel 43,48.",
+    }
+
+    def to_python(self, value):
+        return super().to_python(normalize_austrian_decimal_input(value))
+
+    def prepare_value(self, value):
+        if isinstance(value, Decimal):
+            return format_austrian_decimal(value)
+        return super().prepare_value(value)
+
+
 class MatchingRuleForm(forms.ModelForm):
     bound_field_class = MatchingRuleBoundField
 
-    expected_amount = forms.DecimalField(
+    expected_amount = AustrianDecimalField(
         max_digits=14,
         decimal_places=2,
         required=False,
         label="Erwarteter Betrag",
-        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
     )
 
     class Meta:
@@ -139,3 +169,138 @@ class BankTransactionNoteForm(forms.ModelForm):
                 attrs={"class": "form-control", "rows": 5}
             ),
         }
+
+
+class BookingEntryForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    receipt_group = forms.ChoiceField(
+        choices=RECEIPT_GROUP_CHOICES,
+        required=False,
+        disabled=True,
+        label="Belegkreis",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    receipt_number = forms.CharField(
+        required=False,
+        disabled=True,
+        label="Belegnummer",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "readonly": "readonly"}
+        ),
+    )
+    payment_date = forms.DateField(
+        required=False,
+        disabled=True,
+        label="Zahlungsdatum",
+        widget=forms.DateInput(
+            format="%d.%m.%Y",
+            attrs={"class": "form-control", "readonly": "readonly"},
+        ),
+    )
+    gross_amount = AustrianDecimalField(
+        max_digits=14,
+        decimal_places=2,
+        label="Bruttobetrag",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+    notes = forms.CharField(
+        required=False,
+        label="Anmerkung",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+    )
+
+    class Meta:
+        model = BookingEntry
+        fields = (
+            "receipt_group",
+            "receipt_number",
+            "payment_date",
+            "booking_text",
+            "invoice_number",
+            "partner_name",
+            "gross_amount",
+            "vat_symbol",
+            "category",
+        )
+        labels = {
+            "receipt_group": "Belegkreis",
+            "receipt_number": "Belegnummer",
+            "payment_date": "Zahlungsdatum",
+            "booking_text": "Buchungstext",
+            "invoice_number": "Rechnungsnummer",
+            "partner_name": "Lieferant/Kunde",
+            "gross_amount": "Bruttobetrag",
+            "vat_symbol": "USt-Symbol",
+            "category": "Kategorie",
+        }
+        widgets = {
+            "booking_text": forms.Textarea(
+                attrs={"class": "form-control", "rows": 3}
+            ),
+            "invoice_number": forms.TextInput(attrs={"class": "form-control"}),
+            "partner_name": forms.TextInput(attrs={"class": "form-control"}),
+            "vat_symbol": forms.Select(attrs={"class": "form-select"}),
+            "category": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def __init__(self, *args, bank_transaction=None, final=False, **kwargs):
+        self.bank_transaction = bank_transaction
+        self.final = final
+        super().__init__(*args, **kwargs)
+
+        required_fields = (
+            "receipt_group",
+            "payment_date",
+            "booking_text",
+            "partner_name",
+            "gross_amount",
+            "vat_symbol",
+            "category",
+        )
+        for field_name in required_fields:
+            self.fields[field_name].required = final
+
+        if bank_transaction is not None:
+            effective_payment_date = (
+                bank_transaction.value_date or bank_transaction.booking_date
+            )
+            if not self.instance._state.adding:
+                effective_payment_date = self.instance.payment_date
+            self.initial["receipt_group"] = RECEIPT_GROUP_BANK
+            self.initial["payment_date"] = effective_payment_date
+            self.initial["receipt_number"] = str(effective_payment_date.month)
+            if self.instance._state.adding:
+                self.initial.setdefault("partner_name", bank_transaction.partner_name)
+                self.initial.setdefault("booking_text", bank_transaction.purpose)
+                self.initial.setdefault("gross_amount", bank_transaction.amount)
+                self.initial.setdefault("vat_symbol", DEFAULT_VAT_SYMBOL)
+            self.initial.setdefault("notes", bank_transaction.notes)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.bank_transaction is not None:
+            effective_payment_date = (
+                self.instance.payment_date
+                if not self.instance._state.adding
+                else (
+                    self.bank_transaction.value_date
+                    or self.bank_transaction.booking_date
+                )
+            )
+            cleaned_data["receipt_group"] = RECEIPT_GROUP_BANK
+            cleaned_data["payment_date"] = effective_payment_date
+            cleaned_data["receipt_number"] = str(effective_payment_date.month)
+
+        if not self.final and self.bank_transaction is not None:
+            defaults = {
+                "partner_name": self.bank_transaction.partner_name,
+                "booking_text": self.bank_transaction.purpose,
+                "gross_amount": self.bank_transaction.amount,
+            }
+            for field_name, default in defaults.items():
+                if cleaned_data.get(field_name) in (None, ""):
+                    cleaned_data[field_name] = default
+        return cleaned_data

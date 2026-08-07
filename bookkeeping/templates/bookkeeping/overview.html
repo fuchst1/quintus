@@ -58,9 +58,10 @@
 {% if show_preview %}
 <p class="bookkeeping-preview-count">{{ transactions|length }} Transaktionen angezeigt</p>
 <div class="bookkeeping-table-wrap" role="region" aria-label="Transaktionsvorschau" tabindex="0">
-    <table class="table table-hover align-middle mb-0 bookkeeping-data-table bookkeeping-transaction-table">
+    <table class="table table-hover align-middle mb-0 bookkeeping-data-table bookkeeping-transaction-table{% if selected_status != "imported" %} bookkeeping-transaction-table-with-notes{% endif %}">
         <thead class="table-light">
             <tr>
+                <th class="bookkeeping-actions">Aktionen</th>
                 <th class="bookkeeping-date">Buchungsdatum</th>
                 <th class="bookkeeping-name">Name</th>
                 <th class="bookkeeping-iban">IBAN</th>
@@ -68,14 +69,36 @@
                 <th class="bookkeeping-amount">Betrag</th>
                 <th class="bookkeeping-purpose">Verwendungszweck</th>
                 <th class="bookkeeping-status">Status</th>
+                {% if selected_status != "imported" %}
+                <th class="bookkeeping-booking-data">Buchungsdaten</th>
                 <th class="bookkeeping-matching-rule">Matching-Regel</th>
                 <th class="bookkeeping-matching-explanation">Matching-Erklärung</th>
                 <th class="bookkeeping-note">Anmerkung</th>
+                {% endif %}
             </tr>
         </thead>
         <tbody>
             {% for transaction in transactions %}
             <tr>
+                <td class="bookkeeping-actions">
+                    {% if selected_status == "imported" %}
+                    <div class="bookkeeping-action-buttons">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchung erfassen</a>
+                    </div>
+                    {% elif selected_status == "matched" %}
+                    <div class="bookkeeping-action-buttons">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchungsdaten prüfen</a>
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Anmerkung</a>
+                    </div>
+                    {% elif selected_status == "reviewed" %}
+                    <div class="bookkeeping-action-buttons">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Anmerkung</a>
+                    </div>
+                    {% else %}
+                    <span>–</span>
+                    {% endif %}
+                </td>
                 <td class="bookkeeping-date">{{ transaction.booking_date }}</td>
                 <td class="bookkeeping-name">{{ transaction.name }}</td>
                 <td class="bookkeeping-iban">{{ transaction.iban }}</td>
@@ -100,6 +123,26 @@
                 <td class="bookkeeping-purpose">{{ transaction.purpose }}</td>
                 <td class="bookkeeping-status">
                     <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.status }}</span>
+                </td>
+                {% if selected_status != "imported" %}
+                <td class="bookkeeping-booking-data">
+                    {% if transaction.booking_data %}
+                    <div class="bookkeeping-booking-data-preview">
+                        <div><strong>{{ transaction.booking_data.category }}</strong> · {{ transaction.booking_data.gross_amount }}</div>
+                        <div>{{ transaction.booking_data.partner_name }} · {{ transaction.booking_data.payment_date }}</div>
+                        <details class="bookkeeping-booking-data-details">
+                            <summary>Details anzeigen</summary>
+                            <dl>
+                                <dt>Beleg</dt><dd>{{ transaction.booking_data.receipt }}</dd>
+                                <dt>Buchungstext</dt><dd>{{ transaction.booking_data.booking_text }}</dd>
+                                <dt>Rechnungsnummer</dt><dd>{{ transaction.booking_data.invoice_number }}</dd>
+                                <dt>USt-Symbol</dt><dd>{{ transaction.booking_data.vat_symbol }}</dd>
+                            </dl>
+                        </details>
+                    </div>
+                    {% else %}
+                    <span>–</span>
+                    {% endif %}
                 </td>
                 <td class="bookkeeping-matching-rule">{{ transaction.matched_rule }}</td>
                 <td class="bookkeeping-matching-explanation">
@@ -128,11 +171,8 @@
                     {% else %}
                     <span>–</span>
                     {% endif %}
-                    <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-note-action">
-                        <i class="bi bi-pencil" aria-hidden="true"></i>
-                        Anmerkung
-                    </a>
                 </td>
+                {% endif %}
             </tr>
             {% endfor %}
         </tbody>

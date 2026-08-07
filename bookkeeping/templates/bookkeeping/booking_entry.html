@@ -1,0 +1,64 @@
+{% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
+
+{% block title %}{{ page_heading }} – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="booking-entry-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="booking-entry-heading" class="bookkeeping-section-title">{{ page_heading }}</h1>
+            <p class="bookkeeping-page-description">Buchungsdaten für eine einzelne Banktransaktion</p>
+        </div>
+        <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+
+    {% if form.errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in form.non_field_errors %}{% ifchanged error %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endifchanged %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="bookkeeping-original-transaction" aria-labelledby="original-transaction-heading">
+        <h2 id="original-transaction-heading" class="bookkeeping-subsection-title">Originale Banktransaktion</h2>
+        <dl class="bookkeeping-original-transaction-grid">
+            <div><dt>Buchungsdatum</dt><dd>{{ bank_transaction.booking_date|date:"d.m.Y" }}</dd></div>
+            <div><dt>Valutadatum</dt><dd>{% if bank_transaction.value_date %}{{ bank_transaction.value_date|date:"d.m.Y" }}{% else %}–{% endif %}</dd></div>
+            <div><dt>Name</dt><dd>{{ bank_transaction.partner_name|default:"–" }}</dd></div>
+            <div><dt>Betrag</dt><dd>{{ bank_transaction.amount|austrian_money:bank_transaction.currency }}</dd></div>
+            <div><dt>Richtung</dt><dd>{{ bank_transaction.get_direction_display }}</dd></div>
+            <div class="bookkeeping-original-transaction-wide"><dt>Verwendungszweck</dt><dd>{{ bank_transaction.purpose|default:"–" }}</dd></div>
+        </dl>
+    </div>
+
+    <form method="post" class="bookkeeping-entry-form">
+        {% csrf_token %}
+        <div class="bookkeeping-entry-form-grid">
+            {% for field in form %}
+            <div class="bookkeeping-entry-field{% if field.name == 'booking_text' or field.name == 'notes' %} bookkeeping-entry-field-wide{% endif %}">
+                <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+                {{ field }}
+                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                {% if field.errors %}
+                <div id="{{ field.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+                    {% for error in field.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        <div class="bookkeeping-entry-form-actions">
+            <button type="submit" name="action" value="save_draft" class="btn btn-outline-primary">Entwurf speichern</button>
+            <button type="submit" name="action" value="finalize" class="btn btn-primary">Prüfen und abschließen</button>
+            <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        </div>
+    </form>
+</section>
+{% endblock %}

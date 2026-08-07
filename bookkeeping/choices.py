@@ -1,0 +1,66 @@
+RECEIPT_GROUP_BANK = "BK"
+RECEIPT_GROUP_PRIVATE = "PR"
+
+RECEIPT_GROUP_CHOICES = (
+    (RECEIPT_GROUP_BANK, "BK – Bank"),
+    (RECEIPT_GROUP_PRIVATE, "PR – Privat"),
+)
+
+VAT_SYMBOL_CHOICES = (
+    ("10", "10"),
+    ("13", "13"),
+    ("20", "20"),
+    ("IG", "IG"),
+)
+DEFAULT_VAT_SYMBOL = "20"
+
+CATEGORY_CHOICES = (
+    ("300", "300 – Betriebs- und Geschäftsgebäude"),
+    ("382", "382 – Instandsetzung Meidlinger Hauptstr."),
+    ("600", "600 – Betriebs- und Geschäftsausstattung (Anlage)"),
+    ("602", "602 – Einrichtung Meidlinger Hauptstr."),
+    ("710", "710 – Anlagen in Bau"),
+    ("3530", "3530 – Finanzamt"),
+    ("3760", "3760 – Kautionen"),
+    ("2910", "2910 – Reparaturrücklage Lehnergasse"),
+    ("2911", "2911 – Reparaturrücklage Meidlinger Haupt"),
+    ("4830", "4830 – Sonstige Erlöse 0%"),
+    ("4850", "4850 – Mieterlös Bahngasse 20%"),
+    ("4851", "4851 – Mieterlös Bahngasse 10%"),
+    ("4852", "4852 – Mieterlös Lehnergasse 10%"),
+    ("4860", "4860 – Mieterlös Meidlinger Haupt 10%"),
+    ("4853", "4853 – Betriebskostenerlös Lehnergasse 10%"),
+    ("4855", "4855 – Betriebskostenerlös Bahngasse 20%"),
+    ("4856", "4856 – Betriebskostenerlös Bahngasse 10%"),
+    ("4861", "4861 – Betriebskostenerlös Meidlinger Haupt 10%"),
+    ("4862", "4862 – Betriebskostenerlös Meidlinger Haupt 20%"),
+    ("3640", "3640 – Gehälter"),
+    ("3600", "3600 – Gesetzlicher Sozialaufwand"),
+    ("6790", "6790 – Freiwilliger Sozialaufwand"),
+    ("7021", "7021 – Geringwertige Wirtschaftsgüter"),
+    ("7180", "7180 – Sonstige Gebühren und Abgaben"),
+    ("7200", "7200 – Instandhaltung Bahngasse"),
+    ("7201", "7201 – Instandhaltung Lehnergasse"),
+    ("7202", "7202 – Instandhaltung Meidlinger Hauptstr."),
+    ("7206", "7206 – Wartung Software"),
+    ("7215", "7215 – Reinigungsmaterial"),
+    ("7380", "7380 – Telefon/Internet"),
+    ("7390", "7390 – Postgebühren"),
+    ("7410", "7410 – Betriebskosten Lehnergasse"),
+    ("7411", "7411 – Betriebskosten Bahngasse"),
+    ("7412", "7412 – Betriebskosten Meidlinger Haupt"),
+    ("7600", "7600 – Büromaterial und Drucksorten"),
+    ("7750", "7750 – Rechts- und Beratungsaufwand"),
+    ("7740", "7740 – Steuerberatung"),
+    ("7770", "7770 – Aus- u Fortbildung"),
+    ("7790", "7790 – Spesen d. Geldverkehrs"),
+    ("7840", "7840 – sonstige betriebliche Aufwendungen"),
+    ("7845", "7845 – Leerstand Bahngasse"),
+    ("7846", "7846 – Leerstand Lehnergasse"),
+    ("7847", "7847 – Leerstand Meidlinger Hauptstr."),
+    ("8100", "8100 – Habenzinsen"),
+    ("8280", "8280 – Sollzinsen"),
+    ("8540", "8540 – Kest"),
+    ("9600", "9600 – Privat"),
+    ("9613", "9613 – Sonderausgaben, außergewöhnliche Belastungen"),
+)

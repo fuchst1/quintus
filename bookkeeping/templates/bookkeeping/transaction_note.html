@@ -1,4 +1,5 @@
 {% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
 
 {% block title %}Anmerkung zur Transaktion – Quintus Buchhaltung{% endblock %}
 
@@ -8,7 +9,7 @@
         <div>
             <h1 id="transaction-note-heading" class="bookkeeping-section-title">Anmerkung zur Transaktion</h1>
             <p class="bookkeeping-page-description">
-                {{ bank_transaction.booking_date|date:"d.m.Y" }} · {{ bank_transaction.partner_name|default:"–" }} · {{ bank_transaction.amount }} {{ bank_transaction.currency }}
+                {{ bank_transaction.booking_date|date:"d.m.Y" }} · {{ bank_transaction.partner_name|default:"–" }} · {{ bank_transaction.amount|austrian_money:bank_transaction.currency }}
             </p>
         </div>
         <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>

@@ -4,6 +4,12 @@ import uuid
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from .choices import (
+    CATEGORY_CHOICES,
+    DEFAULT_VAT_SYMBOL,
+    RECEIPT_GROUP_CHOICES,
+    VAT_SYMBOL_CHOICES,
+)
 
 IBAN_PATTERN = re.compile(r"^[A-Z0-9]{15,34}$")
 
@@ -47,6 +53,7 @@ class BankTransaction(models.Model):
         related_name="transactions",
     )
     booking_date = models.DateField()
+    value_date = models.DateField("Valutadatum", null=True, blank=True)
     partner_name = models.CharField(max_length=255, blank=True)
     partner_iban = models.CharField(max_length=34, blank=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
@@ -143,3 +150,55 @@ class MatchingRule(models.Model):
         self.iban = normalize_iban(self.iban)
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class BookingEntry(models.Model):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    bank_transaction = models.ForeignKey(
+        BankTransaction,
+        on_delete=models.CASCADE,
+        related_name="booking_entries",
+    )
+    receipt_group = models.CharField(
+        "Belegkreis",
+        max_length=2,
+        choices=RECEIPT_GROUP_CHOICES,
+        blank=True,
+    )
+    receipt_number = models.CharField(
+        "Belegnummer",
+        max_length=100,
+        blank=True,
+    )
+    payment_date = models.DateField("Zahlungsdatum")
+    booking_text = models.TextField("Buchungstext")
+    invoice_number = models.CharField(
+        "Rechnungsnummer",
+        max_length=100,
+        blank=True,
+    )
+    partner_name = models.CharField("Lieferant/Kunde", max_length=255)
+    gross_amount = models.DecimalField(
+        "Bruttobetrag",
+        max_digits=14,
+        decimal_places=2,
+    )
+    vat_symbol = models.CharField(
+        "USt-Symbol",
+        max_length=2,
+        choices=VAT_SYMBOL_CHOICES,
+        blank=True,
+        default=DEFAULT_VAT_SYMBOL,
+    )
+    category = models.CharField(
+        "Kategorie",
+        max_length=4,
+        choices=CATEGORY_CHOICES,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)

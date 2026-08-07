@@ -7,15 +7,17 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.db.models import Count
+from django.db.models import Count, Prefetch
 from django.db import transaction as db_transaction
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
+from .choices import RECEIPT_GROUP_BANK
+from .formatting import format_austrian_decimal, format_austrian_money
 from .matching import match_imported_transactions
-from .forms import BankTransactionNoteForm, MatchingRuleForm
-from .models import BankTransaction, MatchingRule
+from .forms import BankTransactionNoteForm, BookingEntryForm, MatchingRuleForm
+from .models import BankTransaction, BookingEntry, MatchingRule
 
 
 STATUS_NAVIGATION = (
@@ -50,6 +52,12 @@ STATUS_NAVIGATION = (
 )
 STATUS_VALUES = {item["value"] for item in STATUS_NAVIGATION}
 STATUS_DETAILS = {item["value"]: item for item in STATUS_NAVIGATION}
+NOTE_EDITABLE_STATUSES = frozenset(
+    {
+        BankTransaction.Status.MATCHED,
+        BankTransaction.Status.REVIEWED,
+    }
+)
 GERMAN_MONTH_NAMES = (
     "Januar",
     "Februar",
@@ -156,9 +164,13 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                 item["value"],
                 selected_month if selected_month or available_month_keys else None,
             ),
-            "active": (
-                request.resolver_match.url_name
-                in {"bookkeeping_overview", "bank_transaction_note"}
+                "active": (
+                    request.resolver_match.url_name
+                in {
+                    "bookkeeping_overview",
+                    "bank_transaction_note",
+                    "bank_transaction_booking",
+                }
                 and selected_status == item["value"]
             ),
         }
@@ -190,7 +202,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
 
 def _display_matching_rule(rule):
     expected_amount = (
-        f"{rule.expected_amount:.2f}"
+        format_austrian_decimal(rule.expected_amount)
         if rule.expected_amount is not None
         else "–"
     )
@@ -244,6 +256,12 @@ class BookkeepingOverviewView(TemplateView):
         )
         selected_transactions = BankTransaction.objects.select_related(
             "matched_rule"
+        ).prefetch_related(
+            Prefetch(
+                "booking_entries",
+                queryset=BookingEntry.objects.order_by("created_at", "id"),
+                to_attr="booking_entries_for_display",
+            )
         ).filter(status=navigation_context["selected_status"])
         if navigation_context["selected_month"]:
             selected_transactions = selected_transactions.filter(
@@ -357,6 +375,7 @@ class BookkeepingOverviewView(TemplateView):
         booking_date = cls._parse_booking_date(transaction.get("booking"))
         if booking_date is None:
             raise ValueError("Eine Transaktion enthält kein gültiges Buchungsdatum.")
+        value_date = cls._parse_booking_date(transaction.get("valuation"))
 
         amount = transaction.get("amount")
         if not isinstance(amount, dict):
@@ -377,6 +396,7 @@ class BookkeepingOverviewView(TemplateView):
         return {
             "source_hash": cls._source_hash(transaction),
             "booking_date": booking_date,
+            "value_date": value_date or booking_date,
             "partner_name": cls._text_or_empty(transaction.get("partnerName")),
             "partner_iban": cls._text_or_empty(partner_account.get("iban")),
             "amount": converted_amount,
@@ -394,17 +414,28 @@ class BookkeepingOverviewView(TemplateView):
         source_hashes = [payload["source_hash"] for payload in import_payloads]
 
         with db_transaction.atomic():
-            existing_hashes = set(
-                BankTransaction.objects.filter(source_hash__in=source_hashes).values_list(
-                    "source_hash", flat=True
+            existing_transactions = {
+                bank_transaction.source_hash: bank_transaction
+                for bank_transaction in BankTransaction.objects.select_for_update().filter(
+                    source_hash__in=source_hashes
                 )
-            )
+            }
+            existing_hashes = set(existing_transactions)
             for payload in import_payloads:
                 source_hash = payload["source_hash"]
                 if source_hash in existing_hashes:
                     existing_count += 1
+                    existing_transaction = existing_transactions[source_hash]
+                    if (
+                        existing_transaction.value_date is None
+                        and payload["value_date"] is not None
+                    ):
+                        existing_transaction.value_date = payload["value_date"]
+                        existing_transaction.save(update_fields=("value_date",))
                     continue
-                BankTransaction.objects.create(**payload)
+                existing_transactions[source_hash] = BankTransaction.objects.create(
+                    **payload
+                )
                 existing_hashes.add(source_hash)
                 imported_count += 1
 
@@ -480,6 +511,8 @@ class BookkeepingOverviewView(TemplateView):
         matching_rule_notes_preview, matching_rule_notes_truncated = _note_preview(
             matching_rule_notes
         )
+        booking_entries = getattr(transaction, "booking_entries_for_display", ())
+        booking_entry = booking_entries[0] if booking_entries else None
         return {
             "id": transaction.pk,
             "booking_date": transaction.booking_date.strftime("%d.%m.%Y"),
@@ -505,18 +538,39 @@ class BookkeepingOverviewView(TemplateView):
             "notes": transaction.notes,
             "notes_preview": transaction_notes_preview,
             "notes_truncated": transaction_notes_truncated,
+            "booking_data": cls._display_booking_entry(
+                booking_entry,
+                transaction.currency,
+            ),
+        }
+
+    @classmethod
+    def _display_booking_entry(cls, booking_entry, currency):
+        if booking_entry is None:
+            return None
+        receipt_group = booking_entry.get_receipt_group_display()
+        vat_symbol = booking_entry.get_vat_symbol_display()
+        category = booking_entry.get_category_display()
+        return {
+            "receipt": " / ".join(
+                part for part in (receipt_group, booking_entry.receipt_number)
+                if part
+            ) or "–",
+            "payment_date": booking_entry.payment_date.strftime("%d.%m.%Y"),
+            "booking_text": cls._text_or_dash(booking_entry.booking_text),
+            "invoice_number": cls._text_or_dash(booking_entry.invoice_number),
+            "partner_name": cls._text_or_dash(booking_entry.partner_name),
+            "gross_amount": cls._format_saved_amount(
+                booking_entry.gross_amount,
+                currency,
+            ),
+            "vat_symbol": cls._text_or_dash(vat_symbol),
+            "category": cls._text_or_dash(category),
         }
 
     @classmethod
     def _format_saved_amount(cls, amount, currency):
-        try:
-            formatted = Decimal(str(amount)).quantize(
-                Decimal("0.01"),
-                rounding=ROUND_HALF_UP,
-            )
-        except (InvalidOperation, TypeError, ValueError):
-            return "–"
-        return f"{formatted:.2f} {cls._text_or_dash(currency)}"
+        return format_austrian_money(amount, cls._text_or_dash(currency))
 
     @staticmethod
     def _text_or_empty(value):
@@ -545,12 +599,39 @@ class BankTransactionNoteView(TemplateView):
             ),
         }
 
+    def _reject_if_note_is_read_only(
+        self,
+        request,
+        bank_transaction,
+        navigation_context,
+    ):
+        if bank_transaction.status in NOTE_EDITABLE_STATUSES:
+            return None
+        messages.error(
+            request,
+            "Anmerkungen können nur bei zugeordneten oder geprüften "
+            "Transaktionen bearbeitet werden.",
+        )
+        return redirect(
+            _overview_url(
+                navigation_context["selected_status"],
+                navigation_context["selected_month"],
+            )
+        )
+
     def get(self, request, *args, **kwargs):
         bank_transaction = get_object_or_404(
             BankTransaction,
             pk=kwargs["pk"],
         )
         navigation_context = self._navigation_context()
+        rejection = self._reject_if_note_is_read_only(
+            request,
+            bank_transaction,
+            navigation_context,
+        )
+        if rejection is not None:
+            return rejection
         form = BankTransactionNoteForm(instance=bank_transaction)
         return self.render_to_response(
             self._context_for_transaction(
@@ -566,6 +647,13 @@ class BankTransactionNoteView(TemplateView):
             pk=kwargs["pk"],
         )
         navigation_context = self._navigation_context()
+        rejection = self._reject_if_note_is_read_only(
+            request,
+            bank_transaction,
+            navigation_context,
+        )
+        if rejection is not None:
+            return rejection
         form = BankTransactionNoteForm(
             request.POST,
             instance=bank_transaction,
@@ -583,6 +671,195 @@ class BankTransactionNoteView(TemplateView):
         return self.render_to_response(
             self._context_for_transaction(
                 bank_transaction,
+                form,
+                navigation_context,
+            )
+        )
+
+
+class BookingEntryView(TemplateView):
+    template_name = "bookkeeping/booking_entry.html"
+
+    def _navigation_context(self):
+        return _bookkeeping_navigation_context(self.request)
+
+    @staticmethod
+    def _existing_entry(bank_transaction):
+        return bank_transaction.booking_entries.order_by("created_at", "id").first()
+
+    def _context_for_transaction(
+        self,
+        bank_transaction,
+        booking_entry,
+        form,
+        navigation_context,
+    ):
+        if bank_transaction.status == BankTransaction.Status.MATCHED:
+            page_heading = "Buchungsdaten prüfen"
+        elif bank_transaction.status == BankTransaction.Status.REVIEWED:
+            page_heading = "Buchungsdaten bearbeiten"
+        else:
+            page_heading = "Buchung erfassen"
+        return {
+            **navigation_context,
+            "bank_transaction": bank_transaction,
+            "booking_entry": booking_entry,
+            "form": form,
+            "page_heading": page_heading,
+            "return_url": _overview_url(
+                navigation_context["selected_status"],
+                navigation_context["selected_month"],
+            ),
+        }
+
+    def _reject_if_booked(
+        self,
+        request,
+        bank_transaction,
+        navigation_context,
+    ):
+        if bank_transaction.status != BankTransaction.Status.BOOKED:
+            return None
+        messages.error(
+            request,
+            "Exportierte Transaktionen können nicht bearbeitet werden.",
+        )
+        return redirect(
+            _overview_url(
+                navigation_context["selected_status"],
+                navigation_context["selected_month"],
+            )
+        )
+
+    def get(self, request, *args, **kwargs):
+        bank_transaction = get_object_or_404(
+            BankTransaction,
+            pk=kwargs["pk"],
+        )
+        navigation_context = self._navigation_context()
+        rejection = self._reject_if_booked(
+            request,
+            bank_transaction,
+            navigation_context,
+        )
+        if rejection is not None:
+            return rejection
+        booking_entry = self._existing_entry(bank_transaction)
+        form = BookingEntryForm(
+            instance=booking_entry,
+            bank_transaction=bank_transaction,
+        )
+        return self.render_to_response(
+            self._context_for_transaction(
+                bank_transaction,
+                booking_entry,
+                form,
+                navigation_context,
+            )
+        )
+
+    def post(self, request, *args, **kwargs):
+        bank_transaction = get_object_or_404(
+            BankTransaction,
+            pk=kwargs["pk"],
+        )
+        navigation_context = self._navigation_context()
+        rejection = self._reject_if_booked(
+            request,
+            bank_transaction,
+            navigation_context,
+        )
+        if rejection is not None:
+            return rejection
+
+        action = request.POST.get("action", "save_draft")
+        finalize = action == "finalize"
+        booking_entry = self._existing_entry(bank_transaction)
+        form = BookingEntryForm(
+            request.POST,
+            instance=booking_entry,
+            bank_transaction=bank_transaction,
+            final=finalize,
+        )
+        if action not in {"save_draft", "finalize"}:
+            form.add_error(None, "Die gewünschte Aktion ist ungültig.")
+
+        if form.is_valid():
+            if finalize:
+                existing_entries = list(
+                    BookingEntry.objects.filter(
+                        bank_transaction=bank_transaction
+                    )
+                )
+                other_total = sum(
+                    (
+                        entry.gross_amount
+                        for entry in existing_entries
+                        if booking_entry is None or entry.pk != booking_entry.pk
+                    ),
+                    Decimal("0"),
+                )
+                entered_amount = form.cleaned_data["gross_amount"]
+                if (
+                    entered_amount != bank_transaction.amount
+                    or entered_amount + other_total != bank_transaction.amount
+                ):
+                    form.add_error(
+                        "gross_amount",
+                        "Der Bruttobetrag muss dem signierten Transaktionsbetrag "
+                        f"({format_austrian_money(bank_transaction.amount, bank_transaction.currency)}) "
+                        "entsprechen.",
+                    )
+
+        if form.is_valid():
+            with db_transaction.atomic():
+                locked_transaction = BankTransaction.objects.select_for_update().get(
+                    pk=bank_transaction.pk
+                )
+                if locked_transaction.status == BankTransaction.Status.BOOKED:
+                    messages.error(
+                        request,
+                        "Exportierte Transaktionen können nicht bearbeitet werden.",
+                    )
+                    return redirect(
+                        _overview_url(
+                            navigation_context["selected_status"],
+                            navigation_context["selected_month"],
+                        )
+                    )
+
+                saved_entry = form.save(commit=False)
+                saved_entry.bank_transaction = locked_transaction
+                saved_entry.receipt_group = RECEIPT_GROUP_BANK
+                saved_entry.receipt_number = str(saved_entry.payment_date.month)
+                saved_entry.save()
+                locked_transaction.notes = form.cleaned_data["notes"]
+                update_fields = ["notes"]
+                if finalize:
+                    locked_transaction.status = BankTransaction.Status.REVIEWED
+                    update_fields.append("status")
+                locked_transaction.save(update_fields=update_fields)
+
+            if finalize:
+                messages.success(request, "Buchung geprüft und abgeschlossen.")
+                return redirect(
+                    _overview_url(
+                        BankTransaction.Status.REVIEWED,
+                        navigation_context["selected_month"],
+                    )
+                )
+            messages.success(request, "Buchungsentwurf gespeichert.")
+            return redirect(
+                _overview_url(
+                    navigation_context["selected_status"],
+                    navigation_context["selected_month"],
+                )
+            )
+
+        return self.render_to_response(
+            self._context_for_transaction(
+                bank_transaction,
+                booking_entry,
                 form,
                 navigation_context,
             )
