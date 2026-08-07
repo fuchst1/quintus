@@ -61,7 +61,7 @@
     </div>
 </div>
 <div class="row g-2 mt-1">
-    <div class="col-md-6">
+    <div class="col-md-4">
         <label for="{{ matching_rule_form.text_pattern.id_for_label }}" class="form-label">{{ matching_rule_form.text_pattern.label }}</label>
         {{ matching_rule_form.text_pattern }}
         {% if matching_rule_form.text_pattern.errors %}
@@ -70,7 +70,16 @@
         </div>
         {% endif %}
     </div>
-    <div class="col-md-6 bookkeeping-rule-help">
+    <div class="col-md-4">
+        <label for="{{ matching_rule_form.notes.id_for_label }}" class="form-label">{{ matching_rule_form.notes.label }}</label>
+        {{ matching_rule_form.notes }}
+        {% if matching_rule_form.notes.errors %}
+        <div id="{{ matching_rule_form.notes.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.notes.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-4 bookkeeping-rule-help">
         <div class="form-text">Exakt: IBAN und Betrag müssen exakt passen.</div>
         <div class="form-text">Regex: Sucht im Namen und Verwendungszweck; IBAN ist optional.</div>
     </div>

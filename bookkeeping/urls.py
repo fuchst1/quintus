@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    BankTransactionNoteView,
     BookkeepingOverviewView,
     MatchingRuleDeleteView,
     MatchingRuleEditView,
@@ -10,6 +11,11 @@ from .views import (
 
 urlpatterns = [
     path('', BookkeepingOverviewView.as_view(), name='bookkeeping_overview'),
+    path(
+        'transactions/<uuid:pk>/note/',
+        BankTransactionNoteView.as_view(),
+        name='bank_transaction_note',
+    ),
     path(
         'matching-rules/',
         MatchingRuleListView.as_view(),

@@ -19,11 +19,18 @@
             </a>
             <hr class="bookkeeping-sidebar-divider">
             <nav class="bookkeeping-nav" aria-label="Bookkeeping-Bereiche">
-                <a href="{% url 'bookkeeping_overview' %}" class="bookkeeping-nav-link {% if request.resolver_match.url_name == 'bookkeeping_overview' %}bookkeeping-nav-link-active{% endif %}">
+                <a href="{% url 'bookkeeping_overview' %}#bank-import" class="bookkeeping-nav-link bookkeeping-nav-link-bank-import" data-bookkeeping-nav-link="bank-import" data-server-active="false">
                     <i class="bi bi-upload" aria-hidden="true"></i>
-                    <span>Bankimport &amp; Transaktionen</span>
+                    <span>Bankimport</span>
                 </a>
-                <a href="{% url 'matching_rule_list' %}" class="bookkeeping-nav-link {% if request.resolver_match.url_name == 'matching_rule_list' or request.resolver_match.url_name == 'matching_rule_edit' or request.resolver_match.url_name == 'matching_rule_delete' %}bookkeeping-nav-link-active{% endif %}">
+                {% for item in status_navigation %}
+                <a href="{{ item.url }}" class="bookkeeping-nav-link {% if item.active %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="{{ item.value }}" data-server-active="{{ item.active|yesno:'true,false' }}">
+                    <i class="bi {{ item.icon }}" aria-hidden="true"></i>
+                    <span>{{ item.label }}</span>
+                    <span class="badge bookkeeping-nav-count" aria-label="{{ item.count }} Transaktionen">{{ item.count }}</span>
+                </a>
+                {% endfor %}
+                <a href="{% url 'matching_rule_list' %}" class="bookkeeping-nav-link {% if request.resolver_match.url_name == 'matching_rule_list' or request.resolver_match.url_name == 'matching_rule_edit' or request.resolver_match.url_name == 'matching_rule_delete' %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="matching-rules" data-server-active="{% if request.resolver_match.url_name == 'matching_rule_list' or request.resolver_match.url_name == 'matching_rule_edit' or request.resolver_match.url_name == 'matching_rule_delete' %}true{% else %}false{% endif %}">
                     <i class="bi bi-sliders" aria-hidden="true"></i>
                     <span>Matching-Regeln</span>
                 </a>
@@ -38,5 +45,23 @@
             </main>
         </div>
     </div>
+    <script>
+        (() => {
+            const links = document.querySelectorAll("[data-bookkeeping-nav-link]");
+            const updateActiveLink = () => {
+                const bankImportSelected = window.location.hash === "#bank-import";
+                links.forEach((link) => {
+                    link.classList.toggle(
+                        "bookkeeping-nav-link-active",
+                        bankImportSelected
+                            ? link.dataset.bookkeepingNavLink === "bank-import"
+                            : link.dataset.serverActive === "true",
+                    );
+                });
+            };
+            updateActiveLink();
+            window.addEventListener("hashchange", updateActiveLink);
+        })();
+    </script>
 </body>
 </html>

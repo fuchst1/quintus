@@ -3,7 +3,7 @@ import re
 from django import forms
 from django.forms.boundfield import BoundField
 
-from .models import IBAN_PATTERN, MatchingRule, normalize_iban
+from .models import BankTransaction, IBAN_PATTERN, MatchingRule, normalize_iban
 
 
 class MatchingRuleBoundField(BoundField):
@@ -41,6 +41,7 @@ class MatchingRuleForm(forms.ModelForm):
             "iban",
             "expected_amount",
             "text_pattern",
+            "notes",
             "active",
         )
         labels = {
@@ -50,6 +51,7 @@ class MatchingRuleForm(forms.ModelForm):
             "iban": "IBAN",
             "expected_amount": "Erwarteter Betrag",
             "text_pattern": "Textmuster",
+            "notes": "Anmerkung",
             "active": "Aktiv",
         }
         widgets = {
@@ -58,6 +60,9 @@ class MatchingRuleForm(forms.ModelForm):
             "match_type": forms.Select(attrs={"class": "form-select"}),
             "iban": forms.TextInput(attrs={"class": "form-control"}),
             "text_pattern": forms.TextInput(attrs={"class": "form-control"}),
+            "notes": forms.Textarea(
+                attrs={"class": "form-control", "rows": 3}
+            ),
             "active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
         }
 
@@ -120,3 +125,17 @@ class MatchingRuleForm(forms.ModelForm):
                 )
 
         return cleaned_data
+
+
+class BankTransactionNoteForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    class Meta:
+        model = BankTransaction
+        fields = ("notes",)
+        labels = {"notes": "Anmerkung"}
+        widgets = {
+            "notes": forms.Textarea(
+                attrs={"class": "form-control", "rows": 5}
+            ),
+        }

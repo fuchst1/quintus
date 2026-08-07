@@ -5,6 +5,8 @@
     <h2 id="upload-heading" class="bookkeeping-section-title">Transaktionen importieren</h2>
     <form method="post" enctype="multipart/form-data">
         {% csrf_token %}
+        <input type="hidden" name="status" value="{{ selected_status }}">
+        <input type="hidden" name="month" value="{{ selected_month }}">
         <div class="row g-2 align-items-end">
             <div class="col-md-8">
                 <label for="json-file" class="form-label">JSON-Datei</label>
@@ -18,6 +20,8 @@
     <form method="post" class="bookkeeping-matching-action-form">
         {% csrf_token %}
         <input type="hidden" name="action" value="run_matching">
+        <input type="hidden" name="status" value="{{ selected_status }}">
+        <input type="hidden" name="month" value="{{ selected_month }}">
         <button type="submit" class="btn btn-outline-primary">Matching ausführen</button>
     </form>
 </section>
@@ -33,7 +37,24 @@
 {% endif %}
 
 <section id="transactions" aria-labelledby="transactions-heading">
-<h2 id="transactions-heading" class="visually-hidden">Transaktionen</h2>
+<div class="bookkeeping-page-heading">
+    <h2 id="transactions-heading" class="bookkeeping-section-title">
+        {{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}
+    </h2>
+</div>
+<form method="get" class="bookkeeping-month-filter">
+    <input type="hidden" name="status" value="{{ selected_status }}">
+    <label for="transaction-month" class="form-label">Monat</label>
+    <div class="bookkeeping-month-filter-controls">
+        <select id="transaction-month" name="month" class="form-select">
+            <option value=""{% if not selected_month %} selected{% endif %}>Alle Monate</option>
+            {% for month in available_months %}
+            <option value="{{ month.value }}"{% if month.value == selected_month %} selected{% endif %}>{{ month.label }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
+    </div>
+</form>
 {% if show_preview %}
 <p class="bookkeeping-preview-count">{{ transactions|length }} Transaktionen angezeigt</p>
 <div class="bookkeeping-table-wrap" role="region" aria-label="Transaktionsvorschau" tabindex="0">
@@ -48,6 +69,8 @@
                 <th class="bookkeeping-purpose">Verwendungszweck</th>
                 <th class="bookkeeping-status">Status</th>
                 <th class="bookkeeping-matching-rule">Matching-Regel</th>
+                <th class="bookkeeping-matching-explanation">Matching-Erklärung</th>
+                <th class="bookkeeping-note">Anmerkung</th>
             </tr>
         </thead>
         <tbody>
@@ -79,13 +102,44 @@
                     <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.status }}</span>
                 </td>
                 <td class="bookkeeping-matching-rule">{{ transaction.matched_rule }}</td>
+                <td class="bookkeeping-matching-explanation">
+                    {% if transaction.matching_rule_notes %}
+                    <span class="bookkeeping-note-preview" title="{{ transaction.matching_rule_notes }}" aria-label="Matching-Erklärung: {{ transaction.matching_rule_notes }}">{{ transaction.matching_rule_notes_preview }}</span>
+                    {% if transaction.matching_rule_notes_truncated %}
+                    <details class="bookkeeping-note-details">
+                        <summary>Vollständig anzeigen</summary>
+                        <div class="bookkeeping-note-full">{{ transaction.matching_rule_notes }}</div>
+                    </details>
+                    {% endif %}
+                    {% else %}
+                    <span>–</span>
+                    {% endif %}
+                </td>
+                <td class="bookkeeping-note">
+                    {% if transaction.notes %}
+                    <div class="bookkeeping-note-label">Anmerkung zur Transaktion</div>
+                    <span class="bookkeeping-note-preview" title="{{ transaction.notes }}" aria-label="Anmerkung zur Transaktion: {{ transaction.notes }}">{{ transaction.notes_preview }}</span>
+                    {% if transaction.notes_truncated %}
+                    <details class="bookkeeping-note-details">
+                        <summary>Vollständig anzeigen</summary>
+                        <div class="bookkeeping-note-full">{{ transaction.notes }}</div>
+                    </details>
+                    {% endif %}
+                    {% else %}
+                    <span>–</span>
+                    {% endif %}
+                    <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-note-action">
+                        <i class="bi bi-pencil" aria-hidden="true"></i>
+                        Anmerkung
+                    </a>
+                </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
 {% else %}
-<p class="bookkeeping-empty-state">Noch keine Transaktionen importiert.</p>
+<p class="bookkeeping-empty-state">{{ empty_state_message }}</p>
 {% endif %}
 </section>
 {% endblock %}

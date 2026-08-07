@@ -1,0 +1,39 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Anmerkung zur Transaktion – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="transaction-note-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="transaction-note-heading" class="bookkeeping-section-title">Anmerkung zur Transaktion</h1>
+            <p class="bookkeeping-page-description">
+                {{ bank_transaction.booking_date|date:"d.m.Y" }} · {{ bank_transaction.partner_name|default:"–" }} · {{ bank_transaction.amount }} {{ bank_transaction.currency }}
+            </p>
+        </div>
+        <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+
+    {% if form.errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in form.non_field_errors %}{% ifchanged error %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endifchanged %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" class="bookkeeping-note-form">
+        {% csrf_token %}
+        <label for="{{ form.notes.id_for_label }}" class="form-label">{{ form.notes.label }}</label>
+        {{ form.notes }}
+        {% if form.notes.errors %}
+        <div id="{{ form.notes.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in form.notes.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+        <div class="bookkeeping-note-form-actions">
+            <button type="submit" class="btn btn-primary">Speichern</button>
+            <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        </div>
+    </form>
+</section>
+{% endblock %}

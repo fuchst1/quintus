@@ -90,6 +90,16 @@
     color: #ffffff;
 }
 
+.bookkeeping-nav-count {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+    font-size: 0.7rem;
+    margin-left: auto;
+    min-width: 1.45rem;
+    padding: 0.2rem 0.4rem;
+    text-align: center;
+}
+
 .bookkeeping-header {
     background: #1e3a5f;
     color: #ffffff;
@@ -172,6 +182,26 @@
     margin-top: 0.25rem;
 }
 
+.bookkeeping-note-form {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    max-width: 48rem;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-note-form .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-note-form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.8rem;
+}
+
 .bookkeeping-validation-alert {
     background: #fff1f2;
     border: 1px solid #f1b8be;
@@ -208,6 +238,27 @@
     margin: 0 0 0.5rem;
 }
 
+.bookkeeping-month-filter {
+    margin-bottom: 0.8rem;
+    max-width: 24rem;
+}
+
+.bookkeeping-month-filter .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-month-filter-controls {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bookkeeping-month-filter-controls .form-select {
+    min-width: 12rem;
+}
+
 .bookkeeping-table-wrap {
     background: #ffffff;
     border: 1px solid #dfe3e8;
@@ -218,7 +269,7 @@
 .bookkeeping-transaction-table {
     border-collapse: collapse;
     margin: 0;
-    min-width: 1120px;
+    min-width: 1350px;
     width: 100%;
 }
 
@@ -229,7 +280,7 @@
 }
 
 .bookkeeping-rules-table {
-    min-width: 760px;
+    min-width: 980px;
 }
 
 .bookkeeping-data-table th,
@@ -293,6 +344,16 @@
 
 .bookkeeping-data-table .bookkeeping-matching-rule {
     min-width: 10rem;
+    text-align: left;
+}
+
+.bookkeeping-data-table .bookkeeping-matching-explanation {
+    min-width: 14rem;
+    text-align: left;
+}
+
+.bookkeeping-data-table .bookkeeping-note {
+    min-width: 13rem;
     text-align: left;
 }
 
@@ -362,6 +423,42 @@
     color: #b02a37;
 }
 
+.bookkeeping-note-label {
+    color: #5f6b78;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+
+.bookkeeping-note-preview {
+    display: inline-block;
+    max-width: 18rem;
+}
+
+.bookkeeping-note-details {
+    font-size: 0.8rem;
+    margin-top: 0.2rem;
+}
+
+.bookkeeping-note-details summary {
+    color: #345f8c;
+    cursor: pointer;
+}
+
+.bookkeeping-note-full {
+    background: #f8f9fa;
+    border-left: 3px solid #dfe3e8;
+    margin-top: 0.25rem;
+    padding: 0.35rem 0.5rem;
+    white-space: pre-wrap;
+}
+
+.bookkeeping-note-action {
+    display: block;
+    margin-top: 0.45rem;
+    width: max-content;
+}
+
 @media (max-width: 767.98px) {
     .bookkeeping-sidebar {
         min-height: auto;
@@ -405,5 +502,14 @@
     .bookkeeping-page-heading {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .bookkeeping-month-filter-controls {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bookkeeping-month-filter-controls .form-select {
+        min-width: 0;
     }
 }

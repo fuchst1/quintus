@@ -52,6 +52,7 @@ class BankTransaction(models.Model):
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     currency = models.CharField(max_length=3, default="EUR")
     purpose = models.TextField(blank=True)
+    notes = models.TextField("Anmerkung", blank=True, default="")
     direction = models.CharField(max_length=8, choices=Direction.choices)
     source = models.CharField(
         max_length=11,
@@ -95,6 +96,7 @@ class MatchingRule(models.Model):
         blank=True,
     )
     text_pattern = models.CharField(max_length=500, blank=True)
+    notes = models.TextField("Anmerkung", blank=True, default="")
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

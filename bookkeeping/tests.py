@@ -225,6 +225,321 @@ class BookkeepingOverviewUploadTests(TestCase):
         self.assertContains(response, "Bitte eine JSON-Datei auswählen.")
 
 
+class BookkeepingOverviewFilteringTests(TestCase):
+    def create_transaction(self, booking_date, status, partner_name):
+        return BankTransaction.objects.create(
+            booking_date=booking_date,
+            partner_name=partner_name,
+            amount=Decimal("10.00"),
+            direction=BankTransaction.Direction.INCOMING,
+            status=status,
+        )
+
+    def get_overview(self, **query):
+        return self.client.get(reverse("bookkeeping_overview"), query)
+
+    def test_default_filter_shows_only_open_transactions_in_newest_month(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen Juli"
+        )
+        self.create_transaction(
+            date(2026, 7, 16), BankTransaction.Status.MATCHED, "Zugeordnet Juli"
+        )
+
+        response = self.get_overview()
+
+        self.assertEqual(response.context["selected_status"], "imported")
+        self.assertEqual(response.context["selected_month"], "2026-07")
+        self.assertContains(response, "Offene Transaktionen – Juli 2026")
+        self.assertContains(response, "Offen Juli")
+        self.assertNotContains(response, "Offen Juni")
+        self.assertNotContains(response, "Zugeordnet Juli")
+
+    def test_each_valid_status_filter_shows_only_that_status(self):
+        transactions = {
+            BankTransaction.Status.IMPORTED: "Offen",
+            BankTransaction.Status.MATCHED: "Zugeordnet",
+            BankTransaction.Status.REVIEWED: "Geprüft",
+            BankTransaction.Status.BOOKED: "Exportiert",
+        }
+        for status, partner_name in transactions.items():
+            self.create_transaction(date(2026, 7, 15), status, partner_name)
+
+        for status, partner_name in transactions.items():
+            with self.subTest(status=status):
+                response = self.get_overview(status=status, month="2026-07")
+                self.assertEqual(response.context["selected_status"], status)
+                self.assertEqual(
+                    [row["name"] for row in response.context["transactions"]],
+                    [partner_name],
+                )
+
+        booked_response = self.get_overview(
+            status=BankTransaction.Status.BOOKED,
+            month="2026-07",
+        )
+        self.assertContains(booked_response, "Exportiert")
+        self.assertNotContains(booked_response, "Gebucht")
+
+    def test_invalid_status_falls_back_to_imported(self):
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen"
+        )
+        self.create_transaction(
+            date(2026, 7, 16), BankTransaction.Status.MATCHED, "Zugeordnet"
+        )
+
+        response = self.get_overview(status="unknown", month="2026-07")
+
+        self.assertEqual(response.context["selected_status"], "imported")
+        self.assertEqual(
+            [row["name"] for row in response.context["transactions"]], ["Offen"]
+        )
+
+    def test_month_filter(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Juli"
+        )
+
+        response = self.get_overview(status="imported", month="2026-06")
+
+        self.assertEqual(response.context["selected_month"], "2026-06")
+        self.assertEqual([row["name"] for row in response.context["transactions"]], ["Juni"])
+        self.assertContains(response, "Offene Transaktionen – Juni 2026")
+
+    def test_all_months_filter(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Juli"
+        )
+
+        response = self.get_overview(status="imported", month="")
+
+        self.assertEqual(response.context["selected_month"], "")
+        self.assertEqual(len(response.context["transactions"]), 2)
+        self.assertContains(response, "Alle Monate")
+        self.assertNotContains(response, "Offene Transaktionen –")
+
+    def test_invalid_month_falls_back_to_newest_available_month(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Juli"
+        )
+
+        response = self.get_overview(status="imported", month="2026-99")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["selected_month"], "2026-07")
+        self.assertEqual(
+            [row["name"] for row in response.context["transactions"]], ["Juli"]
+        )
+
+    def test_status_counts_are_limited_to_selected_month(self):
+        for status, name in (
+            (BankTransaction.Status.IMPORTED, "Offen Juli"),
+            (BankTransaction.Status.MATCHED, "Zugeordnet Juli"),
+            (BankTransaction.Status.REVIEWED, "Geprüft Juli"),
+            (BankTransaction.Status.BOOKED, "Exportiert Juli"),
+        ):
+            self.create_transaction(date(2026, 7, 15), status, name)
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
+        )
+
+        response = self.get_overview(status="imported", month="2026-07")
+
+        self.assertEqual(
+            response.context["status_counts"],
+            {"imported": 1, "matched": 1, "reviewed": 1, "booked": 1},
+        )
+        self.assertContains(response, 'aria-label="1 Transaktionen"')
+
+    def test_status_counts_are_global_for_all_months(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen Juli"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.MATCHED, "Zugeordnet Juli"
+        )
+
+        response = self.get_overview(status="matched", month="")
+
+        self.assertEqual(
+            response.context["status_counts"],
+            {"imported": 2, "matched": 1, "reviewed": 0, "booked": 0},
+        )
+
+    def test_sidebar_status_links_preserve_selected_month(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
+        )
+        response = self.get_overview(status="matched", month="2026-06")
+
+        self.assertContains(
+            response,
+            'href="/bookkeeping/?status=imported&amp;month=2026-06"',
+        )
+        self.assertContains(
+            response,
+            'href="/bookkeeping/?status=matched&amp;month=2026-06" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+        )
+
+    def test_empty_state_message_uses_status_and_month(self):
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.MATCHED, "Zugeordnet"
+        )
+
+        response = self.get_overview(status="imported", month="2026-07")
+
+        self.assertContains(
+            response,
+            "Keine offenen Transaktionen für Juli 2026 vorhanden.",
+        )
+
+    def test_import_redirects_to_open_newest_import_month(self):
+        payload = [
+            {
+                "booking": "2026-06-15",
+                "partnerName": "Juni",
+                "amount": {"value": 1000, "precision": 2, "currency": "EUR"},
+            },
+            {
+                "booking": "2026-07-15",
+                "partnerName": "Juli",
+                "amount": {"value": 1000, "precision": 2, "currency": "EUR"},
+            },
+        ]
+        uploaded_file = SimpleUploadedFile(
+            "transactions.json",
+            json.dumps(payload).encode(),
+            content_type="application/json",
+        )
+
+        response = self.client.post(
+            reverse("bookkeeping_overview"),
+            {"json_file": uploaded_file},
+        )
+
+        self.assertEqual(
+            response["Location"],
+            "/bookkeeping/?status=imported&month=2026-07",
+        )
+
+
+class BookkeepingNoteTests(TestCase):
+    def create_transaction(self, **overrides):
+        values = {
+            "booking_date": date(2026, 7, 15),
+            "partner_name": "Mieter",
+            "amount": Decimal("100.00"),
+            "direction": BankTransaction.Direction.INCOMING,
+            "status": BankTransaction.Status.MATCHED,
+        }
+        values.update(overrides)
+        return BankTransaction.objects.create(**values)
+
+    def note_url(self, bank_transaction, status="matched", month="2026-07"):
+        return (
+            f"{reverse('bank_transaction_note', kwargs={'pk': bank_transaction.pk})}"
+            f"?status={status}&month={month}"
+        )
+
+    def test_transaction_note_can_be_created_edited_and_removed(self):
+        bank_transaction = self.create_transaction()
+        note_url = self.note_url(bank_transaction)
+
+        response = self.client.post(note_url, {"notes": "Erste Anmerkung"})
+
+        self.assertEqual(
+            response["Location"],
+            "/bookkeeping/?status=matched&month=2026-07",
+        )
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.notes, "Erste Anmerkung")
+
+        self.client.post(note_url, {"notes": "Geänderte Anmerkung"})
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.notes, "Geänderte Anmerkung")
+
+        self.client.post(note_url, {"notes": ""})
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.notes, "")
+
+    def test_transaction_note_changes_only_the_selected_transaction(self):
+        first = self.create_transaction(partner_name="Erste Transaktion")
+        second = self.create_transaction(partner_name="Zweite Transaktion")
+
+        response = self.client.post(
+            self.note_url(first),
+            {"notes": "Nur erste Transaktion"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.notes, "Nur erste Transaktion")
+        self.assertEqual(second.notes, "")
+
+    def test_matching_rule_note_is_displayed_live_without_copying_to_transaction(self):
+        rule = MatchingRule.objects.create(
+            name="Mietzahlung",
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban="AT611904300234573201",
+            expected_amount=Decimal("100.00"),
+            notes="Regelnotiz alt",
+        )
+        bank_transaction = self.create_transaction(matched_rule=rule)
+
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "matched", "month": "2026-07"},
+        )
+
+        self.assertContains(response, "Matching-Erklärung")
+        self.assertContains(response, "Regelnotiz alt")
+        self.assertContains(response, rule.name)
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.notes, "")
+
+        self.client.post(
+            reverse("matching_rule_edit", kwargs={"pk": rule.pk}),
+            {
+                "name": rule.name,
+                "direction": rule.direction,
+                "match_type": rule.match_type,
+                "iban": rule.iban,
+                "expected_amount": "100.00",
+                "text_pattern": "",
+                "notes": "Regelnotiz neu",
+                "active": "on",
+            },
+        )
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
+        self.assertEqual(bank_transaction.notes, "")
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "matched", "month": "2026-07"},
+        )
+        self.assertContains(response, "Regelnotiz neu")
+        self.assertNotContains(response, "Regelnotiz alt")
+
+
 class BankTransactionModelTests(TestCase):
     def build_transaction(self, **overrides):
         values = {
@@ -657,8 +972,12 @@ class TransactionMatchingTests(TestCase):
         self.assertEqual(bank_transaction.matched_rule_id, rule.id)
         self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
         self.assertContains(response, "1 zugeordnet, 0 ohne Treffer, 0 mehrdeutig.")
-        self.assertContains(response, "Matching-Regel")
-        self.assertContains(response, rule.name)
+        matched_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": BankTransaction.Status.MATCHED, "month": "2026-02"},
+        )
+        self.assertContains(matched_response, "Matching-Regel")
+        self.assertContains(matched_response, rule.name)
 
     def test_manual_matching_button_matches_existing_transactions(self):
         rule = self.create_rule()
@@ -704,6 +1023,44 @@ class MatchingRuleTests(TestCase):
         self.assertEqual(rule.direction, MatchingRule.Direction.INCOMING)
         self.assertEqual(rule.match_type, MatchingRule.MatchType.EXACT)
         self.assertTrue(rule.active)
+
+    def test_rule_note_can_be_created_and_edited(self):
+        response = self.post_rule(notes="Für Mietzahlungen im Voraus.")
+
+        self.assertEqual(response.status_code, 302)
+        rule = MatchingRule.objects.get()
+        self.assertEqual(rule.notes, "Für Mietzahlungen im Voraus.")
+
+        response = self.client.post(
+            reverse("matching_rule_edit", kwargs={"pk": rule.pk}),
+            {
+                "name": rule.name,
+                "direction": rule.direction,
+                "match_type": rule.match_type,
+                "iban": rule.iban,
+                "expected_amount": "850.00",
+                "text_pattern": "",
+                "notes": "Geänderte Regelnotiz.",
+                "active": "on",
+            },
+            follow=True,
+        )
+
+        rule.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(rule.notes, "Geänderte Regelnotiz.")
+        self.assertContains(response, "Geänderte Regelnotiz.")
+
+    def test_rule_note_survives_validation_errors(self):
+        response = self.post_rule(
+            iban="not-an-iban",
+            notes="Hinweis trotz Fehler",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(response, "Hinweis trotz Fehler")
+        self.assertContains(response, 'id="id_notes"')
 
     def test_invalid_iban_is_rejected(self):
         response = self.post_rule(iban="not-an-iban")
@@ -841,10 +1198,15 @@ class MatchingRuleTests(TestCase):
 
         for response in (overview_response, rules_response):
             self.assertContains(response, 'href="/bookkeeping/"')
+            self.assertContains(response, 'href="/bookkeeping/#bank-import"')
+            self.assertContains(response, "Offen")
+            self.assertContains(response, "Zugeordnet")
+            self.assertContains(response, "Geprüft")
+            self.assertContains(response, "Exportiert")
             self.assertContains(response, 'href="/bookkeeping/matching-rules/"')
         self.assertContains(
             overview_response,
-            'href="/bookkeeping/" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+            'href="/bookkeeping/?status=imported" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
         )
         self.assertContains(
             rules_response,

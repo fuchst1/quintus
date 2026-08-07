@@ -10,6 +10,7 @@
                 <th class="bookkeeping-iban">IBAN</th>
                 <th class="bookkeeping-amount">Erwarteter Betrag</th>
                 <th>Textmuster</th>
+                <th class="bookkeeping-note">Matching-Erklärung</th>
                 <th class="bookkeeping-status">Status</th>
             </tr>
         </thead>
@@ -34,6 +35,19 @@
                 <td class="bookkeeping-iban">{{ rule.iban }}</td>
                 <td class="bookkeeping-amount">{{ rule.expected_amount }}</td>
                 <td>{{ rule.text_pattern }}</td>
+                <td class="bookkeeping-note">
+                    {% if rule.notes %}
+                    <span class="bookkeeping-note-preview" title="{{ rule.notes }}" aria-label="Matching-Erklärung: {{ rule.notes }}">{{ rule.notes_preview }}</span>
+                    {% if rule.notes_truncated %}
+                    <details class="bookkeeping-note-details">
+                        <summary>Vollständig anzeigen</summary>
+                        <div class="bookkeeping-note-full">{{ rule.notes }}</div>
+                    </details>
+                    {% endif %}
+                    {% else %}
+                    <span>–</span>
+                    {% endif %}
+                </td>
                 <td class="bookkeeping-status">
                     {% if rule.active %}
                     <span class="badge bookkeeping-badge bookkeeping-badge-active">{{ rule.status }}</span>
