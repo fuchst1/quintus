@@ -22,6 +22,17 @@ from .models import (
 )
 
 
+ROUNDING_DIFFERENCE = Decimal("0.01")
+
+
+def _rounding_difference_message(total, bank_amount, difference):
+    return (
+        f"Buchungszeilen: {format_austrian_decimal(total)} EUR · "
+        f"Banktransaktion: {format_austrian_decimal(bank_amount)} EUR · "
+        f"Differenz: {format_austrian_decimal(difference)} EUR"
+    )
+
+
 class MatchingRuleBoundField(BoundField):
     """Add the visual and accessibility state for fields with errors."""
 
@@ -334,6 +345,17 @@ class BookingEntryForm(forms.ModelForm):
 
 
 class BookingEntryFormSetBase(BaseInlineFormSet):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rounding_difference = Decimal("0")
+
+    def _active_forms(self):
+        return [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+
     def clean(self):
         super().clean()
         valid_entry_ids = {
@@ -357,11 +379,7 @@ class BookingEntryFormSetBase(BaseInlineFormSet):
         if not self.form_kwargs.get("final"):
             return
 
-        active_forms = [
-            form
-            for form in self.forms
-            if form.cleaned_data and not form.cleaned_data.get("DELETE")
-        ]
+        active_forms = self._active_forms()
         if not active_forms:
             raise ValidationError("Mindestens eine Buchungszeile ist erforderlich.")
 
@@ -373,11 +391,36 @@ class BookingEntryFormSetBase(BaseInlineFormSet):
              for form in active_forms),
             Decimal("0"),
         )
-        if total != bank_transaction.amount:
+        self.rounding_difference = bank_transaction.amount - total
+        if abs(self.rounding_difference) > ROUNDING_DIFFERENCE:
             raise ValidationError(
-                "Die Summe der Buchungszeilen muss dem signierten "
-                "Transaktionsbetrag entsprechen."
+                _rounding_difference_message(
+                    total,
+                    bank_transaction.amount,
+                    self.rounding_difference,
+                )
             )
+
+    def apply_rounding_difference(self):
+        if abs(self.rounding_difference) != ROUNDING_DIFFERENCE:
+            return False
+        active_forms = self._active_forms()
+        if not active_forms:
+            return False
+
+        target_form = active_forms[0]
+        for form in active_forms[1:]:
+            if abs(form.cleaned_data["gross_amount"]) > abs(
+                target_form.cleaned_data["gross_amount"]
+            ):
+                target_form = form
+        adjusted_amount = (
+            target_form.cleaned_data["gross_amount"]
+            + self.rounding_difference
+        )
+        target_form.cleaned_data["gross_amount"] = adjusted_amount
+        target_form.instance.gross_amount = adjusted_amount
+        return True
 
     def save_new_objects(self, commit=True):
         self.new_objects = []

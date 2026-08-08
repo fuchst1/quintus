@@ -126,6 +126,129 @@
     padding: 1rem 1.1rem;
 }
 
+.bookkeeping-dashboard {
+    margin-top: 0.25rem;
+}
+
+.bookkeeping-dashboard-period-filter {
+    margin-bottom: 1rem;
+    max-width: 24rem;
+}
+
+.bookkeeping-dashboard-period-filter .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-dashboard-period-controls {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bookkeeping-dashboard-period-controls .form-select {
+    min-width: 12rem;
+}
+
+.bookkeeping-dashboard-grid {
+    display: grid;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.bookkeeping-dashboard-grid-primary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.bookkeeping-dashboard-grid-financial {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.bookkeeping-dashboard-card {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 6.25rem;
+    padding: 0.85rem 1rem;
+}
+
+.bookkeeping-dashboard-card-heading {
+    align-items: baseline;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.bookkeeping-dashboard-card-label {
+    color: #5f6b78;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.bookkeeping-dashboard-card-value {
+    color: #243447;
+    font-size: 1.35rem;
+    line-height: 1.25;
+    margin-top: 0.35rem;
+}
+
+.bookkeeping-dashboard-card-heading .bookkeeping-dashboard-card-value {
+    margin-top: 0;
+}
+
+.bookkeeping-dashboard-card-positive .bookkeeping-dashboard-card-value {
+    color: #237a4b;
+}
+
+.bookkeeping-dashboard-card-negative .bookkeeping-dashboard-card-value {
+    color: #b02a37;
+}
+
+.bookkeeping-dashboard-progress {
+    background: #e9eef5;
+    border-radius: 999px;
+    height: 0.45rem;
+    margin-top: 0.8rem;
+    overflow: hidden;
+}
+
+.bookkeeping-dashboard-progress span {
+    background: #3b82f6;
+    border-radius: inherit;
+    display: block;
+    height: 100%;
+    min-width: 0;
+}
+
+.bookkeeping-dashboard-details {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    display: grid;
+    gap: 0.5rem 1rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 0.75rem 1rem;
+}
+
+.bookkeeping-dashboard-details div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.bookkeeping-dashboard-details span {
+    color: #5f6b78;
+    font-size: 0.75rem;
+}
+
+.bookkeeping-dashboard-details strong {
+    color: #243447;
+    font-size: 0.9rem;
+}
+
 .bookkeeping-rules-section {
     margin-top: 2rem;
 }
@@ -917,6 +1040,21 @@
     }
 
     .bookkeeping-month-filter-controls .form-select {
+        min-width: 0;
+    }
+
+    .bookkeeping-dashboard-grid-primary,
+    .bookkeeping-dashboard-grid-financial,
+    .bookkeeping-dashboard-details {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bookkeeping-dashboard-period-controls {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bookkeeping-dashboard-period-controls .form-select {
         min-width: 0;
     }
 

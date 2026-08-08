@@ -38,6 +38,77 @@
 <div class="alert alert-danger" role="alert">{{ error_message }}</div>
 {% endif %}
 
+{% if show_bank_import %}
+<section class="bookkeeping-dashboard" aria-labelledby="dashboard-heading">
+    <div class="bookkeeping-page-heading">
+        <h2 id="dashboard-heading" class="bookkeeping-section-title">Übersicht</h2>
+    </div>
+    {% if available_dashboard_periods %}
+    <form method="get" class="bookkeeping-dashboard-period-filter">
+        <input type="hidden" name="status" value="bank_import">
+        <label for="dashboard-period" class="form-label">Zeitraum</label>
+        <div class="bookkeeping-dashboard-period-controls">
+            <select id="dashboard-period" name="dashboard_period" class="form-select">
+                {% for period in available_dashboard_periods %}
+                <option value="{{ period.value }}"{% if period.value == dashboard_period %} selected{% endif %}>{{ period.label }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
+        </div>
+    </form>
+    {% endif %}
+
+    {% if dashboard_has_data %}
+    <div class="bookkeeping-dashboard-grid bookkeeping-dashboard-grid-primary">
+        <article class="bookkeeping-dashboard-card">
+            <span class="bookkeeping-dashboard-card-label">Transaktionen</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_total }}</strong>
+        </article>
+        <article class="bookkeeping-dashboard-card">
+            <span class="bookkeeping-dashboard-card-label">Offen</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_open }}</strong>
+        </article>
+        <article class="bookkeeping-dashboard-card">
+            <span class="bookkeeping-dashboard-card-label">Buchungsfertig</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_ready }}</strong>
+        </article>
+        <article class="bookkeeping-dashboard-card">
+            <div class="bookkeeping-dashboard-card-heading">
+                <span class="bookkeeping-dashboard-card-label">Bearbeitet</span>
+                <strong class="bookkeeping-dashboard-card-value">{{ dashboard_processed_percent }}</strong>
+            </div>
+            <div class="bookkeeping-dashboard-progress" role="progressbar" aria-label="Bearbeitungsfortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ dashboard_processed_percentage }}">
+                <span style="width: {{ dashboard_processed_width }}%;"></span>
+            </div>
+        </article>
+    </div>
+
+    <div class="bookkeeping-dashboard-grid bookkeeping-dashboard-grid-financial">
+        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-positive">
+            <span class="bookkeeping-dashboard-card-label">Eingänge</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_incoming }}</strong>
+        </article>
+        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-negative">
+            <span class="bookkeeping-dashboard-card-label">Ausgänge</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_outgoing }}</strong>
+        </article>
+        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-balance">
+            <span class="bookkeeping-dashboard-card-label">Saldo</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_balance }}</strong>
+        </article>
+    </div>
+
+    <div class="bookkeeping-dashboard-details">
+        <div><span>Automatisch zugeordnet</span><strong>{{ dashboard_auto_matched }}</strong></div>
+        <div><span>Ohne Matching-Regel</span><strong>{{ dashboard_without_matching }}</strong></div>
+        <div><span>Neuestes Buchungsdatum</span><strong>{{ dashboard_latest_booking_date }}</strong></div>
+        <div><span>Aktive Matching-Regeln</span><strong>{{ dashboard_active_matching_rules }}</strong></div>
+    </div>
+    {% else %}
+    <p class="bookkeeping-empty-state">Noch keine Transaktionen importiert.</p>
+    {% endif %}
+</section>
+{% else %}
 <section id="transactions" aria-labelledby="transactions-heading">
 <div class="bookkeeping-page-heading">
     <h2 id="transactions-heading" class="bookkeeping-section-title">
@@ -100,7 +171,7 @@
                 <th class="bookkeeping-iban">IBAN</th>
                 <th class="bookkeeping-direction">Richtung</th>
                 <th class="bookkeeping-amount">Betrag</th>
-                <th class="bookkeeping-purpose">Verwendungszweck</th>
+                <th class="bookkeeping-purpose">{% if selected_status == "reviewed" or selected_status == "booked" %}Buchungstext{% else %}Verwendungszweck{% endif %}</th>
                 <th class="bookkeeping-status">Status</th>
                 {% if selected_status != "imported" %}
                 <th class="bookkeeping-booking-data">Buchungsdaten</th>
@@ -153,7 +224,22 @@
                     <span>{{ transaction.amount }}</span>
                     {% endif %}
                 </td>
-                <td class="bookkeeping-purpose">{{ transaction.purpose }}</td>
+                <td class="bookkeeping-purpose">
+                    {% if selected_status == "reviewed" or selected_status == "booked" %}
+                    <div class="bookkeeping-booking-text-preview">
+                        {% for booking_entry in transaction.booking_entries %}
+                        <div>{{ booking_entry.booking_text }}</div>
+                        {% empty %}
+                        <span>–</span>
+                        {% endfor %}
+                    </div>
+                    {% if transaction.show_original_purpose %}
+                    <small class="text-muted bookkeeping-original-purpose">Original: {{ transaction.purpose }}</small>
+                    {% endif %}
+                    {% else %}
+                    {{ transaction.purpose }}
+                    {% endif %}
+                </td>
                 <td class="bookkeeping-status">
                     {% if transaction.status_code == "imported" or transaction.status_code == "matched" %}
                     <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.open_reason }}</span>
@@ -223,4 +309,5 @@
 <p class="bookkeeping-empty-state">{{ empty_state_message }}</p>
 {% endif %}
 </section>
+{% endif %}
 {% endblock %}

@@ -7,6 +7,7 @@ RECEIPT_GROUP_CHOICES = (
 )
 
 VAT_SYMBOL_CHOICES = (
+    ("0", "0"),
     ("10", "10"),
     ("13", "13"),
     ("20", "20"),

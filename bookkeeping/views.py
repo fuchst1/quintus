@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import IntegrityError
-from django.db.models import Count, Prefetch
+from django.db.models import Count, Max, Prefetch, Q, Sum
 from django.db import transaction as db_transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -174,6 +174,137 @@ def _available_export_quarters():
         },
         reverse=True,
     )
+
+
+def _available_transaction_quarters():
+    return sorted(
+        {
+            (
+                booking_date.year,
+                f"Q{((booking_date.month - 1) // 3) + 1}",
+            )
+            for booking_date in BankTransaction.objects.values_list(
+                "booking_date", flat=True
+            )
+        },
+        reverse=True,
+    )
+
+
+def _dashboard_period_selection(params, available_quarters):
+    available_periods = {
+        f"{year}-{quarter}" for year, quarter in available_quarters
+    }
+    requested_period = params.get("dashboard_period")
+    parsed_period = _parse_export_period(requested_period)
+    if parsed_period in available_periods:
+        return parsed_period
+    if available_quarters:
+        year, quarter = available_quarters[0]
+        return f"{year}-{quarter}"
+    return ""
+
+
+def _bank_import_dashboard_context(params):
+    available_quarters = _available_transaction_quarters()
+    dashboard_period = _dashboard_period_selection(
+        params,
+        available_quarters,
+    )
+    available_periods = [
+        {
+            "value": f"{year}-{quarter}",
+            "label": f"{quarter} {year}",
+        }
+        for year, quarter in available_quarters
+    ]
+    context = {
+        "available_dashboard_periods": available_periods,
+        "dashboard_period": dashboard_period,
+        "dashboard_has_data": False,
+        "dashboard_total": 0,
+        "dashboard_open": 0,
+        "dashboard_ready": 0,
+        "dashboard_processed_percentage": "0.00",
+        "dashboard_processed_percent": "0,00 %",
+        "dashboard_processed_width": "0",
+        "dashboard_incoming": "0,00 EUR",
+        "dashboard_outgoing": "0,00 EUR",
+        "dashboard_balance": "0,00 EUR",
+        "dashboard_auto_matched": 0,
+        "dashboard_without_matching": 0,
+        "dashboard_latest_booking_date": "–",
+        "dashboard_active_matching_rules": 0,
+    }
+    period_range = _export_period_bounds(dashboard_period)
+    if period_range is None:
+        return context
+
+    aggregate = BankTransaction.objects.filter(
+        booking_date__gte=period_range[0],
+        booking_date__lte=period_range[1],
+    ).aggregate(
+        total=Count("id"),
+        open_count=Count(
+            "id",
+            filter=Q(
+                status__in=(
+                    BankTransaction.Status.IMPORTED,
+                    BankTransaction.Status.MATCHED,
+                )
+            ),
+        ),
+        ready_count=Count(
+            "id",
+            filter=Q(status__in=BOOKING_READY_STATUSES),
+        ),
+        incoming=Sum("amount", filter=Q(amount__gt=0)),
+        outgoing=Sum("amount", filter=Q(amount__lt=0)),
+        balance=Sum("amount"),
+        auto_matched=Count("id", filter=Q(matched_rule__isnull=False)),
+        without_matching=Count("id", filter=Q(matched_rule__isnull=True)),
+        latest_booking_date=Max("booking_date"),
+    )
+    total = aggregate["total"] or 0
+    ready_count = aggregate["ready_count"] or 0
+    incoming = aggregate["incoming"] or Decimal("0")
+    outgoing = aggregate["outgoing"] or Decimal("0")
+    balance = aggregate["balance"] or Decimal("0")
+    processed_percentage = (
+        (Decimal(ready_count) * Decimal("100") / Decimal(total)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if total
+        else Decimal("0.00")
+    )
+    context.update(
+        {
+            "dashboard_has_data": total > 0,
+            "dashboard_total": total,
+            "dashboard_open": aggregate["open_count"] or 0,
+            "dashboard_ready": ready_count,
+            "dashboard_processed_percentage": str(processed_percentage),
+            "dashboard_processed_percent": (
+                f"{format_austrian_decimal(processed_percentage)} %"
+            ),
+            "dashboard_processed_width": str(processed_percentage),
+            "dashboard_incoming": format_austrian_money(incoming, "EUR"),
+            "dashboard_outgoing": format_austrian_money(abs(outgoing), "EUR"),
+            "dashboard_balance": format_austrian_money(balance, "EUR"),
+            "dashboard_auto_matched": aggregate["auto_matched"] or 0,
+            "dashboard_without_matching": aggregate["without_matching"] or 0,
+            "dashboard_latest_booking_date": (
+                aggregate["latest_booking_date"].strftime("%d.%m.%Y")
+                if aggregate["latest_booking_date"]
+                else "–"
+            ),
+            "dashboard_active_matching_rules": MatchingRule.objects.filter(
+                active=True
+            ).count(),
+        }
+    )
+    return context
 
 
 def _parse_export_period(value):
@@ -452,6 +583,21 @@ class BookkeepingOverviewView(TemplateView):
             self.request,
             filter_params=filter_params,
         )
+        context.update(navigation_context)
+        context["show_bank_import"] = (
+            navigation_context["selected_status"] == BANK_IMPORT_FILTER
+        )
+        if context["show_bank_import"]:
+            context.update(
+                _bank_import_dashboard_context(
+                    filter_params if filter_params is not None else self.request.GET
+                )
+            )
+            context["transactions"] = []
+            context["show_preview"] = False
+            context.setdefault("error_message", "")
+            return context
+
         export_period_bounds = None
         if navigation_context["selected_status"] in BOOKING_READY_STATUSES:
             export_period_bounds = _export_period_bounds(
@@ -511,10 +657,6 @@ class BookkeepingOverviewView(TemplateView):
             for transaction in saved_transactions
         ]
         context["show_preview"] = bool(saved_transactions)
-        context.update(navigation_context)
-        context["show_bank_import"] = (
-            navigation_context["selected_status"] == BANK_IMPORT_FILTER
-        )
         context.setdefault("error_message", "")
         return context
 
@@ -821,6 +963,7 @@ class BookkeepingOverviewView(TemplateView):
             cls._display_booking_entry(entry, transaction.currency)
             for entry in booking_entries
         ]
+        original_purpose = cls._text_or_empty(transaction.purpose)
         booking_entry_total = sum(
             (entry.gross_amount for entry in booking_entries),
             Decimal("0"),
@@ -834,6 +977,13 @@ class BookkeepingOverviewView(TemplateView):
             "direction_code": direction_code,
             "direction": direction,
             "purpose": cls._text_or_dash(transaction.purpose),
+            "show_original_purpose": bool(
+                original_purpose
+                and not any(
+                    original_purpose == cls._text_or_empty(entry.booking_text)
+                    for entry in booking_entries
+                )
+            ),
             "status_code": transaction.status,
             "status": (
                 "Buchungsfertig"
@@ -1177,11 +1327,14 @@ class BookingEntryView(TemplateView):
             notes_form.add_error(None, "Die gewünschte Aktion ist ungültig.")
 
         if formset.is_valid() and notes_form.is_valid():
+            rounding_difference = formset.rounding_difference
             with db_transaction.atomic():
                 locked_transaction = BankTransaction.objects.select_for_update().get(
                     pk=bank_transaction.pk
                 )
                 formset.instance = locked_transaction
+                if finalize:
+                    formset.apply_rounding_difference()
                 formset.save()
                 locked_transaction.notes = notes_form.cleaned_data["notes"]
                 update_fields = ["notes"]
@@ -1192,10 +1345,24 @@ class BookingEntryView(TemplateView):
 
             if finalize:
                 messages.success(request, "Buchung geprüft und abgeschlossen.")
+                if abs(rounding_difference) == Decimal("0.01"):
+                    messages.warning(
+                        request,
+                        f"Rundungsdifferenz von "
+                        f"{format_austrian_decimal(rounding_difference)} EUR "
+                        "wurde in der größten Buchungszeile ausgeglichen.",
+                    )
+                if bank_transaction.status in BOOKING_READY_STATUSES:
+                    return redirect(
+                        _overview_url(
+                            BankTransaction.Status.REVIEWED,
+                            navigation_context["selected_month"],
+                        )
+                    )
                 return redirect(
                     _overview_url(
-                        BankTransaction.Status.REVIEWED,
-                        navigation_context["selected_month"],
+                        OPEN_FILTER,
+                        bank_transaction.booking_date.strftime("%Y-%m"),
                     )
                 )
             messages.success(request, "Buchungsentwurf gespeichert.")
