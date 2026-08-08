@@ -1,6 +1,7 @@
 {% extends "bookkeeping/base.html" %}
 
 {% block content %}
+{% if show_bank_import %}
 <section id="bank-import" class="bookkeeping-upload-section" aria-labelledby="upload-heading">
     <h2 id="upload-heading" class="bookkeeping-section-title">Transaktionen importieren</h2>
     <form method="post" enctype="multipart/form-data">
@@ -25,6 +26,7 @@
         <button type="submit" class="btn btn-outline-primary">Matching ausführen</button>
     </form>
 </section>
+{% endif %}
 
 {% if messages %}
     {% for message in messages %}
@@ -42,6 +44,36 @@
         {{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}
     </h2>
 </div>
+{% if selected_status == "reviewed" or selected_status == "booked" %}
+{% if available_export_periods %}
+<form method="get" class="bookkeeping-period-filter">
+    <input type="hidden" name="status" value="{{ selected_status }}">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-auto">
+            <label for="export-period" class="form-label">Zeitraum</label>
+            <select id="export-period" name="period" class="form-select">
+                {% for period in available_export_periods %}
+                <option value="{{ period.value }}"{% if period.value == export_period %} selected{% endif %}>{{ period.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-auto">
+            <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
+        </div>
+    </div>
+</form>
+<form method="post" class="bookkeeping-quarter-export-form">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="export_csv">
+    <input type="hidden" name="status" value="{{ selected_status }}">
+    <input type="hidden" name="period" value="{{ export_period }}">
+    <button type="submit" class="btn btn-primary">CSV exportieren</button>
+</form>
+<p class="bookkeeping-export-hint">Der Export enthält immer das vollständige Quartal. Bei einem erneuten Export den bisherigen Quartalsblock im Excel ersetzen und nicht zusätzlich anhängen.</p>
+{% else %}
+<p class="bookkeeping-empty-state">Keine buchungsfertigen Buchungszeilen für einen Export vorhanden.</p>
+{% endif %}
+{% else %}
 <form method="get" class="bookkeeping-month-filter">
     <input type="hidden" name="status" value="{{ selected_status }}">
     <label for="transaction-month" class="form-label">Monat</label>
@@ -55,6 +87,7 @@
         <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
     </div>
 </form>
+{% endif %}
 {% if show_preview %}
 <p class="bookkeeping-preview-count">{{ transactions|length }} Transaktionen angezeigt</p>
 <div class="bookkeeping-table-wrap" role="region" aria-label="Transaktionsvorschau" tabindex="0">
@@ -90,7 +123,7 @@
                         <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchungsdaten ergänzen</a>
                         <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Anmerkung</a>
                     </div>
-                    {% elif transaction.status_code == "reviewed" %}
+                    {% elif transaction.status_code == "reviewed" or transaction.status_code == "booked" %}
                     <div class="bookkeeping-action-buttons">
                         <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
                         <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Anmerkung</a>

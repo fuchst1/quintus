@@ -1,7 +1,10 @@
+import csv
+import io
 import json
 import uuid
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -10,6 +13,7 @@ from django.urls import reverse
 
 from .choices import CATEGORY_CHOICES, RECEIPT_GROUP_BANK, VAT_SYMBOL_CHOICES
 from .category_display import category_description
+from .csv_export import quarter_bounds
 from .formatting import format_austrian_decimal
 from .forms import (
     BookingEntryForm,
@@ -113,6 +117,30 @@ class BookkeepingOverviewUploadTests(TestCase):
             {"json_file": uploaded_file},
             follow=True,
         )
+
+    def test_import_area_is_only_rendered_in_bank_import_context(self):
+        bank_import_response = self.client.get(
+            reverse(self.url_name),
+            {"status": "bank_import"},
+        )
+        open_response = self.client.get(
+            reverse(self.url_name),
+            {"status": "open"},
+        )
+        ready_response = self.client.get(
+            reverse(self.url_name),
+            {"status": "reviewed"},
+        )
+        rules_response = self.client.get(reverse("matching_rule_list"))
+
+        for response in (bank_import_response,):
+            self.assertContains(response, "Transaktionen importieren")
+            self.assertContains(response, 'name="json_file"')
+            self.assertContains(response, "Matching ausführen")
+        for response in (open_response, ready_response, rules_response):
+            self.assertNotContains(response, "Transaktionen importieren")
+            self.assertNotContains(response, 'name="json_file"')
+            self.assertNotContains(response, "Matching ausführen")
 
     def test_valid_upload_displays_transactions_and_converts_positive_and_negative_amounts(self):
         response = self.upload(
@@ -405,33 +433,55 @@ class BookkeepingOverviewFilteringTests(TestCase):
             BankTransaction.Status.IMPORTED: "Offen",
             BankTransaction.Status.MATCHED: "Zugeordnet",
             BankTransaction.Status.REVIEWED: "Geprüft",
-            BankTransaction.Status.BOOKED: "Exportiert",
+            BankTransaction.Status.BOOKED: "Gebucht intern",
         }
         for status, partner_name in transactions.items():
-            self.create_transaction(date(2026, 7, 15), status, partner_name)
+            transaction = self.create_transaction(
+                date(2026, 7, 15), status, partner_name
+            )
+            if status in {
+                BankTransaction.Status.REVIEWED,
+                BankTransaction.Status.BOOKED,
+            }:
+                BookingEntry.objects.create(
+                    bank_transaction=transaction,
+                    receipt_group="BK",
+                    payment_date=date(2026, 7, 15),
+                    booking_text=partner_name,
+                    partner_name=partner_name,
+                    gross_amount=transaction.amount,
+                    vat_symbol="20",
+                    category="4851",
+                )
 
         for status, partner_name in transactions.items():
             with self.subTest(status=status):
                 response = self.get_overview(status=status, month="2026-07")
                 self.assertEqual(response.context["selected_status"], status)
-                self.assertEqual(
-                    [row["name"] for row in response.context["transactions"]],
-                    [partner_name],
-                )
+                names = {row["name"] for row in response.context["transactions"]}
+                if status in {
+                    BankTransaction.Status.REVIEWED,
+                    BankTransaction.Status.BOOKED,
+                }:
+                    self.assertEqual(names, {"Geprüft", "Gebucht intern"})
+                else:
+                    self.assertEqual(names, {partner_name})
 
         booked_response = self.get_overview(
             status=BankTransaction.Status.BOOKED,
             month="2026-07",
         )
-        self.assertContains(booked_response, "Exportiert")
-        self.assertNotContains(booked_response, "Gebucht")
+        self.assertContains(booked_response, "Buchungsfertig")
+        self.assertContains(booked_response, "Geprüft")
+        self.assertContains(booked_response, "Gebucht intern")
+        self.assertNotContains(booked_response, ">Exportiert<")
 
     def test_open_filter_includes_imported_and_matched_but_not_completed(self):
         transactions = {
             BankTransaction.Status.IMPORTED: "Offen",
             BankTransaction.Status.MATCHED: "Unvollständig",
             BankTransaction.Status.REVIEWED: "Buchungsfertig",
-            BankTransaction.Status.BOOKED: "Exportiert",
+            BankTransaction.Status.BOOKED: "Gebucht intern",
         }
         for status, partner_name in transactions.items():
             self.create_transaction(date(2026, 7, 15), status, partner_name)
@@ -587,9 +637,9 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertEqual(
             response.context["status_counts"],
-            {"open": 2, "reviewed": 1, "booked": 1},
+            {"open": 2, "reviewed": 2, "booked": 1},
         )
-        self.assertContains(response, 'aria-label="1 Transaktionen"')
+        self.assertContains(response, 'aria-label="2 Transaktionen"')
 
     def test_status_counts_are_global_for_all_months(self):
         self.create_transaction(
@@ -642,6 +692,140 @@ class BookkeepingOverviewFilteringTests(TestCase):
         self.assertContains(response, "Zeile 1")
         self.assertContains(response, "Zeile 2")
         self.assertContains(response, "Zeile 3")
+
+    def test_ready_status_combines_reviewed_and_booked_without_exported_menu(self):
+        reviewed = self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.REVIEWED, "Geprüft"
+        )
+        booked = self.create_transaction(
+            date(2026, 7, 16), BankTransaction.Status.BOOKED, "Gebucht intern"
+        )
+        for transaction in (reviewed, booked):
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                payment_date=transaction.booking_date,
+                booking_text=transaction.partner_name,
+                partner_name=transaction.partner_name,
+                gross_amount=transaction.amount,
+                vat_symbol="20",
+                category="4851",
+            )
+
+        response = self.get_overview(status="reviewed")
+
+        self.assertEqual(response.context["status_counts"]["reviewed"], 2)
+        self.assertEqual(
+            {row["name"] for row in response.context["transactions"]},
+            {"Geprüft", "Gebucht intern"},
+        )
+        self.assertContains(response, "Buchungsfertig")
+        self.assertNotContains(response, ">Exportiert<")
+        self.assertNotContains(response, "bookkeeping-nav-link-booked")
+
+    def test_ready_export_defaults_to_newest_quarter_with_booking_entries(self):
+        older = self.create_transaction(date(2026, 7, 15), BankTransaction.Status.REVIEWED, "Juli")
+        newer = self.create_transaction(date(2026, 10, 1), BankTransaction.Status.BOOKED, "Oktober")
+        for transaction in (older, newer):
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                payment_date=transaction.booking_date,
+                booking_text=transaction.partner_name,
+                partner_name=transaction.partner_name,
+                gross_amount=transaction.amount,
+                vat_symbol="20",
+                category="4851",
+            )
+
+        response = self.get_overview(status="reviewed")
+
+        self.assertEqual(response.context["export_period"], "2026-Q4")
+        self.assertEqual(
+            response.context["available_export_periods"],
+            [
+                {"value": "2026-Q4", "label": "Q4 2026"},
+                {"value": "2026-Q3", "label": "Q3 2026"},
+            ],
+        )
+        self.assertContains(response, 'name="period"')
+        self.assertContains(response, '<form method="get" class="bookkeeping-period-filter">')
+        self.assertContains(response, "Der Export enthält immer das vollständige Quartal.")
+
+    def test_ready_table_filters_transactions_by_selected_quarter(self):
+        q3_transaction = self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.REVIEWED, "Q3 Zahlung"
+        )
+        q4_transaction = self.create_transaction(
+            date(2026, 10, 1), BankTransaction.Status.BOOKED, "Q4 Zahlung"
+        )
+        for transaction in (q3_transaction, q4_transaction):
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                payment_date=transaction.booking_date,
+                booking_text=transaction.partner_name,
+                partner_name=transaction.partner_name,
+                gross_amount=transaction.amount,
+                vat_symbol="20",
+                category="4851",
+            )
+
+        q3_response = self.get_overview(status="reviewed", period="2026-Q3")
+        q4_response = self.get_overview(status="reviewed", period="2026-Q4")
+
+        self.assertEqual(
+            [row["name"] for row in q3_response.context["transactions"]],
+            ["Q3 Zahlung"],
+        )
+        self.assertEqual(q3_response.context["export_period"], "2026-Q3")
+        self.assertContains(q3_response, "1 Transaktionen angezeigt")
+        self.assertNotContains(q3_response, "Q4 Zahlung")
+        self.assertEqual(
+            [row["name"] for row in q4_response.context["transactions"]],
+            ["Q4 Zahlung"],
+        )
+        self.assertEqual(q4_response.context["export_period"], "2026-Q4")
+        self.assertNotContains(q4_response, "Q3 Zahlung")
+
+    def test_export_periods_include_available_quarters_from_new_years(self):
+        for payment_date in (date(2025, 12, 31), date(2026, 1, 1)):
+            transaction = self.create_transaction(
+                payment_date,
+                BankTransaction.Status.REVIEWED,
+                payment_date.isoformat(),
+            )
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                payment_date=payment_date,
+                booking_text=transaction.partner_name,
+                partner_name=transaction.partner_name,
+                gross_amount=transaction.amount,
+                vat_symbol="20",
+                category="4851",
+            )
+
+        response = self.get_overview(status="reviewed")
+
+        self.assertEqual(
+            response.context["available_export_periods"],
+            [
+                {"value": "2026-Q1", "label": "Q1 2026"},
+                {"value": "2025-Q4", "label": "Q4 2025"},
+            ],
+        )
+
+    def test_ready_page_without_booking_entries_shows_neutral_export_hint(self):
+        response = self.get_overview(status="reviewed")
+
+        self.assertEqual(response.context["available_export_periods"], [])
+        self.assertContains(
+            response,
+            "Keine buchungsfertigen Buchungszeilen für einen Export vorhanden.",
+        )
+        self.assertNotContains(response, "CSV exportieren")
+        self.assertNotContains(response, 'role="alert"')
 
     def test_sidebar_status_links_preserve_selected_month(self):
         self.create_transaction(
@@ -699,6 +883,324 @@ class BookkeepingOverviewFilteringTests(TestCase):
             response["Location"],
             "/bookkeeping/?status=open&month=2026-07",
         )
+
+
+class BookkeepingCsvExportTests(TestCase):
+    def create_transaction(self, **overrides):
+        values = {
+            "booking_date": date(2026, 7, 15),
+            "partner_name": "Mieter",
+            "amount": Decimal("7.80"),
+            "direction": BankTransaction.Direction.INCOMING,
+            "status": BankTransaction.Status.REVIEWED,
+        }
+        values.update(overrides)
+        return BankTransaction.objects.create(**values)
+
+    def create_entry(self, bank_transaction, **overrides):
+        values = {
+            "bank_transaction": bank_transaction,
+            "receipt_group": "BK",
+            "receipt_number": "7",
+            "payment_date": date(2026, 7, 20),
+            "booking_text": "Miete",
+            "invoice_number": "RE-7",
+            "partner_name": "Mieter",
+            "gross_amount": Decimal("7.80"),
+            "vat_symbol": "20",
+            "category": "7600",
+        }
+        values.update(overrides)
+        return BookingEntry.objects.create(**values)
+
+    def export(self, period="2026-Q3"):
+        return self.client.post(
+            reverse("bookkeeping_overview"),
+            {
+                "action": "export_csv",
+                "status": BankTransaction.Status.REVIEWED,
+                "period": period,
+            },
+        )
+
+    def test_exports_one_row_per_booking_entry_with_austrian_csv_format(self):
+        bank_transaction = self.create_transaction(amount=Decimal("7.80"))
+        self.create_entry(
+            bank_transaction,
+            booking_text="Text; mit Semikolon",
+            gross_amount=Decimal("12.30"),
+            category="4851",
+        )
+        self.create_entry(
+            bank_transaction,
+            payment_date=date(2026, 7, 21),
+            booking_text="Gutschrift",
+            invoice_number="",
+            gross_amount=Decimal("-4.50"),
+            vat_symbol="10",
+            category="7600",
+        )
+
+        response = self.export()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content[:3], b"\xef\xbb\xbf")
+        self.assertIn(b"\r\n", response.content)
+        self.assertNotIn(b"\n", response.content.replace(b"\r\n", b""))
+        self.assertEqual(
+            response["Content-Disposition"],
+            'attachment; filename="Buchungszeilen_2026_Q3.csv"',
+        )
+        rows = list(
+            csv.reader(
+                io.StringIO(response.content.decode("utf-8-sig"), newline=""),
+                delimiter=";",
+            )
+        )
+        self.assertEqual(
+            rows,
+            [
+                [
+                    "Belegkreis",
+                    "Belegnummer",
+                    "Zahlungsdatum",
+                    "Buchungstext",
+                    "Rechnungsnummer",
+                    "Lieferant/Kunde",
+                    "Bruttobetrag",
+                    "USt-Symbol",
+                    "Kategorie",
+                ],
+                [
+                    "BK",
+                    "7",
+                    "20.07.2026",
+                    "Text; mit Semikolon",
+                    "RE-7",
+                    "Mieter",
+                    "12,30",
+                    "20",
+                    "Mieterlös Bahngasse 10%",
+                ],
+                [
+                    "BK",
+                    "7",
+                    "21.07.2026",
+                    "Gutschrift",
+                    "",
+                    "Mieter",
+                    "-4,50",
+                    "10",
+                    "Büromaterial und Drucksorten",
+                ],
+            ],
+        )
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+
+    def test_quarter_bounds_cover_exactly_q1_to_q4(self):
+        self.assertEqual(
+            quarter_bounds(2026, "Q1"),
+            (date(2026, 1, 1), date(2026, 3, 31)),
+        )
+        self.assertEqual(
+            quarter_bounds(2026, "Q2"),
+            (date(2026, 4, 1), date(2026, 6, 30)),
+        )
+        self.assertEqual(
+            quarter_bounds(2026, "Q3"),
+            (date(2026, 7, 1), date(2026, 9, 30)),
+        )
+        self.assertEqual(
+            quarter_bounds(2026, "Q4"),
+            (date(2026, 10, 1), date(2026, 12, 31)),
+        )
+
+    def test_adjacent_quarter_rows_are_not_exported(self):
+        in_q1 = self.create_transaction(partner_name="Q1")
+        in_q2 = self.create_transaction(
+            status=BankTransaction.Status.BOOKED,
+            partner_name="Q2",
+        )
+        self.create_entry(
+            in_q1,
+            payment_date=date(2026, 1, 1),
+            booking_text="Q1 Anfang",
+        )
+        self.create_entry(
+            in_q1,
+            payment_date=date(2026, 3, 31),
+            booking_text="Q1 Ende",
+        )
+        self.create_entry(
+            in_q2,
+            payment_date=date(2026, 4, 1),
+            booking_text="Q2 Anfang",
+        )
+
+        response = self.export(period="2026-Q1")
+        body = response.content.decode("utf-8-sig")
+
+        self.assertIn("Q1 Anfang", body)
+        self.assertIn("Q1 Ende", body)
+        self.assertNotIn("Q2 Anfang", body)
+        in_q1.refresh_from_db()
+        in_q2.refresh_from_db()
+        self.assertEqual(in_q1.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(in_q2.status, BankTransaction.Status.BOOKED)
+
+    def test_table_and_csv_use_the_same_selected_period(self):
+        q3_transaction = self.create_transaction(partner_name="Nur Q3")
+        q4_transaction = self.create_transaction(
+            status=BankTransaction.Status.BOOKED,
+            partner_name="Nur Q4",
+        )
+        self.create_entry(
+            q3_transaction,
+            payment_date=date(2026, 7, 1),
+            booking_text="Nur Q3",
+        )
+        self.create_entry(
+            q4_transaction,
+            payment_date=date(2026, 10, 1),
+            booking_text="Nur Q4",
+        )
+
+        table_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "reviewed", "period": "2026-Q3"},
+        )
+        csv_response = self.export(period="2026-Q3")
+
+        self.assertContains(table_response, "Nur Q3")
+        self.assertNotContains(table_response, "Nur Q4")
+        self.assertContains(csv_response, "Nur Q3")
+        self.assertNotContains(csv_response, "Nur Q4")
+
+    def test_booking_entries_are_sorted_by_payment_date_and_ids(self):
+        first_transaction = self.create_transaction(partner_name="Erste")
+        second_transaction = self.create_transaction(partner_name="Zweite")
+        first_entry = self.create_entry(
+            first_transaction,
+            payment_date=date(2026, 7, 15),
+            booking_text="Erste Zeile",
+        )
+        second_entry = self.create_entry(
+            second_transaction,
+            payment_date=date(2026, 7, 15),
+            booking_text="Zweite Zeile",
+        )
+        latest_entry = self.create_entry(
+            first_transaction,
+            payment_date=date(2026, 9, 30),
+            booking_text="Letzte Zeile",
+        )
+
+        response = self.export()
+        rows = list(
+            csv.reader(
+                io.StringIO(response.content.decode("utf-8-sig"), newline=""),
+                delimiter=";",
+            )
+        )[1:]
+        expected_same_date = [
+            entry.booking_text
+            for _transaction, entry in sorted(
+                (
+                    (first_transaction, first_entry),
+                    (second_transaction, second_entry),
+                ),
+                key=lambda item: (str(item[0].pk), str(item[1].pk)),
+            )
+        ]
+        self.assertEqual(
+            [row[3] for row in rows],
+            [*expected_same_date, latest_entry.booking_text],
+        )
+
+    def test_unknown_and_empty_category_codes_are_exported_without_failure(self):
+        bank_transaction = self.create_transaction()
+        self.create_entry(bank_transaction, category="9999")
+        self.create_entry(
+            bank_transaction,
+            category="",
+            gross_amount=Decimal("0.00"),
+        )
+
+        response = self.export()
+
+        rows = list(
+            csv.reader(
+                io.StringIO(response.content.decode("utf-8-sig"), newline=""),
+                delimiter=";",
+            )
+        )
+        self.assertEqual(sorted((rows[1][-1], rows[2][-1])), ["", "9999"])
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+
+    def test_export_is_repeatable_and_does_not_change_status(self):
+        reviewed = self.create_transaction(partner_name="Geprüft")
+        booked = self.create_transaction(
+            status=BankTransaction.Status.BOOKED,
+            partner_name="Schon gebucht",
+        )
+        self.create_entry(reviewed, booking_text="Alt geprüft")
+        corrected_entry = self.create_entry(booked, booking_text="Erster Stand")
+
+        first_response = self.export()
+        second_response = self.export()
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(first_response.content, second_response.content)
+        reviewed.refresh_from_db()
+        booked.refresh_from_db()
+        self.assertEqual(reviewed.status, BankTransaction.Status.REVIEWED)
+        self.assertEqual(booked.status, BankTransaction.Status.BOOKED)
+
+        corrected_entry.booking_text = "Korrigierter Stand"
+        corrected_entry.save(update_fields=("booking_text",))
+        corrected_response = self.export()
+        self.assertNotEqual(first_response.content, corrected_response.content)
+        self.assertContains(corrected_response, "Korrigierter Stand")
+
+    def test_missing_quarter_selection_uses_latest_quarter_without_status_change(self):
+        bank_transaction = self.create_transaction()
+        self.create_entry(bank_transaction)
+
+        response = self.export(period="")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Buchungszeilen_2026_Q3.csv", response["Content-Disposition"])
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+
+    def test_quarter_without_booking_entries_has_understandable_error(self):
+        bank_transaction = self.create_transaction(booking_date=date(2026, 7, 15))
+        self.create_entry(bank_transaction, payment_date=date(2026, 10, 1))
+
+        response = self.export()
+
+        self.assertContains(response, "Keine Buchungszeilen im ausgewählten Quartal")
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
+
+    def test_csv_creation_error_does_not_change_status(self):
+        bank_transaction = self.create_transaction()
+        self.create_entry(bank_transaction)
+
+        with patch(
+            "bookkeeping.csv_export._build_csv_content",
+            side_effect=RuntimeError("Testfehler"),
+        ):
+            response = self.export()
+
+        self.assertContains(response, "Die CSV-Datei konnte nicht erstellt werden.")
+        self.assertEqual(response.context["export_period"], "2026-Q3")
+        self.assertContains(response, 'value="2026-Q3" selected')
+        self.assertContains(response, "Mieter")
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
 
 
 class BookkeepingNoteTests(TestCase):
@@ -783,6 +1285,16 @@ class BookkeepingNoteTests(TestCase):
         bank_transaction = self.create_transaction(
             status=BankTransaction.Status.REVIEWED,
         )
+        BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Prüfung",
+            partner_name=bank_transaction.partner_name,
+            gross_amount=bank_transaction.amount,
+            vat_symbol="20",
+            category="4851",
+        )
 
         response = self.client.get(
             reverse("bookkeeping_overview"),
@@ -802,7 +1314,7 @@ class BookkeepingNoteTests(TestCase):
         bank_transaction.refresh_from_db()
         self.assertEqual(bank_transaction.notes, "Prüfhinweis")
 
-    def test_booked_transactions_show_notes_read_only(self):
+    def test_booked_transactions_allow_note_editing(self):
         rule = MatchingRule.objects.create(
             name="Exportregel",
             direction=MatchingRule.Direction.INCOMING,
@@ -816,6 +1328,16 @@ class BookkeepingNoteTests(TestCase):
             matched_rule=rule,
             notes="Exportnotiz",
         )
+        BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            receipt_group="BK",
+            payment_date=bank_transaction.booking_date,
+            booking_text="Export",
+            partner_name=bank_transaction.partner_name,
+            gross_amount=bank_transaction.amount,
+            vat_symbol="20",
+            category="4851",
+        )
 
         response = self.client.get(
             reverse("bookkeeping_overview"),
@@ -825,10 +1347,17 @@ class BookkeepingNoteTests(TestCase):
         self.assertContains(response, "Exportnotiz")
         self.assertContains(response, "Erklärung für den Export.")
         self.assertContains(response, rule.name)
-        self.assertNotContains(
+        self.assertContains(
             response,
             f'href="{self.note_href(bank_transaction, "booked")}"',
         )
+
+        self.client.post(
+            self.note_url(bank_transaction, "booked"),
+            {"notes": "Geänderte Gebucht-Notiz"},
+        )
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.notes, "Geänderte Gebucht-Notiz")
 
     def test_imported_note_update_is_rejected_without_changing_note(self):
         bank_transaction = self.create_transaction(
@@ -848,7 +1377,7 @@ class BookkeepingNoteTests(TestCase):
         bank_transaction.refresh_from_db()
         self.assertEqual(bank_transaction.notes, "Bestehende Offen-Notiz")
 
-    def test_booked_note_update_is_rejected_without_changing_note(self):
+    def test_booked_note_update_is_allowed_without_status_change(self):
         bank_transaction = self.create_transaction(
             status=BankTransaction.Status.BOOKED,
             notes="Bestehende Exportnotiz",
@@ -864,7 +1393,8 @@ class BookkeepingNoteTests(TestCase):
             "/bookkeeping/?status=booked&month=2026-07",
         )
         bank_transaction.refresh_from_db()
-        self.assertEqual(bank_transaction.notes, "Bestehende Exportnotiz")
+        self.assertEqual(bank_transaction.notes, "Unzulässige Änderung")
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.BOOKED)
 
     def test_transaction_note_changes_only_the_selected_transaction(self):
         first = self.create_transaction(partner_name="Erste Transaktion")
@@ -1483,7 +2013,7 @@ class BookingEntryTests(TestCase):
             f'href="{self.booking_url(bank_transaction, "reviewed").replace("&", "&amp;")}"',
         )
 
-    def test_booked_transactions_cannot_edit_booking_data(self):
+    def test_booked_transactions_allow_booking_data_editing(self):
         bank_transaction = self.create_transaction(status=BankTransaction.Status.BOOKED)
         BookingEntry.objects.create(
             bank_transaction=bank_transaction,
@@ -1495,17 +2025,25 @@ class BookingEntryTests(TestCase):
             category="7600",
         )
 
+        get_response = self.client.get(
+            self.booking_url(bank_transaction, status="booked")
+        )
+        self.assertEqual(get_response.status_code, 200)
+        self.assertContains(get_response, "Buchungsdaten bearbeiten")
+
         response = self.client.post(
             self.booking_url(bank_transaction, status="booked"),
-            self.complete_data(bank_transaction, category="Unzulässig"),
+            self.complete_data(bank_transaction, category="7380"),
         )
 
         self.assertEqual(
             response["Location"],
-            "/bookkeeping/?status=booked&month=2026-07",
+            "/bookkeeping/?status=reviewed&month=2026-07",
         )
         entry = BookingEntry.objects.get(bank_transaction=bank_transaction)
-        self.assertEqual(entry.category, "7600")
+        self.assertEqual(entry.category, "7380")
+        bank_transaction.refresh_from_db()
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.BOOKED)
 
     def test_booking_action_changes_only_the_selected_transaction(self):
         first = self.create_transaction(partner_name="Erste")
@@ -2782,11 +3320,14 @@ class MatchingRuleTests(TestCase):
 
         for response in (overview_response, rules_response):
             self.assertContains(response, 'href="/bookkeeping/"')
-            self.assertContains(response, 'href="/bookkeeping/#bank-import"')
+            self.assertContains(
+                response,
+                'href="/bookkeeping/?status=bank_import#bank-import"',
+            )
             self.assertContains(response, "Offen")
             self.assertNotContains(response, ">Zugeordnet<")
             self.assertContains(response, "Buchungsfertig")
-            self.assertContains(response, "Exportiert")
+            self.assertNotContains(response, ">Exportiert<")
             self.assertContains(response, 'href="/bookkeeping/matching-rules/"')
         self.assertContains(
             overview_response,

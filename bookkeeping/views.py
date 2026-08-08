@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 from calendar import monthrange
 from datetime import date, datetime
@@ -10,12 +11,18 @@ from django.contrib import messages
 from django.db import IntegrityError
 from django.db.models import Count, Prefetch
 from django.db import transaction as db_transaction
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
 from .formatting import format_austrian_decimal, format_austrian_money
 from .category_display import category_description
+from .csv_export import (
+    CsvExportError,
+    export_reviewed_transactions_csv,
+    quarter_bounds,
+)
 from .matching import build_booking_entry_snapshot, match_imported_transactions
 from .forms import (
     BankTransactionNoteForm,
@@ -29,6 +36,11 @@ from .models import BankTransaction, BookingEntry, MatchingRule
 
 
 OPEN_FILTER = "open"
+BANK_IMPORT_FILTER = "bank_import"
+BOOKING_READY_STATUSES = (
+    BankTransaction.Status.REVIEWED,
+    BankTransaction.Status.BOOKED,
+)
 STATUS_NAVIGATION = (
     {
         "value": OPEN_FILTER,
@@ -44,15 +56,9 @@ STATUS_NAVIGATION = (
         "empty_label": "buchungsfertigen",
         "icon": "bi-search",
     },
-    {
-        "value": BankTransaction.Status.BOOKED,
-        "label": "Exportiert",
-        "heading": "Exportierte Transaktionen",
-        "empty_label": "exportierten",
-        "icon": "bi-box-arrow-up-right",
-    },
 )
 STATUS_VALUES = {
+    BANK_IMPORT_FILTER,
     OPEN_FILTER,
     BankTransaction.Status.IMPORTED,
     BankTransaction.Status.MATCHED,
@@ -65,6 +71,13 @@ STATUS_DETAILS = {
 }
 STATUS_DETAILS.update(
     {
+        BANK_IMPORT_FILTER: {
+            "value": BANK_IMPORT_FILTER,
+            "label": "Bankimport",
+            "heading": "Bankimport",
+            "empty_label": "",
+            "icon": "bi-upload",
+        },
         BankTransaction.Status.IMPORTED: {
             "value": BankTransaction.Status.IMPORTED,
             "label": "Offen",
@@ -79,12 +92,20 @@ STATUS_DETAILS.update(
             "empty_label": "zugeordneten",
             "icon": "bi-check2-square",
         },
+        BankTransaction.Status.BOOKED: {
+            "value": BankTransaction.Status.BOOKED,
+            "label": "Buchungsfertig",
+            "heading": "Buchungsfertige Transaktionen",
+            "empty_label": "buchungsfertigen",
+            "icon": "bi-search",
+        },
     }
 )
 NOTE_EDITABLE_STATUSES = frozenset(
     {
         BankTransaction.Status.MATCHED,
         BankTransaction.Status.REVIEWED,
+        BankTransaction.Status.BOOKED,
     }
 )
 GERMAN_MONTH_NAMES = (
@@ -102,6 +123,8 @@ GERMAN_MONTH_NAMES = (
     "Dezember",
 )
 MONTH_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<month>0[1-9]|1[0-2])$")
+EXPORT_PERIOD_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<quarter>Q[1-4])$")
+logger = logging.getLogger(__name__)
 
 
 def _parse_month(value):
@@ -136,6 +159,56 @@ def _month_filter(month_key):
         return {}
     start, end = bounds
     return {"booking_date__gte": start, "booking_date__lte": end}
+
+
+def _available_export_quarters():
+    return sorted(
+        {
+            (
+                payment_date.year,
+                f"Q{((payment_date.month - 1) // 3) + 1}",
+            )
+            for payment_date in BookingEntry.objects.filter(
+                bank_transaction__status__in=BOOKING_READY_STATUSES,
+            ).values_list("payment_date", flat=True)
+        },
+        reverse=True,
+    )
+
+
+def _parse_export_period(value):
+    if not isinstance(value, str):
+        return None
+    match = EXPORT_PERIOD_PATTERN.fullmatch(value.upper())
+    if match is None:
+        return None
+    period = f"{match.group('year')}-{match.group('quarter')}"
+    if quarter_bounds(match.group("year"), match.group("quarter")) is None:
+        return None
+    return period
+
+
+def _export_period_bounds(period):
+    parsed_period = _parse_export_period(period)
+    if parsed_period is None:
+        return None
+    year, quarter = parsed_period.split("-", 1)
+    return quarter_bounds(year, quarter)
+
+
+def _export_selection(params, available_quarters):
+    requested_period = params.get("period")
+    parsed_period = _parse_export_period(requested_period)
+    if parsed_period is not None:
+        return parsed_period
+    requested_year = params.get("export_year") or params.get("year")
+    requested_quarter = params.get("export_quarter") or params.get("quarter")
+    if quarter_bounds(requested_year, requested_quarter) is not None:
+        return f"{int(requested_year)}-{str(requested_quarter).upper()}"
+    if available_quarters:
+        year, quarter = available_quarters[0]
+        return f"{year}-{quarter}"
+    return ""
 
 
 def _overview_url(status, month=None):
@@ -177,6 +250,8 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             if requested_month in available_month_keys and _parse_month(requested_month)
             else (available_month_keys[0] if available_month_keys else "")
         )
+    if selected_status in BOOKING_READY_STATUSES and "month" not in params:
+        selected_month = ""
 
     count_query = BankTransaction.objects
     if selected_month:
@@ -185,6 +260,18 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         row["status"]: row["count"]
         for row in count_query.values("status").annotate(count=Count("id"))
     }
+    ready_count = sum(
+        counts_by_status.get(status, 0) for status in BOOKING_READY_STATUSES
+    )
+    navigation_month = (
+        selected_month
+        if selected_month
+        or (
+            selected_status not in BOOKING_READY_STATUSES
+            and available_month_keys
+        )
+        else None
+    )
     status_navigation = [
         {
             **item,
@@ -192,11 +279,11 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                 counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
                 + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
                 if item["value"] == OPEN_FILTER
-                else counts_by_status.get(item["value"], 0)
+                else ready_count
             ),
             "url": _overview_url(
                 item["value"],
-                selected_month if selected_month or available_month_keys else None,
+                navigation_month,
             ),
                 "active": (
                     request.resolver_match.url_name
@@ -208,9 +295,12 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                 and (
                     selected_status == item["value"]
                     or (
+                        item["value"] == BankTransaction.Status.REVIEWED
+                        and selected_status in BOOKING_READY_STATUSES
+                    )
+                    or (
                         item["value"] == OPEN_FILTER
-                        and selected_status
-                        in {
+                        and selected_status in {
                             BankTransaction.Status.IMPORTED,
                             BankTransaction.Status.MATCHED,
                         }
@@ -219,6 +309,18 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             ),
         }
         for item in STATUS_NAVIGATION
+    ]
+    available_export_quarters = _available_export_quarters()
+    export_period = _export_selection(
+        params,
+        available_export_quarters,
+    )
+    available_export_periods = [
+        {
+            "value": f"{year}-{quarter}",
+            "label": f"{quarter} {year}",
+        }
+        for year, quarter in available_export_quarters
     ]
     selected_status_details = STATUS_DETAILS[selected_status]
     month_suffix = f" für {_month_label(selected_month)}" if selected_month else ""
@@ -233,15 +335,20 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             for month_key in available_month_keys
         ],
         "status_counts": {
-            item["value"]: (
+            OPEN_FILTER: (
                 counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
                 + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
-                if item["value"] == OPEN_FILTER
-                else counts_by_status.get(item["value"], 0)
-            )
-            for item in STATUS_NAVIGATION
+            ),
+            BankTransaction.Status.REVIEWED: ready_count,
+            BankTransaction.Status.BOOKED: counts_by_status.get(
+                BankTransaction.Status.BOOKED,
+                0,
+            ),
         },
+        "status_counts_by_code": counts_by_status,
         "status_navigation": status_navigation,
+        "available_export_periods": available_export_periods,
+        "export_period": export_period,
         "empty_state_message": (
             f"Keine {selected_status_details['empty_label']} Transaktionen"
             f"{month_suffix} vorhanden."
@@ -345,22 +452,49 @@ class BookkeepingOverviewView(TemplateView):
             self.request,
             filter_params=filter_params,
         )
+        export_period_bounds = None
+        if navigation_context["selected_status"] in BOOKING_READY_STATUSES:
+            export_period_bounds = _export_period_bounds(
+                navigation_context["export_period"]
+            )
+        booking_entries_queryset = BookingEntry.objects.order_by(
+            "created_at", "id"
+        )
+        if export_period_bounds is not None:
+            booking_entries_queryset = booking_entries_queryset.filter(
+                payment_date__gte=export_period_bounds[0],
+                payment_date__lte=export_period_bounds[1],
+            )
         selected_transactions = BankTransaction.objects.select_related(
             "matched_rule"
         ).prefetch_related(
             Prefetch(
                 "booking_entries",
-                queryset=BookingEntry.objects.order_by("created_at", "id"),
+                queryset=booking_entries_queryset,
                 to_attr="booking_entries_for_display",
             )
         )
-        if navigation_context["selected_status"] == OPEN_FILTER:
+        if navigation_context["selected_status"] in {
+            OPEN_FILTER,
+            BANK_IMPORT_FILTER,
+        }:
             selected_transactions = selected_transactions.filter(
                 status__in=(
                     BankTransaction.Status.IMPORTED,
                     BankTransaction.Status.MATCHED,
                 )
             )
+        elif navigation_context["selected_status"] in BOOKING_READY_STATUSES:
+            selected_transactions = selected_transactions.filter(
+                status__in=BOOKING_READY_STATUSES
+            )
+            if export_period_bounds is None:
+                selected_transactions = selected_transactions.none()
+            else:
+                selected_transactions = selected_transactions.filter(
+                    booking_entries__payment_date__gte=export_period_bounds[0],
+                    booking_entries__payment_date__lte=export_period_bounds[1],
+                ).distinct()
         else:
             selected_transactions = selected_transactions.filter(
                 status=navigation_context["selected_status"]
@@ -378,10 +512,16 @@ class BookkeepingOverviewView(TemplateView):
         ]
         context["show_preview"] = bool(saved_transactions)
         context.update(navigation_context)
+        context["show_bank_import"] = (
+            navigation_context["selected_status"] == BANK_IMPORT_FILTER
+        )
         context.setdefault("error_message", "")
         return context
 
     def post(self, request, *args, **kwargs):
+        if request.POST.get("action") == "export_csv":
+            return self._export_csv(request)
+
         if request.POST.get("action") == "run_matching":
             matching_result = match_imported_transactions()
             messages.success(
@@ -456,12 +596,81 @@ class BookkeepingOverviewView(TemplateView):
             if newest_imported_month is not None
             else None
         )
+        import_status = (
+            BANK_IMPORT_FILTER
+            if request.POST.get("status") == BANK_IMPORT_FILTER
+            else OPEN_FILTER
+        )
         return redirect(
             _overview_url(
-                OPEN_FILTER,
+                import_status,
                 newest_imported_month_key,
             )
         )
+
+    def _export_csv(self, request):
+        requested_period = request.POST.get("period", "")
+        if requested_period:
+            export_period = _parse_export_period(requested_period) or ""
+        else:
+            export_year = request.POST.get("export_year") or request.POST.get(
+                "year", ""
+            )
+            export_quarter = request.POST.get("export_quarter") or request.POST.get(
+                "quarter", ""
+            )
+            if export_year or export_quarter:
+                export_period = _export_selection(
+                    request.POST,
+                    [],
+                )
+            else:
+                export_period = _export_selection(
+                    request.POST,
+                    _available_export_quarters(),
+                )
+        quarter_range = _export_period_bounds(export_period)
+        if quarter_range is None:
+            error_message = (
+                "Bitte einen gültigen Zeitraum auswählen."
+                if requested_period
+                else "Bitte einen Zeitraum auswählen."
+            )
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message=error_message,
+                    filter_params=request.POST,
+                )
+            )
+
+        try:
+            content = export_reviewed_transactions_csv(
+                start_date=quarter_range[0],
+                end_date=quarter_range[1],
+            )
+        except CsvExportError as exc:
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message=str(exc),
+                    filter_params=request.POST,
+                )
+            )
+        except Exception:
+            logger.exception("Bookkeeping CSV export failed")
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message="Die CSV-Datei konnte nicht erstellt werden.",
+                    filter_params=request.POST,
+                )
+            )
+
+        response = HttpResponse(content, content_type="text/csv; charset=utf-8")
+        export_year, export_quarter = export_period.split("-", 1)
+        response["Content-Disposition"] = (
+            f'attachment; filename="Buchungszeilen_{int(export_year)}_'
+            f'{str(export_quarter).upper()}.csv"'
+        )
+        return response
 
     @classmethod
     def _build_import_payload(cls, transaction):
@@ -627,13 +836,9 @@ class BookkeepingOverviewView(TemplateView):
             "purpose": cls._text_or_dash(transaction.purpose),
             "status_code": transaction.status,
             "status": (
-                "Exportiert"
-                if transaction.status == BankTransaction.Status.BOOKED
-                else (
-                    "Buchungsfertig"
-                    if transaction.status == BankTransaction.Status.REVIEWED
-                    else transaction.get_status_display()
-                )
+                "Buchungsfertig"
+                if transaction.status in BOOKING_READY_STATUSES
+                else transaction.get_status_display()
             ),
             "open_reason": (
                 "Buchungsdaten unvollständig"
@@ -888,7 +1093,7 @@ class BookingEntryView(TemplateView):
     ):
         if bank_transaction.status == BankTransaction.Status.MATCHED:
             page_heading = "Buchungsdaten ergänzen"
-        elif bank_transaction.status == BankTransaction.Status.REVIEWED:
+        elif bank_transaction.status in BOOKING_READY_STATUSES:
             page_heading = "Buchungsdaten bearbeiten"
         else:
             page_heading = "Buchung erfassen"
@@ -919,18 +1124,7 @@ class BookingEntryView(TemplateView):
         bank_transaction,
         navigation_context,
     ):
-        if bank_transaction.status != BankTransaction.Status.BOOKED:
-            return None
-        messages.error(
-            request,
-            "Exportierte Transaktionen können nicht bearbeitet werden.",
-        )
-        return redirect(
-            _overview_url(
-                navigation_context["selected_status"],
-                navigation_context["selected_month"],
-            )
-        )
+        return None
 
     def get(self, request, *args, **kwargs):
         bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
@@ -987,23 +1181,11 @@ class BookingEntryView(TemplateView):
                 locked_transaction = BankTransaction.objects.select_for_update().get(
                     pk=bank_transaction.pk
                 )
-                if locked_transaction.status == BankTransaction.Status.BOOKED:
-                    messages.error(
-                        request,
-                        "Exportierte Transaktionen können nicht bearbeitet werden.",
-                    )
-                    return redirect(
-                        _overview_url(
-                            navigation_context["selected_status"],
-                            navigation_context["selected_month"],
-                        )
-                    )
-
                 formset.instance = locked_transaction
                 formset.save()
                 locked_transaction.notes = notes_form.cleaned_data["notes"]
                 update_fields = ["notes"]
-                if finalize:
+                if finalize and locked_transaction.status != BankTransaction.Status.BOOKED:
                     locked_transaction.status = BankTransaction.Status.REVIEWED
                     update_fields.append("status")
                 locked_transaction.save(update_fields=update_fields)
