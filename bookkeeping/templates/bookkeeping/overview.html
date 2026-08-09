@@ -179,6 +179,9 @@
                 {% for statement in bank_statements %}
                 <tr>
                     <td class="bookkeeping-actions">
+                        {% if statement.paperless_document_url %}
+                        <a href="{{ statement.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>
+                        {% endif %}
                         {% if statement.can_retry %}
                         <form method="post">
                             {% csrf_token %}
@@ -216,9 +219,6 @@
                         <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Übertragung läuft</span>
                         {% else %}
                         <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-danger">Fehlgeschlagen</span>
-                        {% endif %}
-                        {% if statement.paperless_document_url %}
-                        <a href="{{ statement.paperless_document_url }}" target="_blank" rel="noopener" class="bookkeeping-paperless-link">In Paperless öffnen</a>
                         {% endif %}
                         {% if statement.paperless_error %}<small class="bookkeeping-table-detail">{{ statement.paperless_error }}</small>{% endif %}
                     </td>
@@ -299,6 +299,10 @@
             <div><span>Summe Banktransaktionen</span><strong>{{ quarter_control.bank_transaction_total }}</strong></div>
             <div><span>Summe Buchungszeilen</span><strong>{{ quarter_control.booking_entry_total }}</strong></div>
             <div><span>Differenz</span><strong>{{ quarter_control.difference }}</strong></div>
+            {% if quarter_control.manual_booking_entries %}
+            <div><span>Manuelle Buchungszeilen</span><strong>{{ quarter_control.manual_booking_entries }}</strong></div>
+            <div><span>Summe manuelle Belege</span><strong>{{ quarter_control.manual_booking_entry_total }}</strong></div>
+            {% endif %}
         </div>
 
         {% if quarter_control.inconsistent_transactions %}
@@ -455,7 +459,12 @@
             {% for transaction in transactions %}
             <tr>
                 <td class="bookkeeping-actions">
-                    {% if transaction.status_code == "imported" %}
+                    {% if transaction.manual_invoice %}
+                    <div class="bookkeeping-action-buttons">
+                        <a href="{{ transaction.manual_invoice_url }}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
+                        {% if transaction.paperless_document_url %}<a href="{{ transaction.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
+                    </div>
+                    {% elif transaction.status_code == "imported" %}
                     <div class="bookkeeping-action-buttons">
                         <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchung erfassen</a>
                     </div>
@@ -536,10 +545,11 @@
                     <details class="bookkeeping-row-details">
                         <summary>Weitere Details</summary>
                         <dl class="bookkeeping-row-details-list">
+                            {% if transaction.manual_invoice %}<div><dt>Belegart</dt><dd>Manueller Beleg</dd></div>{% endif %}
                             <div><dt>IBAN</dt><dd>{{ transaction.iban|default:"–" }}</dd></div>
                             {% if selected_status != "imported" %}
-                            <div><dt>Matching-Regel</dt><dd>{% if transaction.matched_rule_id %}<a href="{{ transaction.matched_rule_url }}">{{ transaction.matched_rule }}</a>{% else %}{{ transaction.matched_rule|default:"–" }}{% endif %}</dd></div>
-                            <div><dt>Matching-Erklärung</dt><dd>{{ transaction.matching_rule_notes|default:"–" }}</dd></div>
+                            {% if not transaction.manual_invoice %}<div><dt>Matching-Regel</dt><dd>{% if transaction.matched_rule_id %}<a href="{{ transaction.matched_rule_url }}">{{ transaction.matched_rule }}</a>{% else %}{{ transaction.matched_rule|default:"–" }}{% endif %}</dd></div>
+                            <div><dt>Matching-Erklärung</dt><dd>{{ transaction.matching_rule_notes|default:"–" }}</dd></div>{% endif %}
                             {% if transaction.status_code != "imported" %}
                             <div><dt>Anmerkung</dt><dd>{{ transaction.notes|default:"–" }}</dd></div>
                             {% endif %}

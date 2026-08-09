@@ -1,0 +1,97 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}Manuelle Belege – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="manual-invoices-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="manual-invoices-heading" class="bookkeeping-page-title">Manuelle Belege</h1>
+            <p class="bookkeeping-page-description">Privat bezahlte Rechnungen erfassen und archivieren.</p>
+        </div>
+    </div>
+
+    {% if messages %}
+    <div class="bookkeeping-message-stack" aria-live="polite">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }} bookkeeping-message" role="alert">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <section class="bookkeeping-card bookkeeping-manual-invoice-upload" aria-labelledby="manual-invoice-upload-heading">
+        <h2 id="manual-invoice-upload-heading" class="bookkeeping-section-title">Rechnung hochladen</h2>
+        <form method="post" enctype="multipart/form-data" class="bookkeeping-manual-invoice-upload-form">
+            {% csrf_token %}
+            <div>
+                <label for="{{ manual_invoice_upload_form.pdf.id_for_label }}" class="form-label">PDF-Datei</label>
+                {{ manual_invoice_upload_form.pdf }}
+                {% for error in manual_invoice_upload_form.pdf.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+            </div>
+            <button type="submit" class="btn btn-primary">Rechnung hochladen</button>
+        </form>
+    </section>
+
+    <section class="bookkeeping-card" aria-labelledby="manual-invoice-list-heading">
+        <div class="bookkeeping-card-heading">
+            <h2 id="manual-invoice-list-heading" class="bookkeeping-section-title">Offene manuelle Belege</h2>
+        </div>
+        {% if manual_invoices %}
+        <div class="bookkeeping-table-wrap" role="region" aria-label="Manuelle Belege" tabindex="0">
+            <table class="table table-hover align-middle mb-0 bookkeeping-data-table bookkeeping-manual-invoice-table">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">Aktionen</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Zahlungsdatum</th>
+                        <th scope="col">Rechnungsnummer</th>
+                        <th scope="col">Lieferant/Kunde</th>
+                        <th class="bookkeeping-amount" scope="col">Bruttobetrag</th>
+                        <th scope="col">Paperless</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for invoice in manual_invoices %}
+                    <tr>
+                        <td class="bookkeeping-actions">
+                            <div class="bookkeeping-action-buttons">
+                                <a href="{% url 'manual_invoice_edit' invoice.id %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
+                                {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
+                                {% if invoice.can_retry %}
+                                <form method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="retry_manual_invoice">
+                                    <input type="hidden" name="invoice_id" value="{{ invoice.id }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Übertragung wiederholen</button>
+                                </form>
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td><span class="badge bookkeeping-badge bookkeeping-badge-status">{{ invoice.status }}</span></td>
+                        <td>{{ invoice.payment_date }}</td>
+                        <td>{{ invoice.invoice_number }}</td>
+                        <td>{{ invoice.partner_name }}</td>
+                        <td class="bookkeeping-amount">{{ invoice.gross_amount }}</td>
+                        <td>
+                            {% if invoice.paperless_status == "completed" %}
+                            <span class="badge bookkeeping-status-badge bookkeeping-status-badge-success">Abgelegt</span>
+                            {% elif invoice.paperless_status == "pending" %}
+                            <span class="badge bookkeeping-status-badge bookkeeping-status-badge-warning">Übertragung läuft</span>
+                            {% elif invoice.paperless_status == "failed" %}
+                            <span class="badge bookkeeping-status-badge bookkeeping-status-badge-danger">Fehlgeschlagen</span>
+                            <small class="bookkeeping-table-detail">{{ invoice.paperless_error }}</small>
+                            {% else %}
+                            <span class="bookkeeping-muted">Noch nicht übertragen</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="bookkeeping-empty-state">Keine offenen manuellen Belege vorhanden.</p>
+        {% endif %}
+    </section>
+</section>
+{% endblock %}

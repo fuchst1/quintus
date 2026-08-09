@@ -27,6 +27,10 @@
                     <i class="bi bi-upload" aria-hidden="true"></i>
                     <span>Bankimport</span>
                 </a>
+                <a href="{% url 'manual_invoice_list' %}" class="bookkeeping-nav-link {% if request.resolver_match.url_name == 'manual_invoice_list' or request.resolver_match.url_name == 'manual_invoice_edit' %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="manual-invoices" data-server-active="{% if request.resolver_match.url_name == 'manual_invoice_list' or request.resolver_match.url_name == 'manual_invoice_edit' %}true{% else %}false{% endif %}">
+                    <i class="bi bi-receipt" aria-hidden="true"></i>
+                    <span>Manuelle Belege</span>
+                </a>
                 {% for item in status_navigation %}
                 <a href="{{ item.url }}" class="bookkeeping-nav-link {% if item.active %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="{{ item.value }}" data-server-active="{{ item.active|yesno:'true,false' }}">
                     <i class="bi {{ item.icon }}" aria-hidden="true"></i>

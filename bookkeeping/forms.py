@@ -6,7 +6,12 @@ from django.core.exceptions import ValidationError
 from django.forms.boundfield import BoundField
 from django.forms.models import BaseInlineFormSet, inlineformset_factory
 
-from .choices import DEFAULT_VAT_SYMBOL, RECEIPT_GROUP_BANK, RECEIPT_GROUP_CHOICES
+from .choices import (
+    DEFAULT_VAT_SYMBOL,
+    RECEIPT_GROUP_BANK,
+    RECEIPT_GROUP_CHOICES,
+    RECEIPT_GROUP_PRIVATE,
+)
 from .category_display import category_description_choices
 from .formatting import (
     format_austrian_decimal,
@@ -19,6 +24,8 @@ from .models import (
     IBAN_PATTERN,
     MatchingRule,
     MatchingRuleBookingTemplate,
+    ManualInvoice,
+    ManualInvoiceEntry,
     QuarterBalance,
     normalize_iban,
 )
@@ -129,6 +136,15 @@ class BankStatementUploadForm(forms.Form):
         if file_header != b"%PDF-":
             raise forms.ValidationError("Die Datei ist kein gültiges PDF.")
         return uploaded_file
+
+
+class ManualInvoiceUploadForm(BankStatementUploadForm):
+    pdf = forms.FileField(
+        label="Rechnung als PDF",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": "application/pdf,.pdf"}
+        ),
+    )
 
 
 class MatchingRuleForm(forms.ModelForm):
@@ -508,6 +524,275 @@ BookingEntryFormSet = inlineformset_factory(
     BookingEntry,
     form=BookingEntryForm,
     formset=BookingEntryFormSetBase,
+    extra=0,
+    can_delete=True,
+)
+
+
+class ManualInvoiceForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    invoice_date = forms.DateField(
+        required=False,
+        input_formats=("%d.%m.%Y", "%Y-%m-%d"),
+        widget=forms.DateInput(
+            format="%d.%m.%Y",
+            attrs={"class": "form-control", "placeholder": "TT.MM.JJJJ"},
+        ),
+    )
+    payment_date = forms.DateField(
+        required=False,
+        input_formats=("%d.%m.%Y", "%Y-%m-%d"),
+        widget=forms.DateInput(
+            format="%d.%m.%Y",
+            attrs={"class": "form-control", "placeholder": "TT.MM.JJJJ"},
+        ),
+    )
+    gross_amount = AustrianDecimalField(
+        required=False,
+        max_digits=14,
+        decimal_places=2,
+        label="Gesamtbruttobetrag",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+
+    class Meta:
+        model = ManualInvoice
+        fields = (
+            "invoice_number",
+            "invoice_date",
+            "payment_date",
+            "partner_name",
+            "gross_amount",
+            "notes",
+        )
+        labels = {
+            "invoice_number": "Rechnungsnummer",
+            "invoice_date": "Rechnungsdatum",
+            "payment_date": "Zahlungsdatum",
+            "partner_name": "Lieferant/Kunde",
+            "gross_amount": "Gesamtbruttobetrag",
+            "notes": "Anmerkung",
+        }
+        widgets = {
+            "invoice_number": forms.TextInput(attrs={"class": "form-control"}),
+            "partner_name": forms.TextInput(attrs={"class": "form-control"}),
+            "notes": forms.Textarea(
+                attrs={"class": "form-control", "rows": 3}
+            ),
+        }
+
+    def __init__(self, *args, final=False, **kwargs):
+        self.final = final
+        super().__init__(*args, **kwargs)
+        if final:
+            for field_name in ("payment_date", "partner_name", "gross_amount"):
+                self.fields[field_name].required = True
+
+
+class ManualInvoiceEntryForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    position = forms.IntegerField(
+        required=False,
+        widget=forms.HiddenInput(),
+    )
+    receipt_group = forms.ChoiceField(
+        choices=((RECEIPT_GROUP_PRIVATE, "PR – Privat"),),
+        required=False,
+        disabled=True,
+        label="Belegkreis",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    receipt_number = forms.CharField(
+        required=False,
+        disabled=True,
+        label="Belegnummer",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "readonly": "readonly"}
+        ),
+    )
+    payment_date = forms.DateField(
+        required=False,
+        disabled=True,
+        label="Zahlungsdatum",
+        input_formats=("%d.%m.%Y", "%Y-%m-%d"),
+        widget=forms.DateInput(
+            format="%d.%m.%Y",
+            attrs={"class": "form-control", "readonly": "readonly"},
+        ),
+    )
+    gross_amount = AustrianDecimalField(
+        required=False,
+        max_digits=14,
+        decimal_places=2,
+        label="Bruttobetrag",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+
+    class Meta:
+        model = ManualInvoiceEntry
+        fields = (
+            "position",
+            "receipt_group",
+            "receipt_number",
+            "payment_date",
+            "booking_text",
+            "invoice_number",
+            "partner_name",
+            "gross_amount",
+            "vat_symbol",
+            "category",
+        )
+        labels = {
+            "position": "Position",
+            "receipt_group": "Belegkreis",
+            "receipt_number": "Belegnummer",
+            "payment_date": "Zahlungsdatum",
+            "booking_text": "Buchungstext",
+            "invoice_number": "Rechnungsnummer",
+            "partner_name": "Lieferant/Kunde",
+            "gross_amount": "Bruttobetrag",
+            "vat_symbol": "USt-Symbol",
+            "category": "Kategorie",
+        }
+        widgets = {
+            "booking_text": forms.TextInput(attrs={"class": "form-control"}),
+            "invoice_number": forms.TextInput(attrs={"class": "form-control"}),
+            "partner_name": forms.TextInput(attrs={"class": "form-control"}),
+            "vat_symbol": forms.Select(attrs={"class": "form-select"}),
+            "category": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def __init__(self, *args, manual_invoice=None, final=False, **kwargs):
+        self.manual_invoice = manual_invoice
+        self.final = final
+        super().__init__(*args, **kwargs)
+        self.fields["category"].choices = category_description_choices()
+        for field_name in (
+            "booking_text",
+            "partner_name",
+            "gross_amount",
+            "vat_symbol",
+            "category",
+        ):
+            self.fields[field_name].required = final
+        invoice = manual_invoice
+        if invoice is not None:
+            self.initial.setdefault("receipt_group", RECEIPT_GROUP_PRIVATE)
+            if invoice.payment_date:
+                self.initial["payment_date"] = invoice.payment_date
+                self.initial["receipt_number"] = str(invoice.payment_date.month)
+            self.initial.setdefault("invoice_number", invoice.invoice_number)
+            self.initial.setdefault("partner_name", invoice.partner_name)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        cleaned_data["receipt_group"] = RECEIPT_GROUP_PRIVATE
+        invoice = self.manual_invoice
+        if invoice is not None and invoice.payment_date:
+            cleaned_data["payment_date"] = invoice.payment_date
+            cleaned_data["receipt_number"] = str(invoice.payment_date.month)
+        if invoice is not None:
+            if not cleaned_data.get("invoice_number"):
+                cleaned_data["invoice_number"] = invoice.invoice_number
+            if not cleaned_data.get("partner_name") and invoice.partner_name:
+                cleaned_data["partner_name"] = invoice.partner_name
+        return cleaned_data
+
+
+def _manual_rounding_difference_message(total, invoice_amount, difference):
+    return (
+        f"Buchungszeilen: {format_austrian_decimal(total)} EUR · "
+        f"Rechnung: {format_austrian_decimal(invoice_amount)} EUR · "
+        f"Differenz: {format_austrian_decimal(difference)} EUR"
+    )
+
+
+class ManualInvoiceEntryFormSetBase(BaseInlineFormSet):
+    def __init__(self, *args, manual_invoice=None, final=False, **kwargs):
+        self.manual_invoice = manual_invoice
+        self.final = final
+        self.rounding_difference = Decimal("0")
+        super().__init__(*args, **kwargs)
+
+    def _active_forms(self):
+        return [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+
+    def clean(self):
+        super().clean()
+        if any(self.errors) or not self.final:
+            return
+        active_forms = self._active_forms()
+        if not active_forms:
+            raise ValidationError("Mindestens eine Buchungszeile ist erforderlich.")
+        invoice_amount = (
+            self.manual_invoice.gross_amount
+            if self.manual_invoice is not None
+            else None
+        )
+        if invoice_amount is None:
+            return
+        total = sum(
+            (form.cleaned_data.get("gross_amount") or Decimal("0")
+             for form in active_forms),
+            Decimal("0"),
+        )
+        self.rounding_difference = invoice_amount - total
+        if abs(self.rounding_difference) > ROUNDING_DIFFERENCE:
+            raise ValidationError(
+                _manual_rounding_difference_message(
+                    total,
+                    invoice_amount,
+                    self.rounding_difference,
+                )
+            )
+
+    def apply_rounding_difference(self):
+        if abs(self.rounding_difference) != ROUNDING_DIFFERENCE:
+            return False
+        active_forms = self._active_forms()
+        if not active_forms:
+            return False
+        target_form = active_forms[0]
+        for form in active_forms[1:]:
+            if abs(form.cleaned_data["gross_amount"]) > abs(
+                target_form.cleaned_data["gross_amount"]
+            ):
+                target_form = form
+        adjusted_amount = (
+            target_form.cleaned_data["gross_amount"] + self.rounding_difference
+        )
+        target_form.cleaned_data["gross_amount"] = adjusted_amount
+        target_form.instance.gross_amount = adjusted_amount
+        return True
+
+    def save(self, commit=True):
+        active_forms = self._active_forms()
+        for position, form in enumerate(active_forms, start=1):
+            # Position is required by the model.  Set it before the parent
+            # formset saves new instances; an empty hidden position field must
+            # not result in NULL being written to the database.
+            form.instance.position = position
+            form.instance.receipt_group = RECEIPT_GROUP_PRIVATE
+
+        objects = super().save(commit=commit)
+        return objects
+
+
+ManualInvoiceEntryFormSet = inlineformset_factory(
+    ManualInvoice,
+    ManualInvoiceEntry,
+    form=ManualInvoiceEntryForm,
+    formset=ManualInvoiceEntryFormSetBase,
     extra=0,
     can_delete=True,
 )

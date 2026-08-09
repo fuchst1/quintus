@@ -259,6 +259,61 @@
     padding-top: 0;
 }
 
+.bookkeeping-manual-invoice-upload,
+.bookkeeping-manual-invoice-data {
+    margin-bottom: 0.8rem;
+}
+
+.bookkeeping-manual-invoice-upload-form {
+    align-items: end;
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: minmax(16rem, 1fr) auto;
+    margin-top: 0.65rem;
+}
+
+.bookkeeping-manual-invoice-data-grid {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    margin-top: 0.65rem;
+}
+
+.bookkeeping-manual-invoice-data-grid .form-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+}
+
+.bookkeeping-manual-invoice-table {
+    min-width: 66rem;
+}
+
+.bookkeeping-manual-invoice-totals {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0.8rem 0;
+}
+
+.bookkeeping-manual-invoice-totals > div {
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.55rem 0.7rem;
+}
+
+.bookkeeping-manual-invoice-totals span {
+    color: #5f6b78;
+    font-size: 0.78rem;
+}
+
+.bookkeeping-manual-invoice-totals strong {
+    font-size: 0.9rem;
+}
+
 .bookkeeping-dashboard-grid {
     display: grid;
     gap: 0.75rem;
@@ -1807,5 +1862,11 @@
     .bookkeeping-filter-card {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .bookkeeping-manual-invoice-upload-form,
+    .bookkeeping-manual-invoice-data-grid,
+    .bookkeeping-manual-invoice-totals {
+        grid-template-columns: minmax(0, 1fr);
     }
 }

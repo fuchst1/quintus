@@ -29,6 +29,8 @@ from .bank_statements import (
 )
 from .forms import (
     BookingEntryForm,
+    ManualInvoiceEntryFormSet,
+    ManualInvoiceForm,
     MatchingRuleBookingTemplateForm,
     MatchingRuleForm,
 )
@@ -39,8 +41,11 @@ from .models import (
     BookingEntry,
     MatchingRule,
     MatchingRuleBookingTemplate,
+    ManualInvoice,
+    ManualInvoiceEntry,
     QuarterBalance,
 )
+from .manual_invoices import refresh_pending_manual_invoice_tasks
 from .paperless import BookkeepingPaperlessError, PaperlessClient
 from .views import BookkeepingOverviewView
 
@@ -2421,12 +2426,39 @@ class BankStatementFeatureTests(TestCase):
         self.assertContains(response, "Importierte Kontoauszüge")
         self.assertContains(response, "In Paperless öffnen")
         self.assertContains(response, "Abgelegt")
+        self.assertIn(
+            'href="https://paperless.example/documents/256/"',
+            content,
+        )
+        self.assertIn('target="_blank"', content)
+        self.assertIn('rel="noopener noreferrer"', content)
+        self.assertEqual(content.count("In Paperless öffnen"), 1)
+        self.assertNotIn("bookkeeping-paperless-link", content)
+        self.assertLess(
+            content.index('href="https://paperless.example/documents/256/"'),
+            content.index('<td class="bookkeeping-statement-month">'),
+        )
         self.assertNotContains(response, "<th>Quartal</th>")
         self.assertLess(
             content.index('<th class="bookkeeping-actions" scope="col">Aktionen</th>'),
             content.index("<th scope=\"col\">Monat</th>"),
         )
         self.assertIn(str(statement.pk), content)
+
+    def test_failed_statement_without_document_id_keeps_retry_action_without_link(self):
+        statement = self.pending_statement()
+        statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+        statement.paperless_document_id = None
+        statement.save(update_fields=("paperless_status", "paperless_document_id"))
+
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "bank_import"},
+        )
+
+        self.assertContains(response, "Erneut übertragen")
+        self.assertNotContains(response, "In Paperless öffnen")
+        self.assertNotContains(response, "/documents/")
 
     def test_new_upload_uses_reference_uuid_in_paperless_custom_field(self):
         statement = self.pending_statement()
@@ -5904,3 +5936,530 @@ class MatchingRuleVersionTests(TestCase):
         self.assertFalse(rule.active)
         self.assertEqual(bank_transaction.matched_rule_id, rule.pk)
         self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+
+
+class ManualInvoiceTests(TestCase):
+    def upload_invoice(self, content=b"%PDF- manual invoice"):
+        uploaded_file = SimpleUploadedFile(
+            "rechnung.pdf",
+            content,
+            content_type="application/pdf",
+        )
+        return self.client.post(
+            reverse("manual_invoice_list"),
+            {"pdf": uploaded_file},
+        )
+
+    def finalize_data(self, amount="100,00", rows=None, invoice_amount="100,00"):
+        rows = [
+            {
+                "booking_text": "Büromaterial",
+                "invoice_number": "RG-7",
+                "partner_name": "Lieferant",
+                "gross_amount": amount,
+                "vat_symbol": "20",
+                "category": "7600",
+            }
+        ] if rows is None else rows
+        data = {
+            "action": "finalize",
+            "invoice_number": "RG-7",
+            "invoice_date": "2026-07-10",
+            "payment_date": "2026-07-15",
+            "partner_name": "Lieferant",
+            "gross_amount": invoice_amount,
+            "notes": "Privat bezahlt",
+            "entries-TOTAL_FORMS": str(len(rows)),
+            "entries-INITIAL_FORMS": "0",
+            "entries-MIN_NUM_FORMS": "0",
+            "entries-MAX_NUM_FORMS": "1000",
+        }
+        for index, row in enumerate(rows):
+            data.update(
+                {
+                    f"entries-{index}-position": str(index + 1),
+                    f"entries-{index}-receipt_group": "PR",
+                    f"entries-{index}-receipt_number": "7",
+                    f"entries-{index}-payment_date": "2026-07-15",
+                    f"entries-{index}-booking_text": row["booking_text"],
+                    f"entries-{index}-invoice_number": row.get("invoice_number", ""),
+                    f"entries-{index}-partner_name": row["partner_name"],
+                    f"entries-{index}-gross_amount": row["gross_amount"],
+                    f"entries-{index}-vat_symbol": row["vat_symbol"],
+                    f"entries-{index}-category": row["category"],
+                }
+            )
+        return data
+
+    def uploaded_invoice(self):
+        response = self.upload_invoice()
+        self.assertEqual(response.status_code, 302)
+        return ManualInvoice.objects.get()
+
+    def test_manual_invoice_worklist_contains_only_drafts(self):
+        draft = ManualInvoice.objects.create(
+            file_hash="d" * 64,
+            invoice_number="ENTWURF-1",
+            partner_name="Offener Lieferant",
+        )
+        ready = ManualInvoice.objects.create(
+            file_hash="r" * 64,
+            status=ManualInvoice.Status.READY,
+            invoice_number="FERTIG-1",
+            partner_name="Fertiger Lieferant",
+        )
+
+        response = self.client.get(reverse("manual_invoice_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Offene manuelle Belege")
+        self.assertContains(response, draft.invoice_number)
+        self.assertNotContains(response, ready.invoice_number)
+        self.assertNotContains(response, ready.partner_name)
+
+    def test_empty_manual_invoice_worklist_has_compact_message(self):
+        response = self.client.get(reverse("manual_invoice_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Keine offenen manuellen Belege vorhanden.")
+
+    def test_completed_invoice_leaves_worklist_and_remains_available(self):
+        invoice = self.uploaded_invoice()
+        original_uuid = invoice.reference_uuid
+        invoice.paperless_document_id = 256
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+        invoice.save(
+            update_fields=(
+                "paperless_document_id",
+                "paperless_status",
+                "updated_at",
+            )
+        )
+
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        invoice.refresh_from_db()
+        worklist_response = self.client.get(response["Location"])
+        self.assertContains(worklist_response, "Rechnung geprüft und abgeschlossen.")
+        self.assertNotContains(worklist_response, invoice.invoice_number)
+        self.assertNotContains(worklist_response, invoice.partner_name)
+
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertEqual(invoice.paperless_document_id, 256)
+        self.assertEqual(invoice.reference_uuid, original_uuid)
+
+        ready_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": "reviewed",
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        self.assertContains(ready_response, "Büromaterial")
+        self.assertContains(
+            ready_response,
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+        )
+        edit_response = self.client.get(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk})
+        )
+        self.assertEqual(edit_response.status_code, 200)
+        self.assertContains(edit_response, "Büromaterial")
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example")
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_ready_manual_invoice_shows_paperless_link_in_month_and_quarter_views(
+        self, upload
+    ):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+        self.assertEqual(response.status_code, 302)
+        invoice.refresh_from_db()
+        invoice.paperless_document_id = 256
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+        invoice.save(
+            update_fields=(
+                "paperless_document_id",
+                "paperless_status",
+                "updated_at",
+            )
+        )
+
+        bank_transaction = BankTransaction.objects.create(
+            booking_date=date(2026, 7, 20),
+            partner_name="Normale Banktransaktion",
+            amount=Decimal("50.00"),
+            direction=BankTransaction.Direction.OUTGOING,
+            status=BankTransaction.Status.REVIEWED,
+        )
+        BookingEntry.objects.create(
+            bank_transaction=bank_transaction,
+            payment_date=bank_transaction.booking_date,
+            booking_text="Normale Bankbuchung",
+            partner_name=bank_transaction.partner_name,
+            gross_amount=bank_transaction.amount,
+            vat_symbol="20",
+            category="7600",
+        )
+
+        for period_params in (
+            {"period_type": "month", "period": "2026-07"},
+            {"period_type": "quarter", "period": "2026-Q3"},
+        ):
+            ready_response = self.client.get(
+                reverse("bookkeeping_overview"),
+                {"status": "reviewed", **period_params},
+            )
+            content = ready_response.content.decode()
+            self.assertContains(ready_response, "Bearbeiten")
+            self.assertContains(ready_response, "In Paperless öffnen")
+            self.assertIn(
+                'href="https://paperless.example/documents/256/"',
+                content,
+            )
+            self.assertIn('target="_blank"', content)
+            self.assertIn('rel="noopener noreferrer"', content)
+            self.assertEqual(
+                content.count('href="https://paperless.example/documents/256/"'),
+                1,
+            )
+            self.assertContains(ready_response, "Normale Banktransaktion")
+
+        upload.assert_called_once_with(invoice)
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example")
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_ready_manual_invoice_without_paperless_id_has_no_link(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        ready_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": "reviewed",
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        self.assertContains(ready_response, "Bearbeiten")
+        self.assertNotContains(ready_response, "In Paperless öffnen")
+        self.assertNotContains(ready_response, "/documents/")
+        upload.assert_called_once_with(invoice)
+
+    def test_initial_visible_line_is_submitted_with_negative_amount(self):
+        invoice = self.uploaded_invoice()
+        response = self.client.get(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="entries-TOTAL_FORMS" value="1"')
+        self.assertContains(response, 'name="entries-0-booking_text"')
+        self.assertContains(response, 'name="entries-0-gross_amount"')
+        self.assertContains(response, 'name="entries-__prefix__-booking_text"')
+
+        with patch.object(
+            PaperlessClient,
+            "upload_manual_invoice",
+            return_value="task-manual",
+        ) as upload:
+            data = self.finalize_data(
+                amount="-19,32",
+                invoice_amount="-19,32",
+            )
+            # This is the value sent by the visible initial form row.  The
+            # server must calculate the position before saving the instance.
+            data["entries-0-position"] = ""
+            response = self.client.post(
+                reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+                data,
+            )
+
+        invoice.refresh_from_db()
+        entry = invoice.booking_entries.get()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertEqual(entry.booking_text, "Büromaterial")
+        self.assertEqual(entry.gross_amount, Decimal("-19.32"))
+        self.assertEqual(entry.vat_symbol, "20")
+        self.assertEqual(entry.category, "7600")
+        upload.assert_called_once_with(invoice)
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_invoice_with_one_line_is_ready_with_private_receipt_defaults(self, upload):
+        invoice = self.uploaded_invoice()
+
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+
+        invoice.refresh_from_db()
+        entry = invoice.booking_entries.get()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.PENDING)
+        self.assertEqual(entry.receipt_group, "PR")
+        self.assertEqual(entry.receipt_number, "7")
+        self.assertEqual(entry.payment_date, date(2026, 7, 15))
+        upload.assert_called_once_with(invoice)
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_multiple_vat_rates_and_negative_line_are_supported(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(
+                rows=[
+                    {
+                        "booking_text": "Nettozeile",
+                        "invoice_number": "RG-7",
+                        "partner_name": "Lieferant",
+                        "gross_amount": "120,00",
+                        "vat_symbol": "20",
+                        "category": "7600",
+                    },
+                    {
+                        "booking_text": "Korrektur",
+                        "invoice_number": "RG-7",
+                        "partner_name": "Lieferant",
+                        "gross_amount": "-20,00",
+                        "vat_symbol": "0",
+                        "category": "4830",
+                    },
+                ]
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.booking_entries.count(), 2)
+        self.assertEqual(
+            list(invoice.booking_entries.values_list("vat_symbol", flat=True)),
+            ["20", "0"],
+        )
+        self.assertEqual(
+            sum(invoice.booking_entries.values_list("gross_amount", flat=True)),
+            Decimal("100.00"),
+        )
+        upload.assert_called_once()
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_rounding_tolerance_is_applied_to_largest_line(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(amount="99,99"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.booking_entries.count(), 1)
+        self.assertEqual(invoice.booking_entries.get().gross_amount, Decimal("100.00"))
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_larger_sum_difference_blocks_completion(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(amount="90,00"),
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Differenz")
+        self.assertContains(response, "Büromaterial")
+        self.assertContains(response, 'value="90,00"')
+        self.assertContains(response, 'value="7600"')
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertFalse(invoice.booking_entries.exists())
+        upload.assert_not_called()
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_deleted_line_is_not_counted(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(
+                rows=[
+                    {
+                        "booking_text": "Nicht speichern",
+                        "invoice_number": "RG-7",
+                        "partner_name": "Lieferant",
+                        "gross_amount": "100,00",
+                        "vat_symbol": "20",
+                        "category": "7600",
+                    },
+                    {
+                        "booking_text": "Übrige Zeile",
+                        "invoice_number": "RG-7",
+                        "partner_name": "Lieferant",
+                        "gross_amount": "100,00",
+                        "vat_symbol": "0",
+                        "category": "4830",
+                    },
+                ]
+            )
+            | {"entries-0-DELETE": "on"},
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertEqual(invoice.booking_entries.count(), 1)
+        self.assertEqual(invoice.booking_entries.get().booking_text, "Übrige Zeile")
+        upload.assert_called_once_with(invoice)
+
+    def test_empty_formset_still_requires_a_booking_line(self):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(rows=[]),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Mindestens eine Buchungszeile ist erforderlich.")
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertFalse(invoice.booking_entries.exists())
+
+    def test_identical_file_hash_is_rejected_without_second_invoice(self):
+        first = self.upload_invoice()
+        self.assertEqual(first.status_code, 302)
+        second = self.upload_invoice()
+
+        self.assertEqual(second.status_code, 200)
+        self.assertContains(second, "Diese Rechnung wurde bereits importiert.")
+        self.assertEqual(ManualInvoice.objects.count(), 1)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example",
+        PAPERLESS_API_TOKEN="test-token",
+    )
+    @patch.object(PaperlessClient, "_find_exact_name", return_value=5)
+    @patch.object(PaperlessClient, "_require_named", side_effect=(1, 2, 3, 4))
+    @patch.object(PaperlessClient, "_require_custom_field", side_effect=(6, 7, 8, 9))
+    @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-manual"})
+    def test_paperless_metadata_uses_manual_invoice_names_and_uuid(
+        self, multipart, custom_fields, named, find_name
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="a" * 64,
+            payment_date=date(2026, 7, 15),
+            invoice_date=date(2026, 7, 10),
+            invoice_number="RG-7",
+            partner_name="Lieferant",
+            gross_amount=Decimal("100.00"),
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        task_id = PaperlessClient.upload_manual_invoice(invoice)
+
+        self.assertEqual(task_id, "task-manual")
+        fields = dict(multipart.call_args.kwargs["form_fields"])
+        custom_values = json.loads(fields["custom_fields"])
+        self.assertEqual(custom_values["6"], str(invoice.reference_uuid))
+        self.assertEqual(custom_values["7"], "2026-07-15")
+        self.assertEqual(custom_values["8"], "2026-07")
+        self.assertEqual(custom_values["9"], "2026-Q3")
+        self.assertEqual(fields["document_type"], "2")
+        self.assertEqual(fields["correspondent"], "1")
+        self.assertEqual(fields["storage_path"], "5")
+        self.assertEqual(fields["created"], "2026-07-10")
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", side_effect=BookkeepingPaperlessError("Paperless nicht erreichbar."))
+    def test_paperless_error_keeps_draft_and_booking_data_and_retry_is_possible(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Paperless nicht erreichbar.")
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertTrue(invoice.booking_entries.exists())
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.FAILED)
+
+        upload.side_effect = None
+        upload.return_value = "retry-task"
+        retry_response = self.client.post(
+            reverse("manual_invoice_list"),
+            {"action": "retry_manual_invoice", "invoice_id": invoice.pk},
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(retry_response.status_code, 302)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.PENDING)
+        self.assertEqual(invoice.paperless_task_id, "retry-task")
+        self.assertEqual(upload.call_count, 2)
+
+    @patch.object(
+        PaperlessClient,
+        "task_status",
+        return_value={"status": "completed", "document_id": 256},
+    )
+    def test_completed_task_sets_document_id_and_removes_temporary_pdf(self, task_status):
+        invoice = ManualInvoice.objects.create(
+            file_hash="b" * 64,
+            payment_date=date(2026, 7, 15),
+            paperless_task_id="task-manual",
+            paperless_status=ManualInvoice.PaperlessStatus.PENDING,
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+        stored_name = invoice.temporary_pdf.name
+
+        refresh_pending_manual_invoice_tasks()
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.paperless_document_id, 256)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
+        self.assertFalse(invoice.temporary_pdf)
+        self.assertFalse(invoice.temporary_pdf.storage.exists(stored_name))
+        task_status.assert_called_once_with("task-manual")
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
+    def test_ready_manual_entries_are_in_period_control_and_csv(self, upload):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            self.finalize_data(),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        ready_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": "reviewed",
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        self.assertContains(ready_response, "Lieferant")
+        self.assertEqual(ready_response.context["quarter_control"]["manual_booking_entries"], 1)
+        self.assertContains(ready_response, "Manuelle Buchungszeilen")
+
+        from .csv_export import export_reviewed_transactions_csv
+
+        csv_content = export_reviewed_transactions_csv(
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 31),
+        ).decode("utf-8-sig")
+        self.assertIn("PR;7;15.07.2026;Büromaterial", csv_content)
+        upload.assert_called_once()

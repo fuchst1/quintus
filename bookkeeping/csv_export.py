@@ -5,7 +5,7 @@ from datetime import date
 
 from .category_display import category_description
 from .formatting import format_austrian_decimal
-from .models import BankTransaction, BookingEntry
+from .models import BankTransaction, BookingEntry, ManualInvoice, ManualInvoiceEntry
 
 
 CSV_HEADERS = (
@@ -60,13 +60,30 @@ def export_reviewed_transactions_csv(*, start_date, end_date):
         .select_related("bank_transaction")
         .order_by("payment_date", "bank_transaction_id", "id")
     )
-    if not booking_entries:
+    manual_entries = list(
+        ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+            payment_date__gte=start_date,
+            payment_date__lte=end_date,
+        ).order_by("payment_date", "manual_invoice_id", "position", "id")
+    )
+    all_entries = [*booking_entries, *manual_entries]
+    all_entries.sort(
+        key=lambda entry: (
+            entry.payment_date,
+            str(getattr(entry, "bank_transaction_id", "")),
+            str(getattr(entry, "manual_invoice_id", "")),
+            getattr(entry, "position", 0),
+            str(entry.pk),
+        )
+    )
+    if not all_entries:
         raise CsvExportError(
             "Keine Buchungszeilen im ausgewählten Quartal vorhanden."
         )
 
     try:
-        return _build_csv_content(booking_entries)
+        return _build_csv_content(all_entries)
     except Exception as exc:
         raise CsvExportError(
             "Die CSV-Datei konnte nicht erstellt werden."

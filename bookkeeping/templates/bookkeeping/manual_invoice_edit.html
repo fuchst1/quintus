@@ -1,0 +1,169 @@
+{% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
+
+{% block title %}Manueller Beleg – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="manual-invoice-edit-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="manual-invoice-edit-heading" class="bookkeeping-page-title">Manuellen Beleg erfassen</h1>
+            <p class="bookkeeping-page-description">Rechnungsdaten und Buchungszeilen für einen privat bezahlten Beleg.</p>
+        </div>
+        <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+
+    {% if messages %}
+    <div class="bookkeeping-message-stack" aria-live="polite">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }} bookkeeping-message" role="alert">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if manual_invoice_form.errors or manual_invoice_formset.errors or manual_invoice_formset.non_form_errors %}
+    <div class="alert bookkeeping-validation-alert" role="alert">
+        <div>Bitte korrigieren Sie die markierten Felder.</div>
+        {% for error in manual_invoice_form.non_field_errors %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endfor %}
+        {% for error in manual_invoice_formset.non_form_errors %}<div class="bookkeeping-non-field-error">{{ error }}</div>{% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" class="bookkeeping-entry-form">
+        {% csrf_token %}
+        <section class="bookkeeping-card bookkeeping-manual-invoice-data" aria-labelledby="manual-invoice-data-heading">
+            <h2 id="manual-invoice-data-heading" class="bookkeeping-section-title">Rechnungsdaten</h2>
+            <div class="bookkeeping-manual-invoice-data-grid">
+                <div>
+                    <label for="{{ manual_invoice_form.invoice_number.id_for_label }}" class="form-label">{{ manual_invoice_form.invoice_number.label }}</label>
+                    {{ manual_invoice_form.invoice_number }}
+                    {% for error in manual_invoice_form.invoice_number.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+                </div>
+                <div>
+                    <label for="{{ manual_invoice_form.invoice_date.id_for_label }}" class="form-label">{{ manual_invoice_form.invoice_date.label }}</label>
+                    {{ manual_invoice_form.invoice_date }}
+                    {% for error in manual_invoice_form.invoice_date.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+                </div>
+                <div>
+                    <label for="{{ manual_invoice_form.payment_date.id_for_label }}" class="form-label">{{ manual_invoice_form.payment_date.label }}</label>
+                    {{ manual_invoice_form.payment_date }}
+                    {% for error in manual_invoice_form.payment_date.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+                </div>
+                <div>
+                    <label for="{{ manual_invoice_form.partner_name.id_for_label }}" class="form-label">{{ manual_invoice_form.partner_name.label }}</label>
+                    {{ manual_invoice_form.partner_name }}
+                    {% for error in manual_invoice_form.partner_name.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+                </div>
+                <div>
+                    <label for="{{ manual_invoice_form.gross_amount.id_for_label }}" class="form-label">{{ manual_invoice_form.gross_amount.label }}</label>
+                    {{ manual_invoice_form.gross_amount }}
+                    {% for error in manual_invoice_form.gross_amount.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+                </div>
+            </div>
+        </section>
+
+        <section class="bookkeeping-card bookkeeping-entry-rows-section" aria-labelledby="manual-booking-rows-heading">
+            <div class="bookkeeping-entry-rows-heading">
+                <h2 id="manual-booking-rows-heading" class="bookkeeping-section-title">Buchungszeilen</h2>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="add-manual-invoice-row">Buchungszeile hinzufügen</button>
+            </div>
+            {{ manual_invoice_formset.management_form }}
+            {% if manual_invoice_formset.non_form_errors %}
+            <div class="bookkeeping-formset-errors" role="alert">
+                {% for error in manual_invoice_formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
+            </div>
+            {% endif %}
+            <div class="bookkeeping-entry-table-wrap">
+            <table class="table table-sm bookkeeping-entry-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Aktionen</th>
+                        <th scope="col">Belegkreis</th>
+                        <th scope="col">Belegnummer</th>
+                        <th scope="col">Zahlungsdatum</th>
+                        <th scope="col">Buchungstext</th>
+                        <th scope="col">Rechnungsnummer</th>
+                        <th scope="col">Lieferant/Kunde</th>
+                        <th scope="col">Bruttobetrag</th>
+                        <th scope="col">USt</th>
+                        <th scope="col">Kategorie</th>
+                    </tr>
+                </thead>
+                <tbody id="manual-invoice-rows">
+                {% for entry_form in manual_invoice_formset.forms %}
+                    {% include "bookkeeping/_booking_entry_form_row.html" with entry_form=entry_form row_label=forloop.counter is_existing=entry_form.instance.pk %}
+                {% empty %}
+                    {% include "bookkeeping/_booking_entry_form_row.html" with entry_form=manual_invoice_formset.empty_form row_label=1 is_existing=False %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </section>
+
+        <template id="manual-invoice-empty-form">
+            {% include "bookkeeping/_booking_entry_form_row.html" with entry_form=manual_invoice_formset.empty_form row_label="__row_number__" is_existing=False %}
+        </template>
+
+        <div class="bookkeeping-manual-invoice-totals" aria-live="polite">
+            <div><span>Gesamtbetrag</span><strong id="manual-invoice-total">{{ manual_invoice.gross_amount|default_if_none:"–" }}</strong></div>
+            <div><span>Zeilensumme</span><strong id="manual-invoice-lines-total">–</strong></div>
+            <div><span>Differenz</span><strong id="manual-invoice-difference">–</strong></div>
+        </div>
+
+        <div class="bookkeeping-entry-notes">
+            <label for="{{ manual_invoice_form.notes.id_for_label }}" class="form-label">{{ manual_invoice_form.notes.label }}</label>
+            {{ manual_invoice_form.notes }}
+        </div>
+        <div class="bookkeeping-entry-form-actions">
+            <button type="submit" name="action" value="save_draft" class="btn btn-outline-primary">Entwurf speichern</button>
+            <button type="submit" name="action" value="finalize" class="btn btn-primary">Prüfen und abschließen</button>
+            <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        </div>
+    </form>
+</section>
+<script>
+(() => {
+    const addButton = document.getElementById("add-manual-invoice-row");
+    const rows = document.getElementById("manual-invoice-rows");
+    const template = document.getElementById("manual-invoice-empty-form");
+    const totalForms = document.getElementById("id_entries-TOTAL_FORMS");
+    const total = document.getElementById("manual-invoice-total");
+    const linesTotal = document.getElementById("manual-invoice-lines-total");
+    const difference = document.getElementById("manual-invoice-difference");
+    if (!addButton || !rows || !template || !totalForms) return;
+
+    const parseAmount = (value) => {
+        const normalized = String(value || "").replace(/\./g, "").replace(",", ".");
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const formatAmount = (value) => value.toLocaleString("de-AT", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const updateTotals = () => {
+        const lineInputs = rows.querySelectorAll("input[name$='-gross_amount']");
+        const lineSum = Array.from(lineInputs).reduce((sum, input) => sum + parseAmount(input.value), 0);
+        const invoiceTotal = parseAmount(total.textContent);
+        linesTotal.textContent = `${formatAmount(lineSum)} EUR`;
+        difference.textContent = `${formatAmount(invoiceTotal - lineSum)} EUR`;
+    };
+    addButton.addEventListener("click", () => {
+        const index = Number(totalForms.value);
+        const html = template.innerHTML.replace(/__prefix__/g, index).replace(/__row_number__/g, index + 1);
+        rows.insertAdjacentHTML("beforeend", html);
+        totalForms.value = index + 1;
+        updateTotals();
+    });
+    rows.addEventListener("click", (event) => {
+        const button = event.target.closest(".bookkeeping-entry-remove");
+        if (!button) return;
+        const row = button.closest(".bookkeeping-entry-row");
+        if (!row) return;
+        const deleteField = row.querySelector("input[name$='-DELETE']");
+        if (deleteField) deleteField.checked = true;
+        row.classList.add("d-none");
+        updateTotals();
+    });
+    rows.addEventListener("input", updateTotals);
+    updateTotals();
+})();
+</script>
+{% endblock %}

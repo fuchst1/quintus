@@ -393,6 +393,117 @@ class BookingEntry(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class ManualInvoice(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Entwurf"
+        READY = "ready", "Buchungsfertig"
+
+    class PaperlessStatus(models.TextChoices):
+        NOT_STARTED = "not_started", "Noch nicht übertragen"
+        PENDING = "pending", "Übertragung zu Paperless läuft"
+        COMPLETED = "completed", "In Paperless abgelegt"
+        FAILED = "failed", "Übertragung fehlgeschlagen"
+
+    reference_uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
+    file_hash = models.CharField(max_length=64, unique=True)
+    status = models.CharField(
+        max_length=5,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    paperless_task_id = models.CharField(max_length=128, blank=True)
+    paperless_document_id = models.PositiveIntegerField(null=True, blank=True)
+    paperless_status = models.CharField(
+        max_length=11,
+        choices=PaperlessStatus.choices,
+        default=PaperlessStatus.NOT_STARTED,
+    )
+    paperless_error = models.TextField(blank=True)
+    temporary_pdf = models.FileField(
+        upload_to="bookkeeping/manual_invoices/",
+        blank=True,
+        null=True,
+    )
+    invoice_number = models.CharField(max_length=100, blank=True)
+    invoice_date = models.DateField(null=True, blank=True)
+    payment_date = models.DateField(null=True, blank=True)
+    partner_name = models.CharField(max_length=255, blank=True)
+    gross_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at", "-id")
+
+
+class ManualInvoiceEntry(models.Model):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    manual_invoice = models.ForeignKey(
+        ManualInvoice,
+        on_delete=models.CASCADE,
+        related_name="booking_entries",
+    )
+    receipt_group = models.CharField(
+        "Belegkreis",
+        max_length=2,
+        choices=RECEIPT_GROUP_CHOICES,
+        default="PR",
+    )
+    receipt_number = models.CharField(
+        "Belegnummer",
+        max_length=100,
+        blank=True,
+    )
+    payment_date = models.DateField("Zahlungsdatum")
+    booking_text = models.TextField("Buchungstext", blank=True)
+    invoice_number = models.CharField(
+        "Rechnungsnummer",
+        max_length=100,
+        blank=True,
+    )
+    partner_name = models.CharField("Lieferant/Kunde", max_length=255, blank=True)
+    gross_amount = models.DecimalField(
+        "Bruttobetrag",
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    vat_symbol = models.CharField(
+        "USt-Symbol",
+        max_length=2,
+        choices=VAT_SYMBOL_CHOICES,
+        default=DEFAULT_VAT_SYMBOL,
+        blank=True,
+    )
+    category = models.CharField(
+        "Kategorie",
+        max_length=4,
+        choices=CATEGORY_CHOICES,
+        blank=True,
+    )
+    position = models.PositiveIntegerField("Position", default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("position", "id")
+
+
 class QuarterBalance(models.Model):
     year = models.PositiveIntegerField(
         validators=[MinValueValidator(1)],

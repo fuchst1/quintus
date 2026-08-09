@@ -4,6 +4,8 @@ from .views import (
     BankTransactionNoteView,
     BookingEntryView,
     BookkeepingOverviewView,
+    ManualInvoiceEditView,
+    ManualInvoiceListView,
     MatchingRuleDeleteView,
     MatchingRuleDetailView,
     MatchingRuleEditView,
@@ -14,6 +16,16 @@ from .views import (
 
 urlpatterns = [
     path('', BookkeepingOverviewView.as_view(), name='bookkeeping_overview'),
+    path(
+        'manual-invoices/',
+        ManualInvoiceListView.as_view(),
+        name='manual_invoice_list',
+    ),
+    path(
+        'manual-invoices/<int:pk>/edit/',
+        ManualInvoiceEditView.as_view(),
+        name='manual_invoice_edit',
+    ),
     path(
         'transactions/<uuid:pk>/note/',
         BankTransactionNoteView.as_view(),

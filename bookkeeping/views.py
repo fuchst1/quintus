@@ -39,6 +39,9 @@ from .forms import (
     BankStatementUploadForm,
     BookingEntryForm,
     BookingEntryFormSet,
+    ManualInvoiceEntryFormSet,
+    ManualInvoiceForm,
+    ManualInvoiceUploadForm,
     MatchingRuleBookingTemplateFormSet,
     MatchingRuleForm,
     MatchingRuleVersionForm,
@@ -49,8 +52,20 @@ from .models import (
     BankTransaction,
     BookingEntry,
     MatchingRule,
+    ManualInvoice,
+    ManualInvoiceEntry,
     QuarterBalance,
 )
+from .manual_invoices import (
+    ManualInvoiceImportError,
+    display_manual_invoice,
+    duplicate_manual_invoice_warning,
+    import_manual_invoice,
+    refresh_pending_manual_invoice_tasks,
+    retry_manual_invoice,
+    start_manual_invoice_upload,
+)
+from .paperless import BookkeepingPaperlessError, PaperlessClient
 
 
 OPEN_FILTER = "open"
@@ -199,6 +214,15 @@ def _available_export_quarters():
             status__in=BOOKING_READY_STATUSES,
         ).values_list("booking_date", flat=True)
     )
+    available_quarters.update(
+        (
+            payment_date.year,
+            f"Q{((payment_date.month - 1) // 3) + 1}",
+        )
+        for payment_date in ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+        ).values_list("payment_date", flat=True)
+    )
     return sorted(available_quarters, reverse=True)
 
 
@@ -269,6 +293,12 @@ def _available_ready_months():
             status__in=BOOKING_READY_STATUSES,
         ).values_list("booking_date", flat=True)
     )
+    months.update(
+        payment_date.strftime("%Y-%m")
+        for payment_date in ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+        ).values_list("payment_date", flat=True)
+    )
     return sorted(months, reverse=True)
 
 
@@ -286,6 +316,12 @@ def _available_dashboard_months():
         )
     )
     months.update(BankStatement.objects.values_list("booking_month", flat=True))
+    months.update(
+        payment_date.strftime("%Y-%m")
+        for payment_date in ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+        ).values_list("payment_date", flat=True)
+    )
     return sorted(months, reverse=True)
 
 
@@ -304,6 +340,12 @@ def _available_dashboard_quarters():
     )
     quarters.update(
         BankStatement.objects.values_list("booking_quarter", flat=True)
+    )
+    quarters.update(
+        _quarter_key(payment_date)
+        for payment_date in ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+        ).values_list("payment_date", flat=True)
     )
     return sorted(
         (period for period in quarters if _parse_export_period(period)),
@@ -410,6 +452,10 @@ def _dashboard_context(params):
     )
     statements = list(statement_qs.order_by("-statement_date", "-id"))
     booking_entry_count = BookingEntry.objects.filter(
+        payment_date__gte=period_range[0],
+        payment_date__lte=period_range[1],
+    ).count() + ManualInvoiceEntry.objects.filter(
+        manual_invoice__status=ManualInvoice.Status.READY,
         payment_date__gte=period_range[0],
         payment_date__lte=period_range[1],
     ).count()
@@ -619,9 +665,34 @@ def _period_control_context(period_type, period):
                 }
             )
 
+    manual_entries = list(
+        ManualInvoiceEntry.objects.filter(
+            manual_invoice__status=ManualInvoice.Status.READY,
+            payment_date__gte=start_date,
+            payment_date__lte=end_date,
+        ).select_related("manual_invoice")
+    )
+    manual_booking_entry_total = sum(
+        (
+            entry.gross_amount
+            for entry in manual_entries
+            if entry.gross_amount is not None
+        ),
+        Decimal("0"),
+    )
+    booking_entry_count += len(manual_entries)
+    booking_entry_total += manual_booking_entry_total
+    ready_transaction_count += len(
+        {entry.manual_invoice_id for entry in manual_entries}
+    )
+    bank_booking_entry_total = _quantize_money(
+        booking_entry_total - manual_booking_entry_total
+    )
+
     bank_transaction_total = _quantize_money(bank_transaction_total)
     booking_entry_total = _quantize_money(booking_entry_total)
-    difference = _quantize_money(bank_transaction_total - booking_entry_total)
+    manual_booking_entry_total = _quantize_money(manual_booking_entry_total)
+    difference = _quantize_money(bank_transaction_total - bank_booking_entry_total)
     has_inconsistencies = bool(inconsistent_transactions) or difference != Decimal(
         "0.00"
     )
@@ -742,6 +813,15 @@ def _period_control_context(period_type, period):
         ),
         "booking_entry_total_value": booking_entry_total,
         "booking_entry_total": format_austrian_money(booking_entry_total, "EUR"),
+        "manual_booking_entries": len(manual_entries),
+        "manual_booking_entry_total_value": manual_booking_entry_total,
+        "manual_booking_entry_total": format_austrian_money(
+            manual_booking_entry_total, "EUR"
+        ),
+        "manual_invoices": len(
+            {entry.manual_invoice_id for entry in manual_entries}
+        ),
+        "bank_booking_entry_total_value": bank_booking_entry_total,
         "difference_value": difference,
         "difference": format_austrian_money(difference, "EUR"),
         "inconsistent_transactions": inconsistent_transactions,
@@ -829,6 +909,16 @@ def _bookkeeping_navigation_context(request, filter_params=None):
     ready_count = sum(
         counts_by_status.get(status, 0) for status in BOOKING_READY_STATUSES
     )
+    manual_ready_query = ManualInvoice.objects.filter(
+        status=ManualInvoice.Status.READY,
+    )
+    if selected_month:
+        month_bounds = _month_bounds(selected_month)
+        manual_ready_query = manual_ready_query.filter(
+            payment_date__gte=month_bounds[0],
+            payment_date__lte=month_bounds[1],
+        )
+    ready_count += manual_ready_query.count()
     navigation_month = (
         selected_month
         if selected_month
@@ -1174,11 +1264,41 @@ class BookkeepingOverviewView(TemplateView):
         saved_transactions = list(
             selected_transactions.order_by("-booking_date", "-imported_at")
         )
-        context["transactions"] = [
+        displayed_transactions = [
             self._display_saved_transaction(transaction)
             for transaction in saved_transactions
         ]
-        context["show_preview"] = bool(saved_transactions)
+        if (
+            navigation_context["selected_status"] in BOOKING_READY_STATUSES
+            and ready_period_bounds is not None
+        ):
+            manual_invoice_queryset = ManualInvoice.objects.filter(
+                status=ManualInvoice.Status.READY,
+                payment_date__gte=ready_period_bounds[0],
+                payment_date__lte=ready_period_bounds[1],
+            ).prefetch_related(
+                Prefetch(
+                    "booking_entries",
+                    queryset=ManualInvoiceEntry.objects.order_by(
+                        "position", "created_at", "id"
+                    ),
+                    to_attr="booking_entries_for_display",
+                )
+            )
+            displayed_transactions.extend(
+                self._display_manual_invoice(invoice)
+                for invoice in manual_invoice_queryset.order_by(
+                    "-payment_date", "-updated_at", "-id"
+                )
+            )
+            displayed_transactions.sort(
+                key=lambda item: item["booking_date_sort"],
+                reverse=True,
+            )
+        for transaction in displayed_transactions:
+            transaction.pop("booking_date_sort", None)
+        context["transactions"] = displayed_transactions
+        context["show_preview"] = bool(displayed_transactions)
         context.setdefault("error_message", "")
         return context
 
@@ -1655,6 +1775,64 @@ class BookkeepingOverviewView(TemplateView):
                 if booking_entry_data
                 else None
             ),
+            "booking_date_sort": transaction.booking_date,
+        }
+
+    @classmethod
+    def _display_manual_invoice(cls, invoice):
+        booking_entries = getattr(invoice, "booking_entries_for_display", ())
+        booking_entry_data = [
+            cls._display_booking_entry(entry, "EUR") for entry in booking_entries
+        ]
+        booking_entry_total = sum(
+            (
+                entry.gross_amount
+                for entry in booking_entries
+                if entry.gross_amount is not None
+            ),
+            Decimal("0"),
+        )
+        return {
+            "id": invoice.pk,
+            "manual_invoice": True,
+            "manual_invoice_url": reverse(
+                "manual_invoice_edit",
+                kwargs={"pk": invoice.pk},
+            ),
+            "paperless_document_url": PaperlessClient.document_url(
+                invoice.paperless_document_id
+            ),
+            "booking_date": (
+                invoice.payment_date.strftime("%d.%m.%Y")
+                if invoice.payment_date
+                else "–"
+            ),
+            "booking_date_sort": invoice.payment_date or date.min,
+            "name": cls._text_or_dash(invoice.partner_name),
+            "iban": "–",
+            "amount": format_austrian_money(invoice.gross_amount, "EUR"),
+            "direction_code": "outgoing",
+            "direction": "Ausgang",
+            "purpose": "–",
+            "show_original_purpose": False,
+            "status_code": "manual",
+            "status": "Buchungsfertig",
+            "open_reason": "",
+            "matched_rule": "–",
+            "matched_rule_id": None,
+            "matched_rule_url": "",
+            "matching_rule_notes": "",
+            "matching_rule_notes_preview": "",
+            "matching_rule_notes_truncated": False,
+            "notes": invoice.notes,
+            "notes_preview": _note_preview(invoice.notes)[0],
+            "notes_truncated": _note_preview(invoice.notes)[1],
+            "booking_data": booking_entry_data[0] if booking_entry_data else None,
+            "booking_entries": booking_entry_data,
+            "booking_entry_count": len(booking_entry_data),
+            "booking_entry_total": format_austrian_money(
+                booking_entry_total, "EUR"
+            ),
         }
 
     @classmethod
@@ -1693,6 +1871,184 @@ class BookkeepingOverviewView(TemplateView):
     @classmethod
     def _text_or_dash(cls, value):
         return cls._text_or_empty(value) or "–"
+
+
+class ManualInvoiceListView(TemplateView):
+    template_name = "bookkeeping/manual_invoice_list.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        refresh_pending_manual_invoice_tasks()
+        context.update(_bookkeeping_navigation_context(self.request))
+        context["manual_invoice_upload_form"] = kwargs.pop(
+            "manual_invoice_upload_form", ManualInvoiceUploadForm()
+        )
+        context["manual_invoices"] = [
+            display_manual_invoice(invoice)
+            for invoice in ManualInvoice.objects.filter(
+                status=ManualInvoice.Status.DRAFT,
+            ).order_by(
+                "-updated_at", "-id"
+            )
+        ]
+        return context
+
+    def post(self, request, *args, **kwargs):
+        if request.POST.get("action") == "retry_manual_invoice":
+            invoice = get_object_or_404(
+                ManualInvoice,
+                pk=request.POST.get("invoice_id"),
+            )
+            try:
+                retry_manual_invoice(invoice)
+            except (ManualInvoiceImportError, BookkeepingPaperlessError) as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
+            return redirect("manual_invoice_list")
+
+        form = ManualInvoiceUploadForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return self.render_to_response(
+                self.get_context_data(manual_invoice_upload_form=form)
+            )
+        try:
+            result = import_manual_invoice(form.cleaned_data["pdf"])
+        except ManualInvoiceImportError as exc:
+            form.add_error("pdf", str(exc))
+            return self.render_to_response(
+                self.get_context_data(manual_invoice_upload_form=form)
+            )
+        messages.success(
+            request,
+            "Rechnung als Entwurf angelegt. Bitte Zahlungsdaten und Buchungszeilen erfassen.",
+        )
+        return redirect(
+            "manual_invoice_edit",
+            pk=result.invoice.pk,
+        )
+
+
+class ManualInvoiceEditView(TemplateView):
+    template_name = "bookkeeping/manual_invoice_edit.html"
+    formset_prefix = "entries"
+
+    def _invoice(self):
+        return get_object_or_404(ManualInvoice, pk=self.kwargs["pk"])
+
+    def _formset(self, invoice, data=None, final=False):
+        formset = ManualInvoiceEntryFormSet(
+            data,
+            instance=invoice,
+            prefix=self.formset_prefix,
+            form_kwargs={
+                "manual_invoice": invoice,
+                "final": final,
+            },
+            manual_invoice=invoice,
+            final=final,
+        )
+        # A draft without entries still renders one visible input row.  Make
+        # that row a real form (index 0), so its values are included in the
+        # POST even when the user does not click "Buchungszeile hinzufügen".
+        if data is None and not invoice.booking_entries.exists():
+            formset.extra = 1
+        return formset
+
+    def _context(self, invoice, form, formset, error_message=""):
+        context = _bookkeeping_navigation_context(self.request)
+        context.update(
+            {
+                "manual_invoice": invoice,
+                "manual_invoice_form": form,
+                "manual_invoice_formset": formset,
+                "manual_invoice_error": error_message,
+                "return_url": reverse("manual_invoice_list"),
+            }
+        )
+        return context
+
+    def get(self, request, *args, **kwargs):
+        invoice = self._invoice()
+        return self.render_to_response(
+            self._context(
+                invoice,
+                ManualInvoiceForm(instance=invoice),
+                self._formset(invoice),
+            )
+        )
+
+    def post(self, request, *args, **kwargs):
+        invoice = self._invoice()
+        action = request.POST.get("action", "save_draft")
+        finalize = action == "finalize"
+        form = ManualInvoiceForm(
+            request.POST,
+            instance=invoice,
+            final=finalize,
+        )
+        form_is_valid = form.is_valid()
+        candidate = form.save(commit=False) if form_is_valid else invoice
+        formset = self._formset(candidate, request.POST, final=finalize)
+        if action not in {"save_draft", "finalize"}:
+            form.add_error(None, "Die gewünschte Aktion ist ungültig.")
+            form_is_valid = False
+
+        if form_is_valid and formset.is_valid():
+            rounding_difference = formset.rounding_difference
+            invoice.payment_date = form.cleaned_data.get("payment_date")
+            invoice.invoice_number = form.cleaned_data.get("invoice_number", "")
+            invoice.invoice_date = form.cleaned_data.get("invoice_date")
+            invoice.partner_name = form.cleaned_data.get("partner_name", "")
+            invoice.gross_amount = form.cleaned_data.get("gross_amount")
+            invoice.notes = form.cleaned_data.get("notes", "")
+            invoice.status = (
+                ManualInvoice.Status.READY
+                if finalize
+                else ManualInvoice.Status.DRAFT
+            )
+            with db_transaction.atomic():
+                invoice.save()
+                formset.instance = invoice
+                formset.manual_invoice = invoice
+                if finalize:
+                    formset.apply_rounding_difference()
+                formset.save()
+
+            paperless_error = ""
+            if invoice.payment_date and invoice.partner_name and invoice.gross_amount is not None:
+                if invoice.paperless_status != ManualInvoice.PaperlessStatus.COMPLETED:
+                    try:
+                        start_manual_invoice_upload(invoice)
+                    except BookkeepingPaperlessError as exc:
+                        paperless_error = str(exc)
+                        invoice.status = ManualInvoice.Status.DRAFT
+                        invoice.save(update_fields=("status", "updated_at"))
+            if paperless_error:
+                messages.error(request, paperless_error)
+            warning = duplicate_manual_invoice_warning(invoice)
+            if warning:
+                messages.warning(request, warning)
+            if finalize and not paperless_error:
+                messages.success(request, "Rechnung geprüft und abgeschlossen.")
+                if abs(rounding_difference) == Decimal("0.01"):
+                    messages.warning(
+                        request,
+                        "Die Rundungsdifferenz von "
+                        f"{format_austrian_decimal(rounding_difference)} EUR "
+                        "wurde in der größten Buchungszeile ausgeglichen.",
+                    )
+                return redirect("manual_invoice_list")
+            if not finalize and not paperless_error:
+                messages.success(request, "Rechnungsentwurf gespeichert.")
+                return redirect(
+                    "manual_invoice_edit",
+                    pk=invoice.pk,
+                )
+
+        return self.render_to_response(
+            self._context(invoice, form, formset)
+        )
 
 
 class BankTransactionNoteView(TemplateView):

@@ -20,6 +20,9 @@ class PaperlessClient:
     DOCUMENT_TYPE_NAME = "Kontoauszug"
     TAG_NAMES = ("Buchhaltung", "Immo-Fuchs KG")
     STORAGE_PATH_NAME = "IFKG Kontoauszüge"
+    MANUAL_CORRESPONDENT_NAME = "Diverse"
+    MANUAL_DOCUMENT_TYPE_NAME = "Eingangsrechnung"
+    MANUAL_STORAGE_PATH_NAME = "IFKG Eingangsrechnungen"
     STORAGE_PATH_TEMPLATE = (
         "Immo-Fuchs KG/Buchhaltung/{{ created_year }}/Kontoauszuege/{{ title }}"
     )
@@ -231,6 +234,89 @@ class PaperlessClient:
                     return str(response[key])
         raise BookkeepingPaperlessError(
             "Paperless hat keine Task-ID für den Upload zurückgegeben."
+        )
+
+    @classmethod
+    def upload_manual_invoice(cls, invoice) -> str:
+        if not cls.is_configured():
+            raise BookkeepingPaperlessError(
+                "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
+            )
+        correspondent_id = cls._require_named(
+            "correspondents/", cls.MANUAL_CORRESPONDENT_NAME
+        )
+        document_type_id = cls._require_named(
+            "document_types/", cls.MANUAL_DOCUMENT_TYPE_NAME
+        )
+        tag_ids = [
+            cls._require_named("tags/", tag_name) for tag_name in cls.TAG_NAMES
+        ]
+        storage_path_id = cls._find_exact_name(
+            "storage_paths/", cls.MANUAL_STORAGE_PATH_NAME
+        )
+        if storage_path_id is None:
+            raise BookkeepingPaperlessError(
+                f"Der Paperless-Speicherpfad '{cls.MANUAL_STORAGE_PATH_NAME}' fehlt. "
+                "Bitte zuerst exakt unter diesem Namen anlegen."
+            )
+        custom_field_ids = {
+            name: cls._require_custom_field(name, data_type)
+            for name, data_type in cls.CUSTOM_FIELDS.items()
+        }
+        payment_date = invoice.payment_date
+        if payment_date is None:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Übertragung fehlt das Zahlungsdatum."
+            )
+        title = (
+            f"Eingangsrechnung {invoice.invoice_number or 'ohne Rechnungsnummer'}"
+            f" – {invoice.partner_name or 'Diverse'}"
+        )
+        booking_month = payment_date.strftime("%Y-%m")
+        booking_quarter = (
+            f"{payment_date.year}-Q{((payment_date.month - 1) // 3) + 1}"
+        )
+        form_fields = [
+            ("title", title),
+            ("created", (invoice.invoice_date or payment_date).isoformat()),
+            ("correspondent", str(correspondent_id)),
+            ("document_type", str(document_type_id)),
+            ("storage_path", str(storage_path_id)),
+            *[("tags", str(tag_id)) for tag_id in tag_ids],
+            (
+                "custom_fields",
+                json.dumps(
+                    {
+                        str(custom_field_ids["q_buchungsdatum"]): payment_date.isoformat(),
+                        str(custom_field_ids["q_buchungsmonat"]): booking_month,
+                        str(custom_field_ids["q_buchungsquartal"]): booking_quarter,
+                        str(custom_field_ids["q_bookkeeping_referenz"]): str(
+                            invoice.reference_uuid
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        ]
+        try:
+            with invoice.temporary_pdf.open("rb") as pdf_file:
+                response = cls._request_multipart(
+                    form_fields=form_fields,
+                    file_name=os.path.basename(invoice.temporary_pdf.name),
+                    file_content=pdf_file.read(),
+                )
+        except OSError:
+            raise BookkeepingPaperlessError(
+                "Die temporäre Rechnungs-PDF konnte nicht gelesen werden."
+            ) from None
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            for key in ("task_id", "task", "uuid", "id"):
+                if response.get(key):
+                    return str(response[key])
+        raise BookkeepingPaperlessError(
+            "Paperless hat keine Task-ID für den Rechnungsupload zurückgegeben."
         )
 
     @classmethod
