@@ -40,6 +40,71 @@
         </dl>
     </div>
 
+    <details class="bookkeeping-supporting-documents bookkeeping-supporting-documents-collapsible">
+        <summary class="bookkeeping-subsection-title">Belege{% if supporting_documents %} ({{ supporting_documents|length }}){% endif %}</summary>
+        <div class="bookkeeping-supporting-documents-content">
+            <form method="post" enctype="multipart/form-data" class="bookkeeping-supporting-document-upload-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="upload_supporting_document">
+                <label for="{{ supporting_document_form.pdf.id_for_label }}" class="form-label">{{ supporting_document_form.pdf.label }}</label>
+                <div class="bookkeeping-supporting-document-upload-controls">
+                    {{ supporting_document_form.pdf }}
+                    <button type="submit" class="btn btn-sm btn-primary">Beleg hochladen</button>
+                </div>
+                {% for error in supporting_document_form.pdf.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
+            </form>
+            {% if supporting_documents %}
+            <div class="bookkeeping-table-wrap">
+                <table class="table table-sm align-middle mb-0 bookkeeping-supporting-document-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="bookkeeping-actions" scope="col">Aktionen</th>
+                            <th scope="col">Dateiname</th>
+                            <th scope="col">Erstellt</th>
+                            <th scope="col">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for document in supporting_documents %}
+                        <tr>
+                            <td class="bookkeeping-actions">
+                                <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                                    {% if document.paperless_document_url %}<a href="{{ document.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span></a>{% endif %}
+                                    {% if document.can_retry %}
+                                    <form method="post" class="bookkeeping-icon-action-form">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="retry_supporting_document">
+                                        <input type="hidden" name="reference_uuid" value="{{ document.reference_uuid }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Übertragung erneut versuchen" aria-label="Übertragung erneut versuchen"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Übertragung erneut versuchen</span></button>
+                                    </form>
+                                    {% endif %}
+                                    <a href="{% url 'bank_transaction_document_remove' bank_transaction.pk document.reference_uuid %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Verknüpfung entfernen" aria-label="Verknüpfung entfernen"><i class="bi bi-link-45deg" aria-hidden="true"></i><span class="visually-hidden">Verknüpfung entfernen</span></a>
+                                    <a href="{% url 'bank_transaction_document_delete' bank_transaction.pk document.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Löschen" aria-label="Löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Löschen</span></a>
+                                </div>
+                            </td>
+                            <td>{{ document.original_filename }}</td>
+                            <td>{{ document.created_at|date:"d.m.Y H:i" }}</td>
+                            <td>
+                                {% if document.transfer_status == "completed" %}
+                                <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-success">Abgelegt</span>
+                                {% elif document.transfer_status == "pending" %}
+                                <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Übertragung läuft</span>
+                                {% else %}
+                                <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-danger">Fehler</span>
+                                {% endif %}
+                                {% if document.transfer_error %}<small class="bookkeeping-table-detail">{{ document.transfer_error }}</small>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="bookkeeping-empty-state mb-0">Für diese Banktransaktion ist noch kein Beleg hinterlegt.</p>
+            {% endif %}
+        </div>
+    </details>
+
     <form method="post" class="bookkeeping-entry-form">
         {% csrf_token %}
         <section class="bookkeeping-entry-rows-section" aria-labelledby="booking-rows-heading">

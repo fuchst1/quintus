@@ -1,0 +1,41 @@
+{% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
+
+{% block title %}Buchungssatz zurücksetzen – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="booking-set-reset-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="booking-set-reset-heading" class="bookkeeping-page-title">Buchungssatz zurücksetzen</h1>
+            <p class="bookkeeping-page-description">{{ source_type }} · {{ source_name }}</p>
+        </div>
+    </div>
+
+    <div class="bookkeeping-rule-detail-card bookkeeping-confirmation-card">
+        <dl class="bookkeeping-rule-detail-list">
+            <dt>Quelle</dt><dd>{{ source_type }}</dd>
+            <dt>Name beziehungsweise Lieferant/Kunde</dt><dd>{{ source_name }}</dd>
+            <dt>Zahlungsdatum</dt><dd>{% if payment_date %}{{ payment_date|date:"d.m.Y" }}{% else %}–{% endif %}</dd>
+            <dt>Anzahl Buchungszeilen</dt><dd>{{ entry_count }}</dd>
+            <dt>Summe</dt><dd>{{ entry_total }}</dd>
+        </dl>
+
+        <h2 class="h6">Buchungstexte</h2>
+        {% if booking_texts %}
+        <ul>
+            {% for entry in booking_texts %}<li>{{ entry.text }}{% if entry.amount != "–" %} · {{ entry.amount }}{% endif %}</li>{% endfor %}
+        </ul>
+        {% else %}
+        <p class="bookkeeping-empty-state">Es sind keine Buchungszeilen vorhanden.</p>
+        {% endif %}
+
+        <p class="alert alert-warning">Alle erzeugten Buchungszeilen werden gelöscht. Der ursprüngliche Datensatz und seine Dokumente bleiben erhalten. Bereits nach Excel kopierte Daten werden nicht verändert.</p>
+        <form method="post" class="bookkeeping-entry-form-actions">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">Buchungssatz zurücksetzen</button>
+            <a href="{{ cancel_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        </form>
+    </div>
+</section>
+{% endblock %}

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 from calendar import monthrange
 from datetime import date, datetime
@@ -17,6 +18,10 @@ from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
 from .bank_statement_parser import BankStatementParseError
+from .booking_resets import (
+    reset_bank_transaction_booking,
+    reset_manual_invoice_booking,
+)
 from .bank_statements import (
     BankStatementImportError,
     display_bank_statement,
@@ -46,6 +51,7 @@ from .forms import (
     MatchingRuleForm,
     MatchingRuleVersionForm,
     QuarterBalanceForm,
+    SupportingDocumentUploadForm,
 )
 from .models import (
     BankStatement,
@@ -55,9 +61,13 @@ from .models import (
     ManualInvoice,
     ManualInvoiceEntry,
     QuarterBalance,
+    SupportingDocument,
 )
 from .manual_invoices import (
+    ManualInvoiceDeletionError,
     ManualInvoiceImportError,
+    delete_manual_invoice_completely,
+    delete_manual_invoice_from_paperless,
     display_manual_invoice,
     duplicate_manual_invoice_warning,
     import_manual_invoice,
@@ -72,6 +82,15 @@ from .invoice_ai import (
     run_manual_invoice_analysis,
 )
 from .paperless import BookkeepingPaperlessError, PaperlessClient
+from .supporting_documents import (
+    SupportingDocumentError,
+    delete_supporting_document_from_paperless,
+    display_supporting_document,
+    import_supporting_document,
+    refresh_pending_supporting_documents,
+    remove_supporting_document,
+    retry_supporting_document,
+)
 
 
 OPEN_FILTER = "open"
@@ -165,6 +184,21 @@ MONTH_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<month>0[1-9]|1[0-2])$")
 EXPORT_PERIOD_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<quarter>Q[1-4])$")
 PERIOD_TYPES = ("month", "quarter")
 logger = logging.getLogger(__name__)
+
+
+def supporting_document_owner_url(document):
+    """Return the fixed detail URL for the document's actual owner."""
+    if document.matching_rule_id is not None:
+        return reverse(
+            "matching_rule_detail",
+            kwargs={"pk": document.matching_rule_id},
+        )
+    if document.bank_transaction_id is not None:
+        return reverse(
+            "bank_transaction_booking",
+            kwargs={"pk": document.bank_transaction_id},
+        )
+    raise ValueError("SupportingDocument hat keinen gültigen Besitzer.")
 
 
 def _parse_month(value):
@@ -1226,7 +1260,12 @@ class BookkeepingOverviewView(TemplateView):
                 "booking_entries",
                 queryset=booking_entries_queryset,
                 to_attr="booking_entries_for_display",
-            )
+            ),
+            Prefetch(
+                "supporting_documents",
+                queryset=SupportingDocument.objects.order_by("-created_at", "-id"),
+                to_attr="supporting_documents_for_display",
+            ),
         )
         if navigation_context["selected_status"] in {
             OPEN_FILTER,
@@ -1709,6 +1748,11 @@ class BookkeepingOverviewView(TemplateView):
             matching_rule_notes
         )
         booking_entries = getattr(transaction, "booking_entries_for_display", ())
+        supporting_documents = getattr(
+            transaction,
+            "supporting_documents_for_display",
+            (),
+        )
         booking_entry_data = [
             cls._display_booking_entry(entry, transaction.currency)
             for entry in booking_entries
@@ -1781,6 +1825,7 @@ class BookkeepingOverviewView(TemplateView):
                 if booking_entry_data
                 else None
             ),
+            "supporting_document_count": len(supporting_documents),
             "booking_date_sort": transaction.booking_date,
         }
 
@@ -1805,8 +1850,35 @@ class BookkeepingOverviewView(TemplateView):
                 "manual_invoice_edit",
                 kwargs={"reference_uuid": invoice.reference_uuid},
             ),
-            "paperless_document_url": PaperlessClient.document_url(
-                invoice.paperless_document_id
+            "manual_invoice_reset_url": reverse(
+                "manual_invoice_reset_booking",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            "manual_invoice_delete_url": reverse(
+                "manual_invoice_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            "manual_invoice_paperless_delete_url": reverse(
+                "manual_invoice_paperless_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            "paperless_document_url": (
+                PaperlessClient.document_url(invoice.paperless_document_id)
+                if invoice.paperless_deleted_at is None
+                else ""
+            ),
+            "paperless_can_delete": (
+                invoice.paperless_deleted_at is None
+                and (
+                    bool(invoice.paperless_document_id)
+                    or bool(invoice.paperless_task_id)
+                    or invoice.paperless_status
+                    in {
+                        ManualInvoice.PaperlessStatus.COMPLETED,
+                        ManualInvoice.PaperlessStatus.PENDING,
+                        ManualInvoice.PaperlessStatus.FAILED,
+                    }
+                )
             ),
             "booking_date": (
                 invoice.payment_date.strftime("%d.%m.%Y")
@@ -1978,6 +2050,10 @@ class ManualInvoiceEditView(TemplateView):
                 "manual_invoice_formset": formset,
                 "manual_invoice_error": error_message,
                 "return_url": reverse("manual_invoice_list"),
+                "manual_invoice_paperless_delete_url": reverse(
+                    "manual_invoice_paperless_delete",
+                    kwargs={"reference_uuid": invoice.reference_uuid},
+                ),
             }
         )
         context.update(ai_ui_state(invoice))
@@ -2184,6 +2260,215 @@ class ManualInvoiceEditView(TemplateView):
         )
 
 
+class BookingSetResetView(TemplateView):
+    template_name = "bookkeeping/booking_set_reset_confirm.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if kwargs.get("transaction_pk") is not None:
+            self.owner_kind = "bank_transaction"
+            self.owner = get_object_or_404(
+                BankTransaction,
+                pk=kwargs["transaction_pk"],
+            )
+        else:
+            self.owner_kind = "manual_invoice"
+            self.owner = get_object_or_404(
+                ManualInvoice,
+                reference_uuid=kwargs["reference_uuid"],
+            )
+        return super().dispatch(request, *args, **kwargs)
+
+    def _entries(self):
+        if self.owner_kind == "bank_transaction":
+            return list(
+                BookingEntry.objects.filter(
+                    bank_transaction=self.owner
+                ).order_by("created_at", "id")
+            )
+        return list(
+            ManualInvoiceEntry.objects.filter(
+                manual_invoice=self.owner
+            ).order_by("position", "created_at", "id")
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        entries = self._entries()
+        if self.owner_kind == "bank_transaction":
+            source_type = "Banktransaktion"
+            source_name = self.owner.partner_name or "–"
+            payment_date = self.owner.booking_date
+            currency = self.owner.currency
+        else:
+            source_type = "Manueller Beleg"
+            source_name = self.owner.partner_name or "–"
+            payment_date = self.owner.payment_date
+            currency = "EUR"
+        total = sum(
+            (entry.gross_amount for entry in entries if entry.gross_amount is not None),
+            Decimal("0"),
+        )
+        context.update(
+            {
+                "owner_kind": self.owner_kind,
+                "owner": self.owner,
+                "source_type": source_type,
+                "source_name": source_name,
+                "payment_date": payment_date,
+                "cancel_url": (
+                    _overview_url(
+                        OPEN_FILTER,
+                        self.owner.booking_date.strftime("%Y-%m"),
+                    )
+                    if self.owner_kind == "bank_transaction"
+                    else reverse("manual_invoice_list")
+                ),
+                "entry_count": len(entries),
+                "entry_total": format_austrian_money(total, currency),
+                "booking_texts": [
+                    {
+                        "text": entry.booking_text or "–",
+                        "amount": format_austrian_money(
+                            entry.gross_amount,
+                            currency,
+                        ),
+                    }
+                    for entry in entries
+                ],
+            }
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        if self.owner_kind == "bank_transaction":
+            reset_bank_transaction_booking(self.owner)
+            messages.success(
+                request,
+                "Buchungssatz wurde zurückgesetzt. Quelldaten und Dokumente bleiben erhalten.",
+            )
+            return redirect(
+                _overview_url(
+                    OPEN_FILTER,
+                    self.owner.booking_date.strftime("%Y-%m"),
+                )
+            )
+        reset_manual_invoice_booking(self.owner)
+        messages.success(
+            request,
+            "Buchungssatz wurde zurückgesetzt. Quelldaten und Dokumente bleiben erhalten.",
+        )
+        return redirect("manual_invoice_list")
+
+
+class ManualInvoiceDeleteView(TemplateView):
+    template_name = "bookkeeping/manual_invoice_delete_confirm.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.invoice = get_object_or_404(
+            ManualInvoice,
+            reference_uuid=kwargs["reference_uuid"],
+        )
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        entries = list(
+            ManualInvoiceEntry.objects.filter(
+                manual_invoice=self.invoice
+            ).order_by("position", "created_at", "id")
+        )
+        context.update(
+            {
+                "manual_invoice": self.invoice,
+                "entry_count": len(entries),
+                "entry_total": format_austrian_money(
+                    sum(
+                        (
+                            entry.gross_amount
+                            for entry in entries
+                            if entry.gross_amount is not None
+                        ),
+                        Decimal("0"),
+                    ),
+                    "EUR",
+                ),
+                "paperless_document_id": self.invoice.paperless_document_id,
+                "original_filename": (
+                    os.path.basename(self.invoice.temporary_pdf.name)
+                    if self.invoice.temporary_pdf
+                    else "–"
+                ),
+                "booking_texts": [entry.booking_text or "–" for entry in entries],
+            }
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        try:
+            delete_manual_invoice_completely(self.invoice)
+        except ManualInvoiceDeletionError as exc:
+            messages.error(request, str(exc))
+            return redirect(
+                "manual_invoice_delete",
+                reference_uuid=self.invoice.reference_uuid,
+            )
+        messages.success(request, "Manueller Beleg und Paperless-Dokument wurden gelöscht.")
+        return redirect("manual_invoice_list")
+
+
+class ManualInvoicePaperlessDeleteView(TemplateView):
+    template_name = "bookkeeping/manual_invoice_paperless_delete_confirm.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.invoice = get_object_or_404(
+            ManualInvoice,
+            reference_uuid=kwargs["reference_uuid"],
+        )
+        self.return_url = self._return_url()
+        return super().dispatch(request, *args, **kwargs)
+
+    def _return_url(self):
+        if self.invoice.status == ManualInvoice.Status.READY:
+            month = (
+                self.invoice.payment_date.strftime("%Y-%m")
+                if self.invoice.payment_date
+                else None
+            )
+            return _overview_url(
+                BankTransaction.Status.REVIEWED,
+                month=month,
+            )
+        return reverse("manual_invoice_list")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(
+            {
+                "manual_invoice": self.invoice,
+                "paperless_document_id": self.invoice.paperless_document_id,
+                "original_filename": (
+                    os.path.basename(self.invoice.temporary_pdf.name)
+                    if self.invoice.temporary_pdf
+                    else "–"
+                ),
+                "return_url": self.return_url,
+            }
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        try:
+            delete_manual_invoice_from_paperless(self.invoice)
+        except ManualInvoiceDeletionError as exc:
+            messages.error(request, str(exc))
+            return redirect(
+                "manual_invoice_paperless_delete",
+                reference_uuid=self.invoice.reference_uuid,
+            )
+        messages.success(request, "Das Paperless-Dokument wurde gelöscht. Der manuelle Beleg bleibt erhalten.")
+        return redirect(self.return_url)
+
+
 class BankTransactionNoteView(TemplateView):
     template_name = "bookkeeping/transaction_note.html"
 
@@ -2353,6 +2638,7 @@ class BookingEntryView(TemplateView):
         notes_form,
         navigation_context,
         snapshot_error="",
+        supporting_document_form=None,
     ):
         if bank_transaction.status == BankTransaction.Status.MATCHED:
             page_heading = "Buchungsdaten ergänzen"
@@ -2375,6 +2661,15 @@ class BookingEntryView(TemplateView):
             "notes_form": notes_form,
             "page_heading": page_heading,
             "booking_snapshot_error": snapshot_error,
+            "supporting_documents": [
+                display_supporting_document(document)
+                for document in SupportingDocument.objects.filter(
+                    bank_transaction=bank_transaction
+                ).select_related("matching_rule").order_by("-created_at", "-id")
+            ],
+            "supporting_document_form": (
+                supporting_document_form or SupportingDocumentUploadForm()
+            ),
             "return_url": _overview_url(
                 navigation_context["selected_status"],
                 navigation_context["selected_month"],
@@ -2390,6 +2685,7 @@ class BookingEntryView(TemplateView):
         return None
 
     def get(self, request, *args, **kwargs):
+        refresh_pending_supporting_documents()
         bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
         navigation_context = self._navigation_context()
         rejection = self._reject_if_booked(
@@ -2417,13 +2713,89 @@ class BookingEntryView(TemplateView):
     def post(self, request, *args, **kwargs):
         bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
         navigation_context = self._navigation_context()
+        action = request.POST.get("action", "save_draft")
+        if action == "retry_supporting_document":
+            document = get_object_or_404(
+                SupportingDocument,
+                bank_transaction=bank_transaction,
+                reference_uuid=request.POST.get("reference_uuid"),
+            )
+            try:
+                retry_supporting_document(document)
+            except SupportingDocumentError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
+            return redirect(
+                reverse(
+                    "bank_transaction_booking",
+                    kwargs={"pk": bank_transaction.pk},
+                )
+                + "?"
+                + urlencode(
+                    {
+                        "status": navigation_context["selected_status"],
+                        "month": navigation_context["selected_month"],
+                    }
+                )
+            )
+        if action == "upload_supporting_document":
+            document_form = SupportingDocumentUploadForm(
+                request.POST,
+                request.FILES,
+            )
+            if document_form.is_valid():
+                result = import_supporting_document(
+                    document_form.cleaned_data["pdf"],
+                    bank_transaction=bank_transaction,
+                )
+                if result.document.transfer_status == SupportingDocument.TransferStatus.FAILED:
+                    messages.error(
+                        request,
+                        f"Beleg gespeichert, aber Paperless meldet einen Fehler: "
+                        f"{result.document.transfer_error}",
+                    )
+                else:
+                    messages.success(
+                        request,
+                        "Beleg gespeichert. Die Übertragung zu Paperless läuft.",
+                    )
+                return redirect(
+                    reverse(
+                        "bank_transaction_booking",
+                        kwargs={"pk": bank_transaction.pk},
+                    )
+                    + "?"
+                    + urlencode(
+                        {
+                            "status": navigation_context["selected_status"],
+                            "month": navigation_context["selected_month"],
+                        }
+                    )
+                )
+            existing_entries = self._existing_entries(bank_transaction)
+            initial, snapshot_error = self._initial_rows(
+                bank_transaction, existing_entries
+            )
+            formset = self._formset(
+                None, bank_transaction, final=False, initial=initial
+            )
+            return self.render_to_response(
+                self._context_for_transaction(
+                    bank_transaction,
+                    formset,
+                    BankTransactionNoteForm(instance=bank_transaction),
+                    navigation_context,
+                    snapshot_error,
+                    document_form,
+                )
+            )
         rejection = self._reject_if_booked(
             request, bank_transaction, navigation_context
         )
         if rejection is not None:
             return rejection
 
-        action = request.POST.get("action", "save_draft")
         finalize = action == "finalize"
         existing_entries = self._existing_entries(bank_transaction)
         initial, snapshot_error = self._initial_rows(
@@ -2615,13 +2987,53 @@ class MatchingRuleDetailView(TemplateView):
         return super().dispatch(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
-        if request.POST.get("action") == "deactivate" and self.object.active:
+        action = request.POST.get("action")
+        if action == "upload_supporting_document":
+            document_form = SupportingDocumentUploadForm(
+                request.POST,
+                request.FILES,
+            )
+            if document_form.is_valid():
+                result = import_supporting_document(
+                    document_form.cleaned_data["pdf"],
+                    matching_rule=self.object,
+                )
+                if result.document.transfer_status == SupportingDocument.TransferStatus.FAILED:
+                    messages.error(
+                        request,
+                        f"Nachweis gespeichert, aber Paperless meldet einen Fehler: "
+                        f"{result.document.transfer_error}",
+                    )
+                else:
+                    messages.success(
+                        request,
+                        "Nachweis gespeichert. Die Übertragung zu Paperless läuft.",
+                    )
+                return redirect("matching_rule_detail", pk=self.object.pk)
+            return self.render_to_response(
+                self.get_context_data(supporting_document_form=document_form)
+            )
+        if action == "retry_supporting_document":
+            document = get_object_or_404(
+                SupportingDocument,
+                matching_rule=self.object,
+                reference_uuid=request.POST.get("reference_uuid"),
+            )
+            try:
+                retry_supporting_document(document)
+            except SupportingDocumentError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
+            return redirect("matching_rule_detail", pk=self.object.pk)
+        if action == "deactivate" and self.object.active:
             self.object.active = False
             self.object.save(update_fields=("active", "updated_at"))
             messages.success(request, "Matching-Regel deaktiviert.")
         return redirect("matching_rule_detail", pk=self.object.pk)
 
     def get_context_data(self, **kwargs):
+        refresh_pending_supporting_documents()
         context = super().get_context_data(**kwargs)
         context.update(_bookkeeping_navigation_context(self.request))
         context["object"] = self.object
@@ -2634,7 +3046,73 @@ class MatchingRuleDetailView(TemplateView):
             previous_version=self.object
         ).first()
         context["linked_transaction_count"] = self.object.linked_transaction_count
+        context["supporting_documents"] = [
+            display_supporting_document(document)
+            for document in SupportingDocument.objects.filter(
+                matching_rule=self.object
+            ).select_related("matching_rule").order_by("-created_at", "-id")
+        ]
+        context.setdefault("supporting_document_form", SupportingDocumentUploadForm())
         return context
+
+
+class SupportingDocumentActionView(TemplateView):
+    template_name = "bookkeeping/supporting_document_confirm.html"
+    action = "unlink"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.owner_kind = "matching_rule" if kwargs.get("rule_pk") else "bank_transaction"
+        owner_filter = (
+            {"matching_rule_id": kwargs["rule_pk"]}
+            if self.owner_kind == "matching_rule"
+            else {"bank_transaction_id": kwargs["transaction_pk"]}
+        )
+        self.document = get_object_or_404(
+            SupportingDocument.objects.select_related(
+                "matching_rule",
+                "bank_transaction",
+            ),
+            reference_uuid=kwargs["reference_uuid"],
+            **owner_filter,
+        )
+        return super().dispatch(request, *args, **kwargs)
+
+    def _owner_redirect(self):
+        return redirect(supporting_document_owner_url(self.document))
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["document"] = display_supporting_document(self.document)
+        context["document_object"] = self.document
+        context["action"] = self.action
+        context["owner_url"] = supporting_document_owner_url(self.document)
+        context["owner"] = (
+            self.document.matching_rule
+            if self.owner_kind == "matching_rule"
+            else self.document.bank_transaction
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        if self.action == "unlink":
+            remove_supporting_document(self.document)
+            messages.success(request, "Die Verknüpfung wurde aus Quintus entfernt.")
+            return self._owner_redirect()
+        try:
+            delete_supporting_document_from_paperless(self.document)
+        except BookkeepingPaperlessError as exc:
+            messages.error(request, f"Paperless-Löschung fehlgeschlagen: {exc}")
+            return redirect(request.path)
+        messages.success(request, "Das Dokument wurde aus Quintus und Paperless gelöscht.")
+        return self._owner_redirect()
+
+
+class SupportingDocumentUnlinkView(SupportingDocumentActionView):
+    action = "unlink"
+
+
+class SupportingDocumentDeleteView(SupportingDocumentActionView):
+    action = "delete"
 
 
 class MatchingRuleVersionView(TemplateView):

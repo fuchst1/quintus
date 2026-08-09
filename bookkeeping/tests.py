@@ -11,8 +11,9 @@ from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from .choices import CATEGORY_CHOICES, RECEIPT_GROUP_BANK
 from .category_display import category_description
@@ -37,12 +38,14 @@ from .bank_statements import (
     refresh_unsynced_completed_references,
     retry_bank_statement,
 )
+from .booking_resets import reset_bank_transaction_booking, reset_manual_invoice_booking
 from .forms import (
     BookingEntryForm,
     ManualInvoiceEntryFormSet,
     ManualInvoiceForm,
     MatchingRuleBookingTemplateForm,
     MatchingRuleForm,
+    SupportingDocumentUploadForm,
 )
 from .matching import match_imported_transactions
 from .models import (
@@ -54,13 +57,23 @@ from .models import (
     ManualInvoice,
     ManualInvoiceEntry,
     QuarterBalance,
+    SupportingDocument,
 )
 from .manual_invoices import (
+    ManualInvoiceDeletionError,
+    delete_manual_invoice_completely,
+    delete_manual_invoice_from_paperless,
     refresh_pending_manual_invoice_tasks,
     retry_manual_invoice,
     start_manual_invoice_upload,
 )
 from .paperless import BookkeepingPaperlessError, PaperlessClient
+from .supporting_documents import (
+    SupportingDocumentError,
+    import_supporting_document,
+    refresh_pending_supporting_documents,
+    retry_supporting_document,
+)
 from .views import BookkeepingOverviewView
 
 
@@ -2446,7 +2459,8 @@ class BankStatementFeatureTests(TestCase):
         )
         self.assertIn('target="_blank"', content)
         self.assertIn('rel="noopener noreferrer"', content)
-        self.assertEqual(content.count("In Paperless öffnen"), 1)
+        self.assertEqual(content.count('title="In Paperless öffnen"'), 1)
+        self.assertEqual(content.count('aria-label="In Paperless öffnen"'), 1)
         self.assertNotIn("bookkeeping-paperless-link", content)
         self.assertLess(
             content.index('href="https://paperless.example/documents/256/"'),
@@ -7507,3 +7521,1378 @@ class ManualInvoiceTests(TestCase):
         ).decode("utf-8-sig")
         self.assertIn("PR;7;15.07.2026;Büromaterial", csv_content)
         upload.assert_not_called()
+
+
+class SupportingDocumentTests(TestCase):
+    def setUp(self):
+        self.media_directory = tempfile.TemporaryDirectory()
+        self.media_override = override_settings(MEDIA_ROOT=self.media_directory.name)
+        self.media_override.enable()
+        self.addCleanup(self.media_override.disable)
+        self.addCleanup(self.media_directory.cleanup)
+
+    def rule(self, name="Miete"):
+        return MatchingRule.objects.create(
+            name=name,
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban="AT611904300234573201",
+            expected_amount=Decimal("100.00"),
+        )
+
+    def transaction(self, **overrides):
+        values = {
+            "booking_date": date(2026, 7, 15),
+            "value_date": date(2026, 7, 14),
+            "partner_name": "Mieter GmbH",
+            "amount": Decimal("100.00"),
+            "direction": BankTransaction.Direction.INCOMING,
+            "status": BankTransaction.Status.REVIEWED,
+        }
+        values.update(overrides)
+        return BankTransaction.objects.create(**values)
+
+    def pdf(self, name="beleg.pdf", content=b"%PDF-1.7\nbeleg"):
+        return SimpleUploadedFile(name, content, content_type="application/pdf")
+
+    def create_document(self, **overrides):
+        values = {
+            "matching_rule": self.rule(),
+            "original_filename": "nachweis.pdf",
+            "temporary_file": self.pdf(),
+            "transfer_status": SupportingDocument.TransferStatus.FAILED,
+        }
+        values.update(overrides)
+        return SupportingDocument.objects.create(**values)
+
+    def test_document_requires_exactly_one_owner(self):
+        with self.assertRaises(ValidationError):
+            SupportingDocument.objects.create(original_filename="leer.pdf")
+        with self.assertRaises(ValidationError):
+            SupportingDocument.objects.create(
+                matching_rule=self.rule(),
+                bank_transaction=self.transaction(),
+                original_filename="zwei.pdf",
+            )
+
+    def test_documents_for_two_rule_versions_are_separate(self):
+        first = self.rule("Miete")
+        second = MatchingRule.objects.create(
+            name="Miete",
+            direction=first.direction,
+            match_type=first.match_type,
+            iban=first.iban,
+            expected_amount=first.expected_amount,
+            previous_version=first,
+            version_number=2,
+            change_reason="Neue Kondition",
+        )
+        first_document = self.create_document(matching_rule=first)
+        second_document = self.create_document(matching_rule=second)
+
+        self.assertEqual(first.supporting_documents.count(), 1)
+        self.assertEqual(second.supporting_documents.count(), 1)
+        self.assertNotEqual(first_document.reference_uuid, second_document.reference_uuid)
+
+    def test_each_document_gets_a_unique_non_editable_uuid(self):
+        first = self.create_document()
+        second = self.create_document()
+
+        self.assertNotEqual(first.reference_uuid, second.reference_uuid)
+        self.assertFalse(SupportingDocument._meta.get_field("reference_uuid").editable)
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-fallback"})
+    @patch.object(PaperlessClient, "_require_custom_field", side_effect=lambda name, data_type: {
+        "q_bookkeeping_referenz": 10,
+        "q_buchungsdatum": 11,
+        "q_buchungsmonat": 12,
+        "q_buchungsquartal": 13,
+    }[name])
+    @patch.object(PaperlessClient, "_require_storage_path", return_value=14)
+    @patch.object(PaperlessClient, "_require_named", return_value=15)
+    def test_bank_metadata_falls_back_to_booking_date(
+        self, require_named, require_storage, require_field, multipart
+    ):
+        transaction = self.transaction(value_date=None, booking_date=date(2026, 8, 3))
+        document = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+        PaperlessClient.upload_supporting_document(document)
+
+        fields = dict(multipart.call_args.kwargs["form_fields"])
+        self.assertEqual(fields["title"], "Buchungsbeleg 2026-08-03 – Mieter GmbH – 100.00")
+        self.assertEqual(json.loads(fields["custom_fields"])["11"], "2026-08-03")
+        self.assertEqual(json.loads(fields["custom_fields"])["12"], "2026-08")
+        self.assertEqual(json.loads(fields["custom_fields"])["13"], "2026-Q3")
+
+    def test_pdf_form_rejects_extension_content_type_and_signature(self):
+        for uploaded_file in (
+            self.pdf("beleg.txt"),
+            SimpleUploadedFile("beleg.pdf", b"kein pdf", content_type="text/plain"),
+            SimpleUploadedFile("beleg.pdf", b"kein pdf", content_type="application/pdf"),
+        ):
+            form = SupportingDocumentUploadForm(files={"pdf": uploaded_file})
+            self.assertFalse(form.is_valid())
+
+    def test_import_service_rejects_non_pdf_even_without_form(self):
+        with self.assertRaises(SupportingDocumentError):
+            import_supporting_document(
+                SimpleUploadedFile(
+                    "beleg.pdf",
+                    b"kein pdf",
+                    content_type="application/pdf",
+                ),
+                matching_rule=self.rule(),
+            )
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="task-1")
+    def test_upload_to_matching_rule_uses_same_uuid_and_keeps_pending_file(self, upload):
+        rule = self.rule()
+        result = import_supporting_document(self.pdf(), matching_rule=rule)
+
+        document = result.document
+        self.assertEqual(document.transfer_status, SupportingDocument.TransferStatus.PENDING)
+        self.assertEqual(document.paperless_task_id, "task-1")
+        self.assertTrue(document.temporary_file)
+        upload.assert_called_once_with(document)
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="task-bank")
+    def test_upload_to_bank_transaction_does_not_change_status(self, upload):
+        transaction = self.transaction(status=BankTransaction.Status.BOOKED)
+        result = import_supporting_document(self.pdf(), bank_transaction=transaction)
+
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.status, BankTransaction.Status.BOOKED)
+        self.assertEqual(result.document.bank_transaction_id, transaction.pk)
+        upload.assert_called_once()
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-rule"})
+    @patch.object(PaperlessClient, "_require_custom_field", return_value=17)
+    @patch.object(PaperlessClient, "_require_storage_path", return_value=18)
+    @patch.object(PaperlessClient, "_require_named", return_value=19)
+    def test_matching_metadata_uses_required_names_and_only_reference_field(
+        self, require_named, require_storage, require_field, multipart
+    ):
+        document = self.create_document(
+            transfer_status=SupportingDocument.TransferStatus.PENDING
+        )
+        task_id = PaperlessClient.upload_supporting_document(document)
+
+        self.assertEqual(task_id, "task-rule")
+        fields = dict(multipart.call_args.kwargs["form_fields"])
+        custom_fields = json.loads(fields["custom_fields"])
+        self.assertEqual(custom_fields, {"17": str(document.reference_uuid)})
+        require_storage.assert_called_once_with("IFKG Matching-Nachweise")
+        names = [call.args[1] for call in require_named.call_args_list]
+        self.assertIn("Buchungsbeleg", names)
+        self.assertIn("Diverse", names)
+        self.assertIn("Buchhaltung", names)
+        self.assertIn("Immo-Fuchs KG", names)
+        self.assertEqual(require_field.call_args.args[0], "q_bookkeeping_referenz")
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-bank"})
+    @patch.object(PaperlessClient, "_require_custom_field", side_effect=lambda name, data_type: {
+        "q_bookkeeping_referenz": 10,
+        "q_buchungsdatum": 11,
+        "q_buchungsmonat": 12,
+        "q_buchungsquartal": 13,
+    }[name])
+    @patch.object(PaperlessClient, "_require_storage_path", return_value=14)
+    @patch.object(PaperlessClient, "_require_named", return_value=15)
+    def test_bank_metadata_prefers_value_date_and_sets_period_fields(
+        self, require_named, require_storage, require_field, multipart
+    ):
+        transaction = self.transaction(value_date=date(2026, 7, 14))
+        document = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+        PaperlessClient.upload_supporting_document(document)
+
+        fields = dict(multipart.call_args.kwargs["form_fields"])
+        self.assertEqual(fields["title"], "Buchungsbeleg 2026-07-14 – Mieter GmbH – 100.00")
+        self.assertEqual(
+            json.loads(fields["custom_fields"]),
+            {
+                "10": str(document.reference_uuid),
+                "11": "2026-07-14",
+                "12": "2026-07",
+                "13": "2026-Q3",
+            },
+        )
+        require_storage.assert_called_once_with("IFKG Buchungsbelege")
+
+    @patch.object(PaperlessClient, "task_status", return_value={"status": "completed", "document_id": 321})
+    @patch.object(PaperlessClient, "upload_supporting_document")
+    def test_completed_task_stores_document_id_and_removes_file(self, upload, task_status):
+        document = self.create_document(
+            paperless_task_id="task-completed",
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+        stored_name = document.temporary_file.name
+
+        refresh_pending_supporting_documents()
+
+        document.refresh_from_db()
+        self.assertEqual(document.paperless_document_id, 321)
+        self.assertEqual(document.transfer_status, SupportingDocument.TransferStatus.COMPLETED)
+        self.assertFalse(document.temporary_file)
+        self.assertFalse(document.temporary_file.storage.exists(stored_name))
+        upload.assert_not_called()
+        task_status.assert_called_once_with("task-completed")
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="retry-task")
+    @patch.object(PaperlessClient, "find_document_by_reference", return_value={"status": "pending", "document_id": None})
+    def test_retry_uses_same_document_and_does_not_create_duplicate(self, find_document, upload):
+        document = self.create_document()
+
+        retry_supporting_document(document)
+
+        document.refresh_from_db()
+        self.assertEqual(document.paperless_task_id, "retry-task")
+        self.assertEqual(SupportingDocument.objects.count(), 1)
+        find_document.assert_called_once_with(str(document.reference_uuid))
+        upload.assert_called_once_with(document)
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="task-no-ocr")
+    @patch("bookkeeping.paperless.PaperlessClient.document_ocr_text")
+    @patch("bookkeeping.invoice_ai.run_manual_invoice_analysis")
+    def test_bank_transaction_document_never_calls_ocr_or_openai(
+        self, run_openai, ocr, upload
+    ):
+        result = import_supporting_document(
+            self.pdf(),
+            bank_transaction=self.transaction(),
+        )
+
+        self.assertEqual(result.document.transfer_status, SupportingDocument.TransferStatus.PENDING)
+        ocr.assert_not_called()
+        run_openai.assert_not_called()
+        upload.assert_called_once()
+
+    @patch.object(PaperlessClient, "task_status", side_effect=BookkeepingPaperlessError("unklar"))
+    @patch.object(PaperlessClient, "upload_supporting_document")
+    def test_unclear_task_state_does_not_start_second_upload(self, upload, task_status):
+        document = self.create_document(paperless_task_id="task-unclear")
+
+        with self.assertRaises(SupportingDocumentError):
+            retry_supporting_document(document)
+
+        upload.assert_not_called()
+        task_status.assert_called_once_with("task-unclear")
+
+    @patch.object(PaperlessClient, "upload_supporting_document")
+    def test_existing_document_id_is_reused_without_upload(self, upload):
+        document = self.create_document(paperless_document_id=459)
+
+        retry_supporting_document(document)
+
+        document.refresh_from_db()
+        self.assertEqual(document.transfer_status, SupportingDocument.TransferStatus.COMPLETED)
+        upload.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_local_delete_without_document_id_does_not_call_paperless(self, delete):
+        document = self.create_document(paperless_document_id=None)
+        url = reverse(
+            "matching_rule_document_delete",
+            kwargs={
+                "rule_pk": document.matching_rule_id,
+                "reference_uuid": document.reference_uuid,
+            },
+        )
+
+        self.client.post(url)
+
+        delete.assert_not_called()
+        self.assertFalse(SupportingDocument.objects.filter(pk=document.pk).exists())
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="task-rule-ui")
+    def test_matching_rule_upload_ui_creates_document_for_that_version(self, upload):
+        rule = self.rule()
+        response = self.client.post(
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+            {"action": "upload_supporting_document", "pdf": self.pdf()},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        document = SupportingDocument.objects.get()
+        self.assertEqual(document.matching_rule_id, rule.pk)
+        self.assertEqual(document.transfer_status, SupportingDocument.TransferStatus.PENDING)
+        upload.assert_called_once_with(document)
+
+    def test_open_and_ready_overview_shows_compact_document_count(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED)
+        self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": BankTransaction.Status.REVIEWED, "period_type": "month", "period": "2026-07"},
+        )
+
+        self.assertContains(response, "1 Belege")
+        self.assertContains(response, reverse("bank_transaction_booking", kwargs={"pk": transaction.pk}))
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_unlink_get_does_not_call_paperless_delete_and_post_removes_local_only(self, delete):
+        rule = self.rule()
+        document = self.create_document(matching_rule=rule)
+        url = reverse(
+            "matching_rule_document_remove",
+            kwargs={"rule_pk": rule.pk, "reference_uuid": document.reference_uuid},
+        )
+
+        self.client.get(url)
+        self.assertTrue(SupportingDocument.objects.filter(pk=document.pk).exists())
+        delete.assert_not_called()
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+        )
+        self.assertFalse(SupportingDocument.objects.filter(pk=document.pk).exists())
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_confirmation_cancel_uses_actual_owner_url_for_matching_and_bank(self, delete):
+        rule = self.rule()
+        matching_document = self.create_document(matching_rule=rule)
+        matching_url = reverse(
+            "matching_rule_document_remove",
+            kwargs={"rule_pk": rule.pk, "reference_uuid": matching_document.reference_uuid},
+        )
+        matching_response = self.client.get(matching_url)
+
+        self.assertEqual(
+            matching_response.context["owner_url"],
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+        )
+        self.assertNotIn(str(matching_document.reference_uuid), matching_response.context["owner_url"])
+        self.assertContains(matching_response, matching_response.context["owner_url"])
+        self.assertTrue(SupportingDocument.objects.filter(pk=matching_document.pk).exists())
+
+        transaction = self.transaction()
+        bank_document = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+        )
+        bank_url = reverse(
+            "bank_transaction_document_remove",
+            kwargs={"transaction_pk": transaction.pk, "reference_uuid": bank_document.reference_uuid},
+        )
+        bank_response = self.client.get(bank_url)
+
+        self.assertEqual(
+            bank_response.context["owner_url"],
+            reverse("bank_transaction_booking", kwargs={"pk": transaction.pk}),
+        )
+        self.assertNotIn(str(bank_document.reference_uuid), bank_response.context["owner_url"])
+        self.assertContains(bank_response, bank_response.context["owner_url"])
+        self.assertTrue(SupportingDocument.objects.filter(pk=bank_document.pk).exists())
+        delete.assert_not_called()
+
+    def test_delete_confirmation_cancel_uses_actual_owner_url(self):
+        rule = self.rule()
+        matching_document = self.create_document(matching_rule=rule)
+        matching_response = self.client.get(
+            reverse(
+                "matching_rule_document_delete",
+                kwargs={"rule_pk": rule.pk, "reference_uuid": matching_document.reference_uuid},
+            )
+        )
+        self.assertEqual(
+            matching_response.context["owner_url"],
+            reverse("matching_rule_detail", kwargs={"pk": rule.pk}),
+        )
+
+        transaction = self.transaction()
+        bank_document = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+        )
+        bank_response = self.client.get(
+            reverse(
+                "bank_transaction_document_delete",
+                kwargs={"transaction_pk": transaction.pk, "reference_uuid": bank_document.reference_uuid},
+            )
+        )
+        self.assertEqual(
+            bank_response.context["owner_url"],
+            reverse("bank_transaction_booking", kwargs={"pk": transaction.pk}),
+        )
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_successful_paperless_delete_removes_local_document(self, delete):
+        document = self.create_document(paperless_document_id=456)
+        url = reverse(
+            "matching_rule_document_delete",
+            kwargs={
+                "rule_pk": document.matching_rule_id,
+                "reference_uuid": document.reference_uuid,
+            },
+        )
+
+        self.client.get(url)
+        self.assertTrue(SupportingDocument.objects.filter(pk=document.pk).exists())
+        response = self.client.post(url)
+
+        delete.assert_called_once_with(456)
+        self.assertEqual(
+            response["Location"],
+            reverse("matching_rule_detail", kwargs={"pk": document.matching_rule_id}),
+        )
+        self.assertFalse(SupportingDocument.objects.filter(pk=document.pk).exists())
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_successful_bank_document_unlink_returns_to_actual_transaction(self, delete):
+        transaction = self.transaction(status=BankTransaction.Status.BOOKED)
+        document = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+        )
+        url = reverse(
+            "bank_transaction_document_remove",
+            kwargs={"transaction_pk": transaction.pk, "reference_uuid": document.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(
+            response["Location"],
+            reverse("bank_transaction_booking", kwargs={"pk": transaction.pk}),
+        )
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.status, BankTransaction.Status.BOOKED)
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document", side_effect=BookkeepingPaperlessError("API-Fehler"))
+    def test_failed_paperless_delete_keeps_local_document(self, delete):
+        document = self.create_document(paperless_document_id=457)
+        url = reverse(
+            "matching_rule_document_delete",
+            kwargs={
+                "rule_pk": document.matching_rule_id,
+                "reference_uuid": document.reference_uuid,
+            },
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], url)
+        self.assertTrue(SupportingDocument.objects.filter(pk=document.pk).exists())
+        delete.assert_called_once_with(457)
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example")
+    def test_booking_page_shows_paperless_link_only_for_existing_document(self):
+        transaction = self.transaction()
+        completed = self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+            transfer_status=SupportingDocument.TransferStatus.COMPLETED,
+            paperless_document_id=458,
+        )
+        response = self.client.get(
+            reverse("bank_transaction_booking", kwargs={"pk": transaction.pk})
+        )
+
+        self.assertContains(response, "In Paperless öffnen")
+        self.assertContains(response, PaperlessClient.document_url(458))
+        self.assertContains(response, 'target="_blank"')
+        self.assertContains(response, 'rel="noopener noreferrer"')
+        self.assertContains(response, "Belege")
+        self.assertEqual(completed.transfer_status, SupportingDocument.TransferStatus.COMPLETED)
+
+    def test_booking_page_does_not_show_link_without_document_id(self):
+        transaction = self.transaction()
+        self.create_document(
+            matching_rule=None,
+            bank_transaction=transaction,
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+            paperless_document_id=None,
+        )
+        response = self.client.get(
+            reverse("bank_transaction_booking", kwargs={"pk": transaction.pk})
+        )
+
+        self.assertNotContains(response, "In Paperless öffnen")
+
+    @patch.object(PaperlessClient, "upload_supporting_document", return_value="task-ui")
+    def test_bank_upload_ui_keeps_transaction_status_and_supports_multiple_documents(self, upload):
+        transaction = self.transaction(status=BankTransaction.Status.BOOKED)
+        url = reverse("bank_transaction_booking", kwargs={"pk": transaction.pk})
+        first_response = self.client.post(
+            url,
+            {"action": "upload_supporting_document", "pdf": self.pdf("eins.pdf")},
+        )
+        second_response = self.client.post(
+            url,
+            {"action": "upload_supporting_document", "pdf": self.pdf("zwei.pdf")},
+        )
+
+        transaction.refresh_from_db()
+        self.assertEqual(first_response.status_code, 302)
+        self.assertEqual(second_response.status_code, 302)
+        self.assertEqual(transaction.status, BankTransaction.Status.BOOKED)
+        self.assertEqual(transaction.supporting_documents.count(), 2)
+        self.assertEqual(upload.call_count, 2)
+
+
+class BookingSetResetAndManualDeletionTests(TestCase):
+    def setUp(self):
+        self.media_directory = tempfile.TemporaryDirectory()
+        self.media_override = override_settings(MEDIA_ROOT=self.media_directory.name)
+        self.media_override.enable()
+        self.addCleanup(self.media_override.disable)
+        self.addCleanup(self.media_directory.cleanup)
+
+    def rule(self):
+        return MatchingRule.objects.create(
+            name="BHG14_1",
+            direction=MatchingRule.Direction.OUTGOING,
+            match_type=MatchingRule.MatchType.EXACT,
+            iban="AT611904300234573201",
+            expected_amount=Decimal("100.00"),
+        )
+
+    def transaction(self, **overrides):
+        values = {
+            "booking_date": date(2026, 7, 15),
+            "value_date": date(2026, 7, 14),
+            "partner_name": "BHG14_1",
+            "partner_iban": "AT611904300234573201",
+            "amount": Decimal("-100.00"),
+            "currency": "EUR",
+            "purpose": "Buchungstext original",
+            "direction": BankTransaction.Direction.OUTGOING,
+            "status": BankTransaction.Status.REVIEWED,
+        }
+        values.update(overrides)
+        return BankTransaction.objects.create(**values)
+
+    def invoice(self, **overrides):
+        values = {
+            "file_hash": uuid.uuid4().hex * 2,
+            "status": ManualInvoice.Status.READY,
+            "invoice_number": "INV-14",
+            "invoice_date": date(2026, 7, 10),
+            "payment_date": date(2026, 7, 15),
+            "partner_name": "BHG14_1",
+            "gross_amount": Decimal("100.00"),
+            "notes": "Originale Anmerkung",
+            "paperless_task_id": "task-existing",
+            "paperless_document_id": 812,
+            "paperless_status": ManualInvoice.PaperlessStatus.COMPLETED,
+            "ai_status": ManualInvoice.AIStatus.COMPLETED,
+            "ai_model_used": "test-model",
+            "ai_result": {"invoice_number": "INV-14"},
+            "ai_error": "",
+            "temporary_pdf": SimpleUploadedFile(
+                "rechnung-14.pdf",
+                b"%PDF-1.7\nrechnung",
+                content_type="application/pdf",
+            ),
+        }
+        values.update(overrides)
+        return ManualInvoice.objects.create(**values)
+
+    def bank_entry(self, transaction, text="Bankbuchung"):
+        return BookingEntry.objects.create(
+            bank_transaction=transaction,
+            payment_date=date(2026, 7, 15),
+            booking_text=text,
+            partner_name="BHG14_1",
+            gross_amount=Decimal("-100.00"),
+        )
+
+    def manual_entry(self, invoice, text="Manuelle Buchung"):
+        return ManualInvoiceEntry.objects.create(
+            manual_invoice=invoice,
+            payment_date=date(2026, 7, 15),
+            booking_text=text,
+            partner_name="BHG14_1",
+            gross_amount=Decimal("100.00"),
+        )
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_bank_reset_get_is_read_only_and_post_keeps_source_and_supporting_document(self, delete):
+        rule = self.rule()
+        transaction = self.transaction(matched_rule=rule)
+        entry = self.bank_entry(transaction)
+        supporting_document = SupportingDocument.objects.create(
+            bank_transaction=transaction,
+            original_filename="bankbeleg.pdf",
+            transfer_status=SupportingDocument.TransferStatus.COMPLETED,
+            paperless_document_id=813,
+        )
+        url = reverse(
+            "bank_transaction_reset_booking",
+            kwargs={"transaction_pk": transaction.pk},
+        )
+
+        get_response = self.client.get(url)
+        self.assertContains(get_response, "Buchungssatz zurücksetzen")
+        self.assertTrue(BookingEntry.objects.filter(pk=entry.pk).exists())
+        self.assertTrue(SupportingDocument.objects.filter(pk=supporting_document.pk).exists())
+        delete.assert_not_called()
+
+        post_response = self.client.post(url)
+
+        transaction.refresh_from_db()
+        self.assertEqual(post_response.status_code, 302)
+        self.assertIn("status=open", post_response["Location"])
+        self.assertIn("month=2026-07", post_response["Location"])
+        self.assertTrue(BankTransaction.objects.filter(pk=transaction.pk).exists())
+        self.assertEqual(transaction.status, BankTransaction.Status.MATCHED)
+        self.assertEqual(transaction.purpose, "Buchungstext original")
+        self.assertFalse(BookingEntry.objects.filter(pk=entry.pk).exists())
+        self.assertTrue(SupportingDocument.objects.filter(pk=supporting_document.pk).exists())
+        delete.assert_not_called()
+
+    def test_unmatched_bank_reset_returns_to_imported_without_matching(self):
+        transaction = self.transaction(
+            matched_rule=None,
+            status=BankTransaction.Status.BOOKED,
+        )
+        self.bank_entry(transaction)
+
+        reset_bank_transaction_booking(transaction)
+
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.status, BankTransaction.Status.IMPORTED)
+        self.assertIsNone(transaction.matched_rule_id)
+        self.assertEqual(transaction.booking_entries.count(), 0)
+
+    def test_bank_reset_only_deletes_entries_of_selected_transaction(self):
+        selected = self.transaction()
+        other = self.transaction(partner_name="Andere Quelle")
+        selected_entry = self.bank_entry(selected, text="Ausgewählt")
+        other_entry = self.bank_entry(other, text="Andere Transaktion")
+
+        reset_bank_transaction_booking(selected)
+
+        self.assertFalse(BookingEntry.objects.filter(pk=selected_entry.pk).exists())
+        self.assertTrue(BookingEntry.objects.filter(pk=other_entry.pk).exists())
+        self.assertTrue(BankTransaction.objects.filter(pk=selected.pk).exists())
+        self.assertTrue(BankTransaction.objects.filter(pk=other.pk).exists())
+
+    def test_bank_reset_requires_post_with_csrf(self):
+        transaction = self.transaction()
+        entry = self.bank_entry(transaction)
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            reverse(
+                "bank_transaction_reset_booking",
+                kwargs={"transaction_pk": transaction.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(BookingEntry.objects.filter(pk=entry.pk).exists())
+
+    def test_manual_reset_get_and_post_keep_invoice_paperless_and_ai_data(self):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        document_name = invoice.temporary_pdf.name
+        original_reference = invoice.reference_uuid
+        url = reverse(
+            "manual_invoice_reset_booking",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        with patch.object(PaperlessClient, "delete_document") as delete, patch(
+            "bookkeeping.invoice_ai.run_manual_invoice_analysis"
+        ) as analyze:
+            get_response = self.client.get(url)
+            self.assertContains(get_response, "BHG14_1")
+            self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+            delete.assert_not_called()
+            analyze.assert_not_called()
+
+            post_response = self.client.post(url)
+
+        invoice.refresh_from_db()
+        self.assertEqual(post_response.status_code, 302)
+        self.assertEqual(post_response["Location"], reverse("manual_invoice_list"))
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertEqual(invoice.reference_uuid, original_reference)
+        self.assertEqual(invoice.paperless_document_id, 812)
+        self.assertEqual(invoice.paperless_task_id, "task-existing")
+        self.assertEqual(invoice.ai_status, ManualInvoice.AIStatus.COMPLETED)
+        self.assertEqual(invoice.ai_result, {"invoice_number": "INV-14"})
+        self.assertTrue(invoice.temporary_pdf)
+        self.assertTrue(invoice.temporary_pdf.storage.exists(document_name))
+        self.assertFalse(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    def test_manual_reset_without_entries_is_controlled_and_returns_to_draft(self):
+        invoice = self.invoice()
+
+        reset_manual_invoice_booking(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+
+    def test_manual_reset_rolls_back_when_entry_deletion_fails(self):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+
+        with patch(
+            "bookkeeping.booking_resets.ManualInvoiceEntry.objects.filter",
+            side_effect=RuntimeError("DB-Fehler"),
+        ), self.assertRaises(RuntimeError):
+            reset_manual_invoice_booking(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_manual_delete_get_is_read_only_and_shows_relevant_data(self, delete):
+        invoice = self.invoice()
+        self.manual_entry(invoice, text="Löschen prüfen")
+        url = reverse(
+            "manual_invoice_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.get(url)
+
+        self.assertContains(response, "INV-14")
+        self.assertContains(response, "BHG14_1")
+        self.assertContains(response, "812")
+        self.assertContains(response, "rechnung-14.pdf")
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_manual_delete_uses_saved_paperless_id_then_deletes_local_data(self, delete):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        document_name = invoice.temporary_pdf.name
+        transaction = self.transaction()
+        supporting_document = SupportingDocument.objects.create(
+            bank_transaction=transaction,
+            original_filename="bankbeleg.pdf",
+            transfer_status=SupportingDocument.TransferStatus.COMPLETED,
+            paperless_document_id=814,
+        )
+        url = reverse(
+            "manual_invoice_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        delete.assert_called_once_with(812)
+        self.assertFalse(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertFalse(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        self.assertFalse(invoice.temporary_pdf.storage.exists(document_name))
+        self.assertTrue(SupportingDocument.objects.filter(pk=supporting_document.pk).exists())
+        self.assertTrue(BankTransaction.objects.filter(pk=transaction.pk).exists())
+
+    @patch.object(PaperlessClient, "delete_document", side_effect=BookkeepingPaperlessError("Paperless-Fehler"))
+    def test_manual_delete_paperless_error_keeps_invoice_entries_and_file(self, delete):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        document_name = invoice.temporary_pdf.name
+        url = reverse(
+            "manual_invoice_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], url)
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        self.assertTrue(invoice.temporary_pdf.storage.exists(document_name))
+        delete.assert_called_once_with(812)
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_manual_delete_rolls_back_local_data_when_database_delete_fails(self, delete):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+
+        with patch(
+            "bookkeeping.manual_invoices.ManualInvoiceEntry.objects.filter",
+            side_effect=RuntimeError("DB-Fehler"),
+        ), self.assertRaises(ManualInvoiceDeletionError):
+            delete_manual_invoice_completely(invoice)
+
+        delete.assert_called_once_with(812)
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "completed", "document_id": 815},
+    )
+    def test_missing_document_id_resolves_one_uuid_match_and_deletes_it(
+        self, find_document, delete
+    ):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+        url = reverse(
+            "manual_invoice_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        self.client.post(url)
+
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_called_once_with(815)
+        self.assertFalse(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        side_effect=BookkeepingPaperlessError(
+            "In Paperless wurden mehrere Dokumente mit derselben Bookkeeping-Referenz gefunden."
+        ),
+    )
+    def test_multiple_uuid_matches_block_local_delete(self, find_document, delete):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+        entry = self.manual_entry(invoice)
+
+        with self.assertRaises(ManualInvoiceDeletionError) as error:
+            delete_manual_invoice_completely(invoice)
+
+        self.assertIn("mehrere Dokumente", str(error.exception))
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_not_called()
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "pending", "document_id": None},
+    )
+    def test_pending_or_unclear_uuid_resolution_blocks_local_delete(
+        self, find_document, delete
+    ):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="task-pending",
+            paperless_status=ManualInvoice.PaperlessStatus.PENDING,
+        )
+        entry = self.manual_entry(invoice)
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={"status": "pending", "document_id": None},
+        ) as task_status:
+            with self.assertRaises(ManualInvoiceDeletionError) as error:
+                delete_manual_invoice_completely(invoice)
+
+        self.assertIn("noch nicht eindeutig", str(error.exception))
+        task_status.assert_called_once_with("task-pending")
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_not_called()
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example", PAPERLESS_API_TOKEN="token")
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "pending", "document_id": None},
+    )
+    def test_uuid_lookup_with_no_document_allows_local_delete(self, find_document, delete):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+        entry = self.manual_entry(invoice)
+
+        delete_manual_invoice_completely(invoice)
+
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_not_called()
+        self.assertFalse(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertFalse(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @patch.object(PaperlessClient, "delete_document", side_effect=BookkeepingPaperlessError("Paperless antwortet mit HTTP-Status 404."))
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "pending", "document_id": None},
+    )
+    def test_missing_saved_paperless_document_is_handled_as_already_deleted(
+        self, find_document, delete
+    ):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+
+        delete_manual_invoice_completely(invoice)
+
+        delete.assert_called_once_with(812)
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        self.assertFalse(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertFalse(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_manual_delete_requires_csrf(self, delete):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            reverse(
+                "manual_invoice_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        delete.assert_not_called()
+
+    def test_manual_delete_and_reset_actions_are_visible_in_required_views(self):
+        draft = self.invoice(status=ManualInvoice.Status.DRAFT)
+        list_response = self.client.get(reverse("manual_invoice_list"))
+        self.assertContains(list_response, "Beleg vollständig löschen")
+        self.assertContains(
+            list_response,
+            reverse("manual_invoice_delete", kwargs={"reference_uuid": draft.reference_uuid}),
+        )
+
+        edit_response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": draft.reference_uuid},
+            )
+        )
+        self.assertContains(edit_response, "Buchungssatz zurücksetzen")
+        self.assertContains(edit_response, "Beleg vollständig löschen")
+
+        ready = self.invoice()
+        self.manual_entry(ready)
+        ready_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": BankTransaction.Status.REVIEWED,
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        self.assertContains(ready_response, "Buchungssatz zurücksetzen")
+        self.assertContains(ready_response, "Beleg vollständig löschen")
+
+    def test_paperless_only_action_is_visible_in_draft_edit_and_ready_views(self):
+        draft = self.invoice(status=ManualInvoice.Status.DRAFT)
+        list_response = self.client.get(reverse("manual_invoice_list"))
+        self.assertContains(list_response, "Nur aus Paperless löschen")
+        self.assertContains(
+            list_response,
+            reverse(
+                "manual_invoice_paperless_delete",
+                kwargs={"reference_uuid": draft.reference_uuid},
+            ),
+        )
+
+        edit_response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": draft.reference_uuid},
+            )
+        )
+        self.assertContains(edit_response, "Nur aus Paperless löschen")
+
+        ready = self.invoice()
+        self.manual_entry(ready)
+        ready_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": BankTransaction.Status.REVIEWED,
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        self.assertContains(ready_response, "Nur aus Paperless löschen")
+
+        deleted = self.invoice(
+            status=ManualInvoice.Status.DRAFT,
+            paperless_deleted_at=timezone.now(),
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.DELETED,
+        )
+        deleted_response = self.client.get(
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": deleted.reference_uuid})
+        )
+        self.assertContains(deleted_response, "Aus Paperless gelöscht")
+        self.assertNotContains(deleted_response, "Nur aus Paperless löschen")
+        self.assertNotContains(deleted_response, "In Paperless öffnen")
+
+    def test_ready_manual_invoice_actions_are_compact_icon_links_with_accessible_labels(self):
+        invoice = self.invoice()
+        self.manual_entry(invoice)
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": BankTransaction.Status.REVIEWED,
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+        content = response.content.decode()
+
+        for label in (
+            "Bearbeiten",
+            "In Paperless öffnen",
+            "Nur aus Paperless löschen",
+            "Buchungssatz zurücksetzen",
+            "Beleg vollständig löschen",
+        ):
+            self.assertIn(f'title="{label}"', content)
+            self.assertIn(f'aria-label="{label}"', content)
+        for icon in (
+            "bi-pencil",
+            "bi-box-arrow-up-right",
+            "bi-file-earmark-x",
+            "bi-arrow-counterclockwise",
+            "bi-trash",
+        ):
+            self.assertIn(f"bi {icon}", content)
+
+        self.assertIn('target="_blank"', content)
+        self.assertIn('rel="noopener noreferrer"', content)
+        self.assertIn(
+            f'href="{reverse("manual_invoice_paperless_delete", kwargs={"reference_uuid": invoice.reference_uuid})}"',
+            content,
+        )
+        self.assertIn(
+            f'href="{reverse("manual_invoice_delete", kwargs={"reference_uuid": invoice.reference_uuid})}"',
+            content,
+        )
+        self.assertIn(
+            f'href="{reverse("manual_invoice_reset_booking", kwargs={"reference_uuid": invoice.reference_uuid})}"',
+            content,
+        )
+        self.assertNotIn(
+            f'<form method="post" action="{reverse("manual_invoice_delete", kwargs={"reference_uuid": invoice.reference_uuid})}"',
+            content,
+        )
+
+    def test_ready_manual_invoice_without_paperless_document_has_no_paperless_icon(self):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.NOT_STARTED,
+        )
+        self.manual_entry(invoice)
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {
+                "status": BankTransaction.Status.REVIEWED,
+                "period_type": "month",
+                "period": "2026-07",
+            },
+        )
+
+        self.assertNotContains(response, 'title="In Paperless öffnen"')
+        self.assertNotContains(response, 'aria-label="In Paperless öffnen"')
+        self.assertNotContains(response, 'title="Nur aus Paperless löschen"')
+
+    @patch.object(PaperlessClient, "task_status", return_value={"status": "pending", "document_id": None})
+    @patch.object(PaperlessClient, "delete_document")
+    def test_running_paperless_task_blocks_paperless_only_delete(self, delete, task_status):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="task-pending",
+            paperless_status=ManualInvoice.PaperlessStatus.PENDING,
+        )
+
+        with self.assertRaises(ManualInvoiceDeletionError):
+            delete_manual_invoice_from_paperless(invoice)
+
+        task_status.assert_called_once_with("task-pending")
+        delete.assert_not_called()
+        invoice.refresh_from_db()
+        self.assertIsNone(invoice.paperless_deleted_at)
+        self.assertEqual(invoice.paperless_task_id, "task-pending")
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_get_is_read_only_and_shows_invoice_data(self, delete):
+        invoice = self.invoice()
+        url = reverse(
+            "manual_invoice_paperless_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.get(url)
+
+        self.assertContains(response, "INV-14")
+        self.assertContains(response, "BHG14_1")
+        self.assertContains(response, "rechnung-14.pdf")
+        self.assertContains(response, "812")
+        self.assertContains(
+            response,
+            "Der manuelle Beleg, seine Buchungszeilen sowie OCR- und KI-Daten bleiben in Quintus erhalten.",
+        )
+        invoice.refresh_from_db()
+        self.assertIsNone(invoice.paperless_deleted_at)
+        self.assertEqual(invoice.paperless_document_id, 812)
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_cancel_is_read_only(self, delete):
+        invoice = self.invoice(status=ManualInvoice.Status.DRAFT)
+        entry = self.manual_entry(invoice)
+        url = reverse(
+            "manual_invoice_paperless_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_requires_csrf(self, delete):
+        invoice = self.invoice()
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            reverse(
+                "manual_invoice_paperless_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+        invoice.refresh_from_db()
+        self.assertIsNone(invoice.paperless_deleted_at)
+        self.assertEqual(invoice.paperless_document_id, 812)
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_keeps_local_invoice_entries_and_status(self, delete):
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        original = {
+            "reference_uuid": invoice.reference_uuid,
+            "invoice_number": invoice.invoice_number,
+            "partner_name": invoice.partner_name,
+            "notes": invoice.notes,
+            "ai_status": invoice.ai_status,
+            "ai_model_used": invoice.ai_model_used,
+            "ai_result": invoice.ai_result,
+            "temporary_pdf": invoice.temporary_pdf.name,
+        }
+        url = reverse(
+            "manual_invoice_paperless_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("status=reviewed", response["Location"])
+        invoice.refresh_from_db()
+        self.assertTrue(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        self.assertEqual(invoice.reference_uuid, original["reference_uuid"])
+        self.assertEqual(invoice.invoice_number, original["invoice_number"])
+        self.assertEqual(invoice.partner_name, original["partner_name"])
+        self.assertEqual(invoice.notes, original["notes"])
+        self.assertEqual(invoice.ai_status, original["ai_status"])
+        self.assertEqual(invoice.ai_model_used, original["ai_model_used"])
+        self.assertEqual(invoice.ai_result, original["ai_result"])
+        self.assertEqual(invoice.temporary_pdf.name, original["temporary_pdf"])
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertIsNotNone(invoice.paperless_deleted_at)
+        self.assertIsNone(invoice.paperless_document_id)
+        self.assertEqual(invoice.paperless_task_id, "")
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.DELETED)
+        self.assertEqual(invoice.paperless_error, "")
+        delete.assert_called_once_with(812)
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_draft_returns_to_manual_invoice_list(self, delete):
+        invoice = self.invoice(status=ManualInvoice.Status.DRAFT)
+        url = reverse(
+            "manual_invoice_paperless_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        delete.assert_called_once_with(812)
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_paperless_only_delete_error_changes_nothing_locally(self, delete):
+        delete.side_effect = BookkeepingPaperlessError("Paperless-Fehler")
+        invoice = self.invoice()
+        entry = self.manual_entry(invoice)
+        document_name = invoice.temporary_pdf.name
+        url = reverse(
+            "manual_invoice_paperless_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response["Location"], url)
+        invoice.refresh_from_db()
+        self.assertIsNone(invoice.paperless_deleted_at)
+        self.assertEqual(invoice.paperless_document_id, 812)
+        self.assertEqual(invoice.paperless_task_id, "task-existing")
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
+        self.assertTrue(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        self.assertTrue(invoice.temporary_pdf.storage.exists(document_name))
+        delete.assert_called_once_with(812)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example",
+        PAPERLESS_API_TOKEN="token",
+    )
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "completed", "document_id": 815},
+    )
+    def test_paperless_only_delete_resolves_missing_id_by_uuid(self, find_document, delete):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+
+        delete_manual_invoice_from_paperless(invoice)
+
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_called_once_with(815)
+        invoice.refresh_from_db()
+        self.assertIsNotNone(invoice.paperless_deleted_at)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example",
+        PAPERLESS_API_TOKEN="token",
+    )
+    @patch.object(PaperlessClient, "delete_document")
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        side_effect=BookkeepingPaperlessError(
+            "In Paperless wurden mehrere Dokumente mit derselben Bookkeeping-Referenz gefunden."
+        ),
+    )
+    def test_paperless_only_delete_blocks_multiple_uuid_matches(self, find_document, delete):
+        invoice = self.invoice(
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+
+        with self.assertRaises(ManualInvoiceDeletionError):
+            delete_manual_invoice_from_paperless(invoice)
+
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+        delete.assert_not_called()
+        invoice.refresh_from_db()
+        self.assertIsNone(invoice.paperless_deleted_at)
+
+    @patch.object(PaperlessClient, "delete_document")
+    def test_full_delete_after_paperless_only_delete_does_not_call_paperless_again(self, delete):
+        invoice = self.invoice(paperless_deleted_at=timezone.now())
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.DELETED
+        invoice.paperless_document_id = None
+        invoice.paperless_task_id = ""
+        invoice.save(
+            update_fields=(
+                "paperless_deleted_at",
+                "paperless_status",
+                "paperless_document_id",
+                "paperless_task_id",
+            )
+        )
+        entry = self.manual_entry(invoice)
+        url = reverse(
+            "manual_invoice_delete",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(ManualInvoice.objects.filter(pk=invoice.pk).exists())
+        self.assertFalse(ManualInvoiceEntry.objects.filter(pk=entry.pk).exists())
+        delete.assert_not_called()
+
+    @patch.object(PaperlessClient, "upload_manual_invoice")
+    @patch.object(PaperlessClient, "task_status")
+    @patch.object(PaperlessClient, "document_ocr_text")
+    def test_deleted_invoice_edit_and_upload_workflows_never_upload_or_read_ocr(
+        self, ocr_text, task_status, upload
+    ):
+        invoice = self.invoice(
+            status=ManualInvoice.Status.DRAFT,
+            paperless_deleted_at=timezone.now(),
+            paperless_document_id=None,
+            paperless_task_id="",
+            paperless_status=ManualInvoice.PaperlessStatus.DELETED,
+        )
+        invoice.save(
+            update_fields=(
+                "paperless_deleted_at",
+                "paperless_document_id",
+                "paperless_task_id",
+                "paperless_status",
+            )
+        )
+        edit_url = reverse(
+            "manual_invoice_edit",
+            kwargs={"reference_uuid": invoice.reference_uuid},
+        )
+        response = self.client.get(edit_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Aus Paperless gelöscht")
+        self.assertNotContains(response, "Nur aus Paperless löschen")
+        upload.assert_not_called()
+        task_status.assert_not_called()
+        ocr_text.assert_not_called()

@@ -634,10 +634,11 @@ def ai_ui_state(invoice: ManualInvoice) -> dict:
         ManualInvoice.PaperlessStatus.PENDING: ("Übertragung läuft", "warning"),
         ManualInvoice.PaperlessStatus.COMPLETED: ("Abgelegt", "success"),
         ManualInvoice.PaperlessStatus.FAILED: ("Fehler", "danger"),
+        ManualInvoice.PaperlessStatus.DELETED: ("Aus Paperless gelöscht", "info"),
     }.get(invoice.paperless_status, (paperless_status_label, "info"))
     paperless_document_url = (
         PaperlessClient.document_url(invoice.paperless_document_id)
-        if paperless_ready
+        if paperless_ready and invoice.paperless_deleted_at is None
         else ""
     )
     temporary_pdf_available = False
@@ -734,6 +735,19 @@ def ai_ui_state(invoice: ManualInvoice) -> dict:
                 ManualInvoice.PaperlessStatus.FAILED,
             }
             and temporary_pdf_available
+        ),
+        "paperless_can_delete": (
+            invoice.paperless_deleted_at is None
+            and (
+                bool(invoice.paperless_document_id)
+                or bool(invoice.paperless_task_id)
+                or invoice.paperless_status
+                in {
+                    ManualInvoice.PaperlessStatus.COMPLETED,
+                    ManualInvoice.PaperlessStatus.PENDING,
+                    ManualInvoice.PaperlessStatus.FAILED,
+                }
+            )
         ),
         "paperless_can_retry_dates": (
             invoice.status == ManualInvoice.Status.READY

@@ -4,6 +4,7 @@ import uuid
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Q
 
 from .choices import (
     CATEGORY_CHOICES,
@@ -403,6 +404,7 @@ class ManualInvoice(models.Model):
         PENDING = "pending", "Übertragung zu Paperless läuft"
         COMPLETED = "completed", "In Paperless abgelegt"
         FAILED = "failed", "Übertragung fehlgeschlagen"
+        DELETED = "deleted", "Aus Paperless gelöscht"
 
     class AIStatus(models.TextChoices):
         NOT_STARTED = "not_started", "Nicht analysiert"
@@ -428,6 +430,7 @@ class ManualInvoice(models.Model):
         default=PaperlessStatus.NOT_STARTED,
     )
     paperless_error = models.TextField(blank=True)
+    paperless_deleted_at = models.DateTimeField(null=True, blank=True)
     temporary_pdf = models.FileField(
         upload_to="bookkeeping/manual_invoices/",
         blank=True,
@@ -596,5 +599,72 @@ class BankStatement(models.Model):
             models.UniqueConstraint(
                 fields=("iban", "statement_year", "statement_number"),
                 name="unique_bank_statement_iban_year_number",
+            ),
+        ]
+
+
+class SupportingDocument(models.Model):
+    class TransferStatus(models.TextChoices):
+        PENDING = "pending", "Übertragung läuft"
+        COMPLETED = "completed", "Abgelegt"
+        FAILED = "failed", "Fehler"
+
+    reference_uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
+    matching_rule = models.ForeignKey(
+        MatchingRule,
+        on_delete=models.CASCADE,
+        related_name="supporting_documents",
+        null=True,
+        blank=True,
+    )
+    bank_transaction = models.ForeignKey(
+        BankTransaction,
+        on_delete=models.CASCADE,
+        related_name="supporting_documents",
+        null=True,
+        blank=True,
+    )
+    original_filename = models.CharField(max_length=255)
+    temporary_file = models.FileField(
+        upload_to="bookkeeping/supporting_documents/",
+        blank=True,
+        null=True,
+    )
+    paperless_task_id = models.CharField(max_length=128, blank=True)
+    paperless_document_id = models.PositiveIntegerField(null=True, blank=True)
+    transfer_status = models.CharField(
+        max_length=9,
+        choices=TransferStatus.choices,
+        default=TransferStatus.PENDING,
+    )
+    transfer_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        super().clean()
+        owners = [self.matching_rule_id is not None, self.bank_transaction_id is not None]
+        if sum(owners) != 1:
+            raise ValidationError(
+                "Ein Beleg muss genau einer Matching-Regel-Version oder "
+                "einer Banktransaktion zugeordnet sein."
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    (Q(matching_rule__isnull=False) & Q(bank_transaction__isnull=True))
+                    | (Q(matching_rule__isnull=True) & Q(bank_transaction__isnull=False))
+                ),
+                name="supporting_document_exactly_one_owner",
             ),
         ]

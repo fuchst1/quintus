@@ -1,0 +1,52 @@
+{% extends "bookkeeping/base.html" %}
+{% load bookkeeping_formatting %}
+
+{% block title %}Manuellen Beleg vollständig löschen – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="manual-invoice-delete-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="manual-invoice-delete-heading" class="bookkeeping-page-title">Manuellen Beleg vollständig löschen</h1>
+            <p class="bookkeeping-page-description">Diese Aktion betrifft den Beleg und sein Paperless-Dokument.</p>
+        </div>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="bookkeeping-rule-detail-card bookkeeping-confirmation-card">
+        <dl class="bookkeeping-rule-detail-list">
+            <dt>Rechnungsnummer</dt><dd>{{ manual_invoice.invoice_number|default:"–" }}</dd>
+            <dt>Lieferant/Kunde</dt><dd>{{ manual_invoice.partner_name|default:"–" }}</dd>
+            <dt>Rechnungsdatum</dt><dd>{% if manual_invoice.invoice_date %}{{ manual_invoice.invoice_date|date:"d.m.Y" }}{% else %}–{% endif %}</dd>
+            <dt>Zahlungsdatum</dt><dd>{% if manual_invoice.payment_date %}{{ manual_invoice.payment_date|date:"d.m.Y" }}{% else %}–{% endif %}</dd>
+            <dt>Gesamtbetrag</dt><dd>{{ manual_invoice.gross_amount|austrian_money:"EUR" }}</dd>
+            <dt>Status</dt><dd>{{ manual_invoice.get_status_display }}</dd>
+            <dt>Anzahl der Buchungszeilen</dt><dd>{{ entry_count }}</dd>
+            <dt>Zeilensumme</dt><dd>{{ entry_total }}</dd>
+            <dt>Paperless-Dokument-ID</dt><dd>{{ paperless_document_id|default:"–" }}</dd>
+            <dt>Originaldateiname</dt><dd>{{ original_filename }}</dd>
+        </dl>
+
+        {% if booking_texts %}
+        <h2 class="h6">Buchungstexte</h2>
+        <ul>{% for text in booking_texts %}<li>{{ text }}</li>{% endfor %}</ul>
+        {% endif %}
+
+        {% if manual_invoice.paperless_deleted_at %}
+        <p class="alert alert-danger">Der manuelle Beleg und alle zugehörigen Buchungszeilen werden gelöscht. Das Paperless-Dokument wurde bereits zuvor bewusst gelöscht. Diese Aktion kann in Quintus nicht rückgängig gemacht werden. Bereits nach Excel kopierte Daten werden nicht verändert.</p>
+        {% else %}
+        <p class="alert alert-danger">Der manuelle Beleg, alle zugehörigen Buchungszeilen und das Dokument in Paperless werden gelöscht. Diese Aktion kann in Quintus nicht rückgängig gemacht werden. Bereits nach Excel kopierte Daten werden nicht verändert.</p>
+        {% endif %}
+        <form method="post" class="bookkeeping-entry-form-actions">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">Beleg und Dokument löschen</button>
+            <a href="{% url 'manual_invoice_edit' manual_invoice.reference_uuid %}" class="btn btn-outline-secondary">Abbrechen</a>
+        </form>
+    </div>
+</section>
+{% endblock %}

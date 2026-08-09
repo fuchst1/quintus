@@ -147,6 +147,39 @@ class ManualInvoiceUploadForm(BankStatementUploadForm):
     )
 
 
+class SupportingDocumentUploadForm(forms.Form):
+    max_file_size_bytes = BankStatementUploadForm.max_file_size_bytes
+    pdf = forms.FileField(
+        label="PDF-Beleg",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": "application/pdf,.pdf"}
+        ),
+    )
+
+    def clean_pdf(self):
+        uploaded_file = self.cleaned_data["pdf"]
+        if uploaded_file.size > self.max_file_size_bytes:
+            raise forms.ValidationError(
+                "Die PDF-Datei darf höchstens 25 MB groß sein."
+            )
+        if not str(uploaded_file.name or "").lower().endswith(".pdf"):
+            raise forms.ValidationError("Bitte eine PDF-Datei auswählen.")
+        if str(getattr(uploaded_file, "content_type", "") or "").lower() not in {
+            "application/pdf",
+            "application/x-pdf",
+        }:
+            raise forms.ValidationError("Die Datei muss den Content-Type application/pdf haben.")
+        current_position = uploaded_file.tell() if hasattr(uploaded_file, "tell") else 0
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        file_header = uploaded_file.read(5)
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(current_position)
+        if file_header != b"%PDF-":
+            raise forms.ValidationError("Die Datei ist kein gültiges PDF.")
+        return uploaded_file
+
+
 class MatchingRuleForm(forms.ModelForm):
     bound_field_class = MatchingRuleBoundField
 

@@ -289,6 +289,12 @@
     min-width: 66rem;
 }
 
+.bookkeeping-manual-invoice-table .bookkeeping-actions {
+    min-width: 11rem;
+    width: 11rem;
+    white-space: normal;
+}
+
 .bookkeeping-manual-invoice-totals {
     display: grid;
     gap: 0.65rem;
@@ -460,6 +466,55 @@
     border: 1px solid #dfe3e8;
     margin-bottom: 1rem;
     padding: 1rem 1.1rem;
+}
+
+.bookkeeping-supporting-documents-card {
+    overflow: hidden;
+}
+
+.bookkeeping-supporting-document-upload-form {
+    margin-bottom: 0.8rem;
+}
+
+.bookkeeping-supporting-document-upload-controls {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bookkeeping-supporting-document-upload-controls .form-control {
+    max-width: 32rem;
+}
+
+.bookkeeping-supporting-document-table {
+    min-width: 48rem;
+}
+
+.bookkeeping-supporting-document-table td,
+.bookkeeping-supporting-document-table th {
+    vertical-align: top;
+}
+
+.bookkeeping-supporting-documents-collapsible {
+    border: 1px solid #dfe3e8;
+    margin-bottom: 1rem;
+    padding: 0.75rem 0.9rem;
+}
+
+.bookkeeping-supporting-documents-collapsible > summary {
+    color: #345f8c;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.bookkeeping-supporting-documents-content {
+    border-top: 1px solid #dfe3e8;
+    margin-top: 0.7rem;
+    padding-top: 0.7rem;
+}
+
+.bookkeeping-confirmation-card {
+    max-width: 48rem;
 }
 
 .bookkeeping-rule-detail-heading {
@@ -1118,6 +1173,43 @@
     gap: 0.35rem;
 }
 
+.bookkeeping-icon-action-group {
+    align-items: center;
+    gap: 0.25rem;
+    max-width: 11rem;
+}
+
+.bookkeeping-icon-action,
+.bookkeeping-icon-action-form {
+    flex: 0 0 2rem;
+}
+
+.bookkeeping-icon-action {
+    align-items: center;
+    display: inline-flex;
+    height: 2rem;
+    justify-content: center;
+    min-height: 2rem;
+    min-width: 2rem;
+    padding: 0;
+    width: 2rem;
+}
+
+.bookkeeping-icon-action .bi {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+.bookkeeping-icon-action-form {
+    margin: 0;
+}
+
+.bookkeeping-icon-action:focus-visible {
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.35);
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
 .bookkeeping-confirmation {
     background: #ffffff;
     border: 1px solid #dfe3e8;
@@ -1759,7 +1851,9 @@
 }
 
 .bookkeeping-transaction-table .bookkeeping-actions {
-    min-width: 10rem;
+    min-width: 11rem;
+    width: 11rem;
+    white-space: normal;
 }
 
 .bookkeeping-transaction-table .bookkeeping-date {

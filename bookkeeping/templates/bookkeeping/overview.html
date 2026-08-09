@@ -180,14 +180,20 @@
                 <tr>
                     <td class="bookkeeping-actions">
                         {% if statement.paperless_document_url %}
-                        <a href="{{ statement.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>
+                        <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                            <a href="{{ statement.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen">
+                                <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span>
+                            </a>
+                        </div>
                         {% endif %}
                         {% if statement.can_retry %}
-                        <form method="post">
+                        <form method="post" class="bookkeeping-icon-action-form">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="retry_bank_statement">
                             <input type="hidden" name="statement_id" value="{{ statement.id }}">
-                            <button type="submit" class="btn btn-sm btn-outline-secondary">Erneut übertragen</button>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Erneut übertragen" aria-label="Erneut übertragen">
+                                <i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Erneut übertragen</span>
+                            </button>
                         </form>
                         {% else %}
                         <span class="bookkeeping-muted">–</span>
@@ -460,23 +466,45 @@
             <tr>
                 <td class="bookkeeping-actions">
                     {% if transaction.manual_invoice %}
-                    <div class="bookkeeping-action-buttons">
-                        <a href="{{ transaction.manual_invoice_url }}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
-                        {% if transaction.paperless_document_url %}<a href="{{ transaction.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
+                    <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                        <a href="{{ transaction.manual_invoice_url }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten">
+                            <i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span>
+                        </a>
+                        {% if transaction.paperless_document_url %}<a href="{{ transaction.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span></a>{% endif %}
+                        {% if transaction.paperless_can_delete %}<a href="{{ transaction.manual_invoice_paperless_delete_url }}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Nur aus Paperless löschen" aria-label="Nur aus Paperless löschen"><i class="bi bi-file-earmark-x" aria-hidden="true"></i><span class="visually-hidden">Nur aus Paperless löschen</span></a>{% endif %}
+                        <a href="{{ transaction.manual_invoice_reset_url }}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Buchungssatz zurücksetzen" aria-label="Buchungssatz zurücksetzen">
+                            <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">Buchungssatz zurücksetzen</span>
+                        </a>
+                        <a href="{{ transaction.manual_invoice_delete_url }}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Beleg vollständig löschen" aria-label="Beleg vollständig löschen">
+                            <i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Beleg vollständig löschen</span>
+                        </a>
                     </div>
                     {% elif transaction.status_code == "imported" %}
-                    <div class="bookkeeping-action-buttons">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchung erfassen</a>
+                    <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchung erfassen" aria-label="Buchung erfassen">
+                            <i class="bi bi-journal-plus" aria-hidden="true"></i><span class="visually-hidden">Buchung erfassen</span>
+                        </a>
                     </div>
                     {% elif transaction.status_code == "matched" %}
-                    <div class="bookkeeping-action-buttons">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Buchungsdaten ergänzen</a>
-                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary">Anmerkung</a>
+                    <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchungsdaten ergänzen" aria-label="Buchungsdaten ergänzen">
+                            <i class="bi bi-pencil-square" aria-hidden="true"></i><span class="visually-hidden">Buchungsdaten ergänzen</span>
+                        </a>
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
+                            <i class="bi bi-chat-left-text" aria-hidden="true"></i><span class="visually-hidden">Anmerkung</span>
+                        </a>
                     </div>
                     {% elif transaction.status_code == "reviewed" or transaction.status_code == "booked" %}
-                    <div class="bookkeeping-action-buttons">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
-                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary">Anmerkung</a>
+                    <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten">
+                            <i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span>
+                        </a>
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
+                            <i class="bi bi-chat-left-text" aria-hidden="true"></i><span class="visually-hidden">Anmerkung</span>
+                        </a>
+                        <a href="{% url 'bank_transaction_reset_booking' transaction.id %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Buchungssatz zurücksetzen" aria-label="Buchungssatz zurücksetzen">
+                            <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">Buchungssatz zurücksetzen</span>
+                        </a>
                     </div>
                     {% else %}
                     <span>–</span>
@@ -546,6 +574,7 @@
                         <summary>Weitere Details</summary>
                         <dl class="bookkeeping-row-details-list">
                             {% if transaction.manual_invoice %}<div><dt>Belegart</dt><dd>Manueller Beleg</dd></div>{% endif %}
+                            {% if transaction.supporting_document_count %}<div><dt>Belege</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}">{{ transaction.supporting_document_count }} Belege</a></dd></div>{% endif %}
                             <div><dt>IBAN</dt><dd>{{ transaction.iban|default:"–" }}</dd></div>
                             {% if selected_status != "imported" %}
                             {% if not transaction.manual_invoice %}<div><dt>Matching-Regel</dt><dd>{% if transaction.matched_rule_id %}<a href="{{ transaction.matched_rule_url }}">{{ transaction.matched_rule }}</a>{% else %}{{ transaction.matched_rule|default:"–" }}{% endif %}</dd></div>

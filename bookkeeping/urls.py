@@ -2,15 +2,20 @@ from django.urls import path
 
 from .views import (
     BankTransactionNoteView,
+    BookingSetResetView,
     BookingEntryView,
     BookkeepingOverviewView,
     ManualInvoiceEditView,
+    ManualInvoiceDeleteView,
     ManualInvoiceListView,
+    ManualInvoicePaperlessDeleteView,
     MatchingRuleDeleteView,
     MatchingRuleDetailView,
     MatchingRuleEditView,
     MatchingRuleListView,
     MatchingRuleVersionView,
+    SupportingDocumentDeleteView,
+    SupportingDocumentUnlinkView,
 )
 
 
@@ -27,6 +32,21 @@ urlpatterns = [
         name='manual_invoice_edit',
     ),
     path(
+        'manual-invoices/<uuid:reference_uuid>/reset-booking/',
+        BookingSetResetView.as_view(),
+        name='manual_invoice_reset_booking',
+    ),
+    path(
+        'manual-invoices/<uuid:reference_uuid>/delete/',
+        ManualInvoiceDeleteView.as_view(),
+        name='manual_invoice_delete',
+    ),
+    path(
+        'manual-invoices/<uuid:reference_uuid>/paperless-delete/',
+        ManualInvoicePaperlessDeleteView.as_view(),
+        name='manual_invoice_paperless_delete',
+    ),
+    path(
         'transactions/<uuid:pk>/note/',
         BankTransactionNoteView.as_view(),
         name='bank_transaction_note',
@@ -35,6 +55,21 @@ urlpatterns = [
         'transactions/<uuid:pk>/booking/',
         BookingEntryView.as_view(),
         name='bank_transaction_booking',
+    ),
+    path(
+        'transactions/<uuid:transaction_pk>/reset-booking/',
+        BookingSetResetView.as_view(),
+        name='bank_transaction_reset_booking',
+    ),
+    path(
+        'transactions/<uuid:transaction_pk>/documents/<uuid:reference_uuid>/remove/',
+        SupportingDocumentUnlinkView.as_view(),
+        name='bank_transaction_document_remove',
+    ),
+    path(
+        'transactions/<uuid:transaction_pk>/documents/<uuid:reference_uuid>/delete/',
+        SupportingDocumentDeleteView.as_view(),
+        name='bank_transaction_document_delete',
     ),
     path(
         'matching-rules/',
@@ -60,5 +95,15 @@ urlpatterns = [
         'matching-rules/<uuid:pk>/delete/',
         MatchingRuleDeleteView.as_view(),
         name='matching_rule_delete',
+    ),
+    path(
+        'matching-rules/<uuid:rule_pk>/documents/<uuid:reference_uuid>/remove/',
+        SupportingDocumentUnlinkView.as_view(),
+        name='matching_rule_document_remove',
+    ),
+    path(
+        'matching-rules/<uuid:rule_pk>/documents/<uuid:reference_uuid>/delete/',
+        SupportingDocumentDeleteView.as_view(),
+        name='matching_rule_document_delete',
     ),
 ]

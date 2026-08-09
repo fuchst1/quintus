@@ -54,17 +54,19 @@
                     {% for invoice in manual_invoices %}
                     <tr>
                         <td class="bookkeeping-actions">
-                            <div class="bookkeeping-action-buttons">
-                                <a href="{% url 'manual_invoice_edit' invoice.reference_uuid %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
-                                {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
+                            <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
+                                <a href="{% url 'manual_invoice_edit' invoice.reference_uuid %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span></a>
+                                {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span></a>{% endif %}
+                                {% if invoice.paperless_can_delete %}<a href="{% url 'manual_invoice_paperless_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Nur aus Paperless löschen" aria-label="Nur aus Paperless löschen"><i class="bi bi-file-earmark-x" aria-hidden="true"></i><span class="visually-hidden">Nur aus Paperless löschen</span></a>{% endif %}
                                 {% if invoice.can_retry %}
-                                <form method="post">
+                                <form method="post" class="bookkeeping-icon-action-form">
                                     {% csrf_token %}
                                     <input type="hidden" name="action" value="retry_manual_invoice">
                                     <input type="hidden" name="reference_uuid" value="{{ invoice.reference_uuid }}">
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Übertragung wiederholen</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Übertragung wiederholen" aria-label="Übertragung wiederholen"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Übertragung wiederholen</span></button>
                                 </form>
                                 {% endif %}
+                                <a href="{% url 'manual_invoice_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Beleg vollständig löschen" aria-label="Beleg vollständig löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Beleg vollständig löschen</span></a>
                             </div>
                         </td>
                         <td><span class="badge bookkeeping-badge bookkeeping-badge-status">{{ invoice.status }}</span></td>
@@ -75,6 +77,8 @@
                         <td>
                             {% if invoice.paperless_status == "completed" %}
                             <span class="badge bookkeeping-status-badge bookkeeping-status-badge-success">Abgelegt</span>
+                            {% elif invoice.paperless_status == "deleted" %}
+                            <span class="badge bookkeeping-status-badge bookkeeping-status-badge-info">Aus Paperless gelöscht</span>
                             {% elif invoice.paperless_status == "pending" %}
                             <span class="badge bookkeeping-status-badge bookkeeping-status-badge-warning">Übertragung läuft</span>
                             {% elif invoice.paperless_status == "failed" %}

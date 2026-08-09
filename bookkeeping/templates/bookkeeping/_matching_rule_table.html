@@ -20,17 +20,17 @@
             {% for rule in matching_rules %}
             <tr>
                 <td class="bookkeeping-actions">
-                    <div class="bookkeeping-action-buttons">
+                    <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
                         {% if rule.used %}
-                        <a href="{% url 'matching_rule_detail' rule.id %}" class="btn btn-sm btn-outline-primary">Details</a>
+                        <a href="{% url 'matching_rule_detail' rule.id %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Details" aria-label="Details"><i class="bi bi-eye" aria-hidden="true"></i><span class="visually-hidden">Details</span></a>
                         {% if rule.next_version_id %}
-                        <a href="{% url 'matching_rule_detail' rule.next_version_id %}" class="btn btn-sm btn-outline-secondary">Nachfolgeversion</a>
+                        <a href="{% url 'matching_rule_detail' rule.next_version_id %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Nachfolgeversion" aria-label="Nachfolgeversion"><i class="bi bi-arrow-right" aria-hidden="true"></i><span class="visually-hidden">Nachfolgeversion</span></a>
                         {% else %}
-                        <a href="{% url 'matching_rule_version' rule.id %}" class="btn btn-sm btn-outline-primary">Neue Version</a>
+                        <a href="{% url 'matching_rule_version' rule.id %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Neue Version" aria-label="Neue Version"><i class="bi bi-copy" aria-hidden="true"></i><span class="visually-hidden">Neue Version</span></a>
                         {% endif %}
                         {% else %}
-                        <a href="{% url 'matching_rule_edit' rule.id %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
-                        <a href="{% url 'matching_rule_delete' rule.id %}" class="btn btn-sm btn-outline-danger">Löschen</a>
+                        <a href="{% url 'matching_rule_edit' rule.id %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span></a>
+                        <a href="{% url 'matching_rule_delete' rule.id %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Löschen" aria-label="Löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Löschen</span></a>
                         {% endif %}
                     </div>
                 </td>

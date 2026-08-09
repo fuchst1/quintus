@@ -24,6 +24,10 @@ class PaperlessClient:
     MANUAL_CORRESPONDENT_NAME = "Diverse"
     MANUAL_DOCUMENT_TYPE_NAME = "Eingangsrechnung"
     MANUAL_STORAGE_PATH_NAME = "IFKG Eingangsrechnungen"
+    SUPPORTING_CORRESPONDENT_NAME = "Diverse"
+    SUPPORTING_DOCUMENT_TYPE_NAME = "Buchungsbeleg"
+    SUPPORTING_MATCHING_STORAGE_PATH_NAME = "IFKG Matching-Nachweise"
+    SUPPORTING_BANK_STORAGE_PATH_NAME = "IFKG Buchungsbelege"
     STORAGE_PATH_TEMPLATE = (
         "Immo-Fuchs KG/Buchhaltung/{{ created_year }}/Kontoauszuege/{{ title }}"
     )
@@ -162,12 +166,13 @@ class PaperlessClient:
         )
 
     @classmethod
-    def _require_storage_path(cls) -> int:
-        existing_id = cls._find_exact_name("storage_paths/", cls.STORAGE_PATH_NAME)
+    def _require_storage_path(cls, name: str | None = None) -> int:
+        storage_path_name = name or cls.STORAGE_PATH_NAME
+        existing_id = cls._find_exact_name("storage_paths/", storage_path_name)
         if existing_id is not None:
             return existing_id
         raise BookkeepingPaperlessError(
-            f"Der Paperless-Speicherpfad '{cls.STORAGE_PATH_NAME}' fehlt. "
+            f"Der Paperless-Speicherpfad '{storage_path_name}' fehlt. "
             "Bitte zuerst exakt unter diesem Namen anlegen."
         )
 
@@ -304,6 +309,98 @@ class PaperlessClient:
                     return str(response[key])
         raise BookkeepingPaperlessError(
             "Paperless hat keine Task-ID für den Rechnungsupload zurückgegeben."
+        )
+
+    @classmethod
+    def upload_supporting_document(cls, document) -> str:
+        """Upload a matching-rule or bank-transaction supporting PDF."""
+        if not cls.is_configured():
+            raise BookkeepingPaperlessError(
+                "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
+            )
+        correspondent_id = cls._require_named(
+            "correspondents/", cls.SUPPORTING_CORRESPONDENT_NAME
+        )
+        document_type_id = cls._require_named(
+            "document_types/", cls.SUPPORTING_DOCUMENT_TYPE_NAME
+        )
+        tag_ids = [
+            cls._require_named("tags/", tag_name) for tag_name in cls.TAG_NAMES
+        ]
+        storage_path_name = (
+            cls.SUPPORTING_MATCHING_STORAGE_PATH_NAME
+            if document.matching_rule_id
+            else cls.SUPPORTING_BANK_STORAGE_PATH_NAME
+        )
+        storage_path_id = cls._require_storage_path(storage_path_name)
+        reference_field_id = cls._require_custom_field(
+            "q_bookkeeping_referenz",
+            cls.CUSTOM_FIELDS["q_bookkeeping_referenz"],
+        )
+
+        if document.matching_rule_id:
+            title = (
+                f"Matching-Nachweis {document.matching_rule.name} "
+                f"– Version {document.matching_rule.version_number}"
+            )
+            created = document.created_at.date().isoformat()
+            custom_field_values = {str(reference_field_id): str(document.reference_uuid)}
+        else:
+            bank_transaction = document.bank_transaction
+            document_date = bank_transaction.value_date or bank_transaction.booking_date
+            name = bank_transaction.partner_name or "–"
+            amount = format(bank_transaction.amount, "f")
+            title = f"Buchungsbeleg {document_date.isoformat()} – {name} – {amount}"
+            booking_month = document_date.strftime("%Y-%m")
+            booking_quarter = (
+                f"{document_date.year}-Q{((document_date.month - 1) // 3) + 1}"
+            )
+            custom_field_values = {
+                str(reference_field_id): str(document.reference_uuid),
+            }
+            for field_name, value in {
+                "q_buchungsdatum": document_date.isoformat(),
+                "q_buchungsmonat": booking_month,
+                "q_buchungsquartal": booking_quarter,
+            }.items():
+                field_id = cls._require_custom_field(
+                    field_name,
+                    cls.CUSTOM_FIELDS[field_name],
+                )
+                custom_field_values[str(field_id)] = value
+            created = document_date.isoformat()
+
+        form_fields = [
+            ("title", title),
+            ("created", created),
+            ("correspondent", str(correspondent_id)),
+            ("document_type", str(document_type_id)),
+            ("storage_path", str(storage_path_id)),
+            *[("tags", str(tag_id)) for tag_id in tag_ids],
+            (
+                "custom_fields",
+                json.dumps(custom_field_values, ensure_ascii=False),
+            ),
+        ]
+        try:
+            with document.temporary_file.open("rb") as pdf_file:
+                response = cls._request_multipart(
+                    form_fields=form_fields,
+                    file_name=os.path.basename(document.original_filename),
+                    file_content=pdf_file.read(),
+                )
+        except OSError:
+            raise BookkeepingPaperlessError(
+                "Die temporäre PDF-Datei konnte nicht gelesen werden."
+            ) from None
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            for key in ("task_id", "task", "uuid", "id"):
+                if response.get(key):
+                    return str(response[key])
+        raise BookkeepingPaperlessError(
+            "Paperless hat keine Task-ID für den Belegupload zurückgegeben."
         )
 
     @classmethod
@@ -680,6 +777,21 @@ class PaperlessClient:
         if document_id is None or not cls.base_url():
             return ""
         return urljoin(f"{cls.base_url()}/", f"documents/{int(document_id)}/")
+
+    @classmethod
+    def delete_document(cls, document_id: int | None) -> None:
+        try:
+            normalized_id = int(document_id or 0)
+        except (TypeError, ValueError):
+            normalized_id = 0
+        if normalized_id <= 0:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Löschung fehlt die Dokument-ID."
+            )
+        cls._request_json(
+            endpoint=f"documents/{normalized_id}/",
+            method="DELETE",
+        )
 
     @classmethod
     def document_ocr_text(cls, document_id: int | None) -> str:

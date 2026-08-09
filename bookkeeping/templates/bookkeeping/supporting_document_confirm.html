@@ -1,0 +1,38 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block title %}{% if action == "unlink" %}Verknüpfung entfernen{% else %}Dokument löschen{% endif %} – Quintus Buchhaltung{% endblock %}
+
+{% block content %}
+<section class="bookkeeping-rules-section" aria-labelledby="supporting-document-confirm-heading">
+    <div class="bookkeeping-page-heading">
+        <div>
+            <h1 id="supporting-document-confirm-heading" class="bookkeeping-page-title">{% if action == "unlink" %}Verknüpfung entfernen{% else %}Dokument löschen{% endif %}</h1>
+            <p class="bookkeeping-page-description">{{ document.original_filename }}</p>
+        </div>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="bookkeeping-rule-detail-card bookkeeping-confirmation-card">
+        {% if action == "unlink" %}
+        <p>Die Verknüpfung wird aus Quintus entfernt. Das Dokument bleibt in Paperless erhalten.</p>
+        {% else %}
+        <p>Das Dokument wird über die Paperless-API gelöscht und kann danach in Quintus nicht mehr geöffnet werden.</p>
+        {% endif %}
+        <dl class="bookkeeping-rule-detail-list">
+            <dt>Dateiname</dt><dd>{{ document.original_filename }}</dd>
+            <dt>Besitzer</dt><dd>{{ document.owner_label }}</dd>
+            <dt>Paperless-Dokument-ID</dt><dd>{{ document.paperless_document_id|default:"–" }}</dd>
+        </dl>
+        <form method="post" class="bookkeeping-entry-form-actions">
+            {% csrf_token %}
+            <button type="submit" class="btn {% if action == 'unlink' %}btn-primary{% else %}btn-danger{% endif %}">{% if action == "unlink" %}Verknüpfung entfernen{% else %}Aus Quintus und Paperless löschen{% endif %}</button>
+            <a href="{{ owner_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        </form>
+    </div>
+</section>
+{% endblock %}
