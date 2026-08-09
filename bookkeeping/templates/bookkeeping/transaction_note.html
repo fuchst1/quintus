@@ -7,7 +7,7 @@
 <section class="bookkeeping-rules-section" aria-labelledby="transaction-note-heading">
     <div class="bookkeeping-page-heading">
         <div>
-            <h1 id="transaction-note-heading" class="bookkeeping-section-title">Anmerkung zur Transaktion</h1>
+            <h1 id="transaction-note-heading" class="bookkeeping-page-title">Anmerkung zur Transaktion</h1>
             <p class="bookkeeping-page-description">
                 {{ bank_transaction.booking_date|date:"d.m.Y" }} · {{ bank_transaction.partner_name|default:"–" }} · {{ bank_transaction.amount|austrian_money:bank_transaction.currency }}
             </p>

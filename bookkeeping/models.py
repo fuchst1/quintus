@@ -2,7 +2,7 @@ import re
 import uuid
 
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from .choices import (
@@ -391,3 +391,85 @@ class BookingEntry(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class QuarterBalance(models.Model):
+    year = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+    )
+    quarter = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(4)],
+    )
+    opening_balance = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    closing_balance = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("year", "quarter"),
+                name="unique_quarter_balance_year_quarter",
+            ),
+        ]
+
+
+class BankStatement(models.Model):
+    class PaperlessStatus(models.TextChoices):
+        PENDING = "pending", "Übertragung zu Paperless läuft"
+        COMPLETED = "completed", "In Paperless abgelegt"
+        FAILED = "failed", "Übertragung fehlgeschlagen"
+
+    iban = models.CharField(max_length=34)
+    statement_number = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+    )
+    statement_year = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+    )
+    statement_date = models.DateField()
+    booking_month = models.CharField(max_length=7)
+    booking_quarter = models.CharField(max_length=7)
+    opening_balance = models.DecimalField(max_digits=14, decimal_places=2)
+    total_credits = models.DecimalField(max_digits=14, decimal_places=2)
+    total_debits = models.DecimalField(max_digits=14, decimal_places=2)
+    closing_balance = models.DecimalField(max_digits=14, decimal_places=2)
+    file_hash = models.CharField(max_length=64, unique=True)
+    reference_uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
+    paperless_reference_synced = models.BooleanField(default=False)
+    temporary_pdf = models.FileField(
+        upload_to="bookkeeping/bank_statements/",
+        blank=True,
+        null=True,
+    )
+    paperless_task_id = models.CharField(max_length=128, blank=True)
+    paperless_document_id = models.PositiveIntegerField(null=True, blank=True)
+    paperless_status = models.CharField(
+        max_length=9,
+        choices=PaperlessStatus.choices,
+        default=PaperlessStatus.PENDING,
+    )
+    paperless_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("iban", "statement_year", "statement_number"),
+                name="unique_bank_statement_iban_year_number",
+            ),
+        ]

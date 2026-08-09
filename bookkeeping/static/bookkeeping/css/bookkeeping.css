@@ -126,6 +126,82 @@
     padding: 1rem 1.1rem;
 }
 
+.bookkeeping-bank-statement-section {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    margin-bottom: 1.25rem;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-bank-statement-upload-form {
+    margin-bottom: 0.65rem;
+}
+
+.bookkeeping-bank-statement-upload-controls {
+    align-items: end;
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: minmax(15rem, 1fr) auto;
+}
+
+.bookkeeping-bank-statement-upload-controls .form-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-bank-statement-hint {
+    color: #5f6b78;
+    font-size: 0.85rem;
+    margin: 0 0 1rem;
+}
+
+.bookkeeping-bank-statement-table {
+    min-width: 75rem;
+}
+
+.bookkeeping-bank-statement-table th,
+.bookkeeping-bank-statement-table td {
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+.bookkeeping-status-dot {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    padding: 0.22rem 0.55rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-status-dot-success,
+.bookkeeping-status-dot-completed {
+    background: #e7f4eb;
+    color: #1f6b3b;
+}
+
+.bookkeeping-status-dot-warning,
+.bookkeeping-status-dot-pending {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.bookkeeping-status-dot-danger,
+.bookkeeping-status-dot-failed {
+    background: #f8d7da;
+    color: #842029;
+}
+
+.bookkeeping-bank-statement-control-details {
+    color: #5f6b78;
+    display: block;
+    margin-top: 0.3rem;
+    max-width: 22rem;
+    white-space: normal;
+}
+
 .bookkeeping-dashboard {
     margin-top: 0.25rem;
 }
@@ -149,6 +225,38 @@
 
 .bookkeeping-dashboard-period-controls .form-select {
     min-width: 12rem;
+}
+
+.bookkeeping-period-type-switch {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.45rem;
+}
+
+.bookkeeping-quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.75rem;
+}
+
+.bookkeeping-bank-reconciliation {
+    border-top: 1px solid #dfe3e8;
+    margin-top: 0.8rem;
+    padding-top: 0.7rem;
+}
+
+.bookkeeping-bank-reconciliation > summary {
+    color: #345f8c;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 700;
+}
+
+.bookkeeping-bank-reconciliation .bookkeeping-quarter-control-balance {
+    border-top: 0;
+    margin-top: 0.55rem;
+    padding-top: 0;
 }
 
 .bookkeeping-dashboard-grid {
@@ -989,6 +1097,157 @@
     white-space: pre-wrap;
 }
 
+.bookkeeping-quarter-control {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    margin: 1rem 0;
+    padding: 1rem 1.1rem;
+}
+
+.bookkeeping-quarter-control-heading {
+    align-items: flex-start;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.bookkeeping-quarter-control-period,
+.bookkeeping-quarter-control-optional {
+    color: #5f6b78;
+    font-size: 0.8rem;
+    margin: 0.2rem 0 0;
+}
+
+.bookkeeping-quarter-control-status {
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.35rem 0.65rem;
+    text-align: right;
+}
+
+.bookkeeping-quarter-control-status-success {
+    background: #e7f4eb;
+    color: #237a4b;
+}
+
+.bookkeeping-quarter-control-status-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.bookkeeping-quarter-control-status-danger {
+    background: #fbe9eb;
+    color: #b02a37;
+}
+
+.bookkeeping-quarter-control-grid,
+.bookkeeping-quarter-balance-summary {
+    display: grid;
+    gap: 0.65rem 1rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-top: 1rem;
+}
+
+.bookkeeping-quarter-control-grid > div,
+.bookkeeping-quarter-balance-summary > div {
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.55rem 0.7rem;
+}
+
+.bookkeeping-quarter-control-grid span,
+.bookkeeping-quarter-balance-summary span {
+    color: #5f6b78;
+    font-size: 0.75rem;
+}
+
+.bookkeeping-quarter-control-grid strong,
+.bookkeeping-quarter-balance-summary strong {
+    color: #243447;
+    font-size: 0.95rem;
+}
+
+.bookkeeping-quarter-control-subtitle {
+    font-size: 0.95rem;
+    margin: 0;
+}
+
+.bookkeeping-quarter-control-inconsistencies {
+    border-top: 1px solid #f1b0b7;
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+}
+
+.bookkeeping-quarter-control-table-wrap {
+    margin-top: 0.5rem;
+    overflow-x: auto;
+}
+
+.bookkeeping-quarter-control-table {
+    min-width: 760px;
+}
+
+.bookkeeping-quarter-control-table th,
+.bookkeeping-quarter-control-table td {
+    padding: 0.4rem 0.5rem;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.bookkeeping-quarter-control-balance {
+    border-top: 1px solid #dfe3e8;
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+}
+
+.bookkeeping-quarter-control-balance-heading {
+    align-items: baseline;
+}
+
+.bookkeeping-quarter-balance-form {
+    margin-top: 0.65rem;
+}
+
+.bookkeeping-quarter-balance-fields {
+    align-items: end;
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+}
+
+.bookkeeping-quarter-balance-fields .form-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.bookkeeping-quarter-balance-action {
+    padding-bottom: 0.05rem;
+}
+
+.bookkeeping-quarter-balance-error {
+    color: #b02a37;
+    font-size: 0.78rem;
+    margin-top: 0.2rem;
+}
+
+.bookkeeping-quarter-balance-note {
+    margin: 0.7rem 0 0;
+}
+
+.bookkeeping-quarter-balance-note-neutral {
+    color: #5f6b78;
+}
+
+.bookkeeping-quarter-balance-note-warning {
+    color: #856404;
+}
+
 @media (max-width: 767.98px) {
     .bookkeeping-sidebar {
         min-height: auto;
@@ -1043,6 +1302,11 @@
         min-width: 0;
     }
 
+    .bookkeeping-bank-statement-upload-controls {
+        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
     .bookkeeping-dashboard-grid-primary,
     .bookkeeping-dashboard-grid-financial,
     .bookkeeping-dashboard-details {
@@ -1058,11 +1322,490 @@
         min-width: 0;
     }
 
+    .bookkeeping-quarter-control-heading {
+        flex-direction: column;
+    }
+
+    .bookkeeping-quarter-control-status {
+        text-align: left;
+    }
+
+    .bookkeeping-quarter-control-grid,
+    .bookkeeping-quarter-balance-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bookkeeping-quarter-balance-fields {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .bookkeeping-quarter-balance-action {
+        padding-bottom: 0;
+    }
+
     .bookkeeping-original-transaction-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 
     .bookkeeping-original-transaction-wide {
         grid-column: span 1;
+    }
+}
+
+/* Compact Bookkeeping layout */
+.bookkeeping-main {
+    padding-bottom: 1.5rem;
+    padding-top: 1.25rem;
+}
+
+.bookkeeping-page-title {
+    color: #34495e;
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.25;
+    margin: 0;
+}
+
+.bookkeeping-page-heading {
+    margin-bottom: 0.75rem;
+}
+
+.bookkeeping-bank-import-heading {
+    align-items: end;
+}
+
+.bookkeeping-section-heading,
+.bookkeeping-card-heading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.bookkeeping-section-title {
+    margin-bottom: 0;
+}
+
+.bookkeeping-page-description {
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.bookkeeping-period-control {
+    margin: 0;
+    min-width: 17rem;
+}
+
+.bookkeeping-period-control .form-label {
+    color: #5f6b78;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+}
+
+.bookkeeping-period-control-fields {
+    align-items: center;
+    display: flex;
+    gap: 0.4rem;
+}
+
+.bookkeeping-period-control-fields .form-select {
+    min-width: 11rem;
+}
+
+.bookkeeping-message-stack {
+    display: grid;
+    gap: 0.45rem;
+    margin-bottom: 0.75rem;
+}
+
+.bookkeeping-message {
+    border-radius: 0.25rem;
+    font-size: 0.82rem;
+    margin: 0 0 0.75rem;
+    padding: 0.5rem 0.7rem;
+}
+
+.bookkeeping-message-stack .bookkeeping-message {
+    margin-bottom: 0;
+}
+
+.bookkeeping-card {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    padding: 0.9rem 1rem;
+}
+
+.bookkeeping-card-help {
+    color: #34495e;
+    font-size: 0.82rem;
+    margin: 0.15rem 0 0;
+}
+
+.bookkeeping-card-help-muted,
+.bookkeeping-muted {
+    color: #6c7782;
+}
+
+.bookkeeping-dashboard {
+    margin: 0 0 0.85rem;
+}
+
+.bookkeeping-dashboard .bookkeeping-section-heading {
+    margin-bottom: 0.5rem;
+}
+
+.bookkeeping-dashboard-grid-primary {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    margin-bottom: 0.55rem;
+}
+
+.bookkeeping-dashboard-card {
+    min-height: 4.8rem;
+    padding: 0.65rem 0.75rem;
+}
+
+.bookkeeping-dashboard-card-label {
+    font-size: 0.75rem;
+}
+
+.bookkeeping-dashboard-card-value {
+    font-size: 1.15rem;
+    margin-top: 0.2rem;
+}
+
+.bookkeeping-dashboard-progress {
+    margin-top: 0.5rem;
+}
+
+.bookkeeping-dashboard-details {
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    padding: 0.6rem 0.8rem;
+}
+
+.bookkeeping-import-grid {
+    display: grid;
+    gap: 0.85rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-bottom: 0.85rem;
+}
+
+.bookkeeping-import-card {
+    min-width: 0;
+}
+
+.bookkeeping-import-form {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 0.7rem;
+}
+
+.bookkeeping-import-form .form-label {
+    color: #5f6b78;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.bookkeeping-import-form .form-control {
+    font-size: 0.82rem;
+}
+
+.bookkeeping-import-secondary-action {
+    margin-top: 0.45rem;
+}
+
+.bookkeeping-import-secondary-action .btn,
+.bookkeeping-import-form .btn {
+    margin-top: 0.2rem;
+}
+
+.bookkeeping-card-help-muted {
+    font-size: 0.75rem;
+    margin-top: 0.55rem;
+}
+
+.bookkeeping-bank-statement-section {
+    margin-bottom: 0.85rem;
+    padding: 0.9rem 1rem;
+}
+
+.bookkeeping-bank-statement-section .bookkeeping-card-heading {
+    margin-bottom: 0.6rem;
+}
+
+.bookkeeping-bank-statement-table {
+    min-width: 72rem;
+}
+
+.bookkeeping-bank-statement-table th,
+.bookkeeping-bank-statement-table td {
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.bookkeeping-bank-statement-table .bookkeeping-amount {
+    min-width: 8rem;
+}
+
+.bookkeeping-statement-month {
+    min-width: 7rem;
+}
+
+.bookkeeping-statement-month strong,
+.bookkeeping-statement-month small {
+    display: block;
+}
+
+.bookkeeping-statement-month small {
+    color: #6c7782;
+    font-size: 0.72rem;
+    margin-top: 0.1rem;
+}
+
+.bookkeeping-status-badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.45rem;
+}
+
+.bookkeeping-status-badge-success {
+    background: #e7f4eb;
+    color: #237a4b;
+}
+
+.bookkeeping-status-badge-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.bookkeeping-status-badge-danger {
+    background: #fbe9eb;
+    color: #b02a37;
+}
+
+.bookkeeping-table-detail {
+    color: #6c7782;
+    display: block;
+    font-size: 0.72rem;
+    line-height: 1.3;
+    margin-top: 0.25rem;
+    max-width: 18rem;
+    white-space: normal;
+}
+
+.bookkeeping-paperless-cell {
+    min-width: 13rem;
+    white-space: normal !important;
+}
+
+.bookkeeping-paperless-link {
+    display: block;
+    font-size: 0.78rem;
+    margin-top: 0.3rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-table-wrap .bookkeeping-data-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.bookkeeping-filter-card {
+    align-items: end;
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    display: flex;
+    gap: 0.55rem;
+    margin-bottom: 0.65rem;
+    max-width: 27rem;
+    padding: 0.65rem 0.8rem;
+}
+
+.bookkeeping-filter-card .form-label {
+    color: #5f6b78;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin: 0 0 0.2rem;
+}
+
+.bookkeeping-filter-card .bookkeeping-period-control-fields {
+    flex: 1;
+}
+
+.bookkeeping-filter-card .form-select {
+    min-width: 11rem;
+}
+
+.bookkeeping-preview-count {
+    font-size: 0.78rem;
+    margin: 0 0 0.4rem;
+}
+
+.bookkeeping-transaction-table {
+    min-width: 76rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-actions {
+    min-width: 10rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-date {
+    min-width: 7.2rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-name {
+    min-width: 11rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-purpose {
+    min-width: 16rem;
+    max-width: 26rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-details-column {
+    min-width: 15rem;
+    max-width: 22rem;
+    white-space: normal;
+}
+
+.bookkeeping-row-details {
+    font-size: 0.78rem;
+}
+
+.bookkeeping-row-details summary {
+    color: #345f8c;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.bookkeeping-row-details-list {
+    display: grid;
+    gap: 0.2rem 0.6rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    margin: 0.45rem 0 0;
+}
+
+.bookkeeping-row-details-list > div {
+    display: contents;
+}
+
+.bookkeeping-row-details-list dt {
+    color: #5f6b78;
+    font-weight: 600;
+}
+
+.bookkeeping-row-details-list dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.bookkeeping-ready-control-card {
+    margin-bottom: 0.8rem;
+}
+
+.bookkeeping-ready-control-toolbar {
+    align-items: end;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+    justify-content: space-between;
+}
+
+.bookkeeping-export-form {
+    margin: 0;
+}
+
+.bookkeeping-export-hint {
+    color: #6c7782;
+    font-size: 0.75rem;
+    margin: 0.55rem 0 0;
+}
+
+.bookkeeping-ready-control-card .bookkeeping-quarter-control {
+    box-shadow: none;
+    margin: 0.8rem 0 0;
+    padding: 0.8rem 0 0;
+}
+
+.bookkeeping-card-empty {
+    background: #ffffff;
+    border: 1px solid #dfe3e8;
+    box-shadow: 0 0.125rem 0.35rem rgba(30, 58, 95, 0.08);
+    padding: 0.85rem 1rem;
+}
+
+.bookkeeping-rules-section {
+    margin-top: 0;
+}
+
+.bookkeeping-rule-form,
+.bookkeeping-rule-detail-card,
+.bookkeeping-note-form,
+.bookkeeping-confirmation {
+    border-radius: 0.1rem;
+    padding: 0.9rem 1rem;
+}
+
+.bookkeeping-rules-list {
+    margin-top: 0.85rem;
+}
+
+.bookkeeping-rules-list-heading {
+    margin-bottom: 0.55rem;
+}
+
+.bookkeeping-badge-type {
+    background: #e9eef5;
+    color: #4a6078;
+}
+
+.bookkeeping-data-table .bookkeeping-actions form {
+    margin: 0;
+}
+
+@media (max-width: 1199.98px) {
+    .bookkeeping-dashboard-grid-primary {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 767.98px) {
+    .bookkeeping-bank-import-heading,
+    .bookkeeping-ready-control-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bookkeeping-period-control,
+    .bookkeeping-filter-card {
+        max-width: none;
+        min-width: 0;
+        width: 100%;
+    }
+
+    .bookkeeping-period-control-fields {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bookkeeping-period-control-fields .form-select {
+        min-width: 0;
+    }
+
+    .bookkeeping-import-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .bookkeeping-dashboard-grid-primary,
+    .bookkeeping-dashboard-details {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bookkeeping-filter-card {
+        align-items: stretch;
+        flex-direction: column;
     }
 }

@@ -6,7 +6,7 @@
 <section class="bookkeeping-rules-section" aria-labelledby="matching-rule-version-heading">
     <div class="bookkeeping-page-heading">
         <div>
-            <h1 id="matching-rule-version-heading" class="bookkeeping-section-title">Neue Version für {{ source_rule.name }}</h1>
+            <h1 id="matching-rule-version-heading" class="bookkeeping-page-title">Neue Version für {{ source_rule.name }}</h1>
             <p class="bookkeeping-page-description">Die Werte von Version {{ source_rule.version_number }} wurden übernommen. Die neue Version wird nach dem Speichern aktiv.</p>
         </div>
         <a href="{% url 'matching_rule_detail' source_rule.pk %}" class="btn btn-outline-secondary">Abbrechen</a>

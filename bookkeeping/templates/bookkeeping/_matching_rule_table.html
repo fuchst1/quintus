@@ -45,7 +45,7 @@
                     <span class="badge bookkeeping-badge bookkeeping-badge-outgoing">{{ rule.direction }}</span>
                     {% endif %}
                 </td>
-                <td>{{ rule.match_type }}</td>
+                <td><span class="badge bookkeeping-badge bookkeeping-badge-type">{{ rule.match_type }}</span></td>
                 <td class="bookkeeping-iban">{{ rule.iban }}</td>
                 <td class="bookkeeping-amount">{{ rule.expected_amount }}</td>
                 <td>{{ rule.text_pattern }}</td>

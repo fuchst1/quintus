@@ -6,8 +6,8 @@
 <section class="bookkeeping-rules-section" aria-labelledby="matching-rules-heading">
     <div class="bookkeeping-page-heading">
         <div>
-            <h1 id="matching-rules-heading" class="bookkeeping-section-title">Matching-Regeln</h1>
-            <p class="bookkeeping-page-description">Matching-Regeln ordnen Banktransaktionen anhand von IBAN, Betrag oder Textmuster zu.</p>
+            <h1 id="matching-rules-heading" class="bookkeeping-page-title">Matching-Regeln</h1>
+            <p class="bookkeeping-page-description">Regeln für die automatische Zuordnung.</p>
         </div>
         <a href="{% url 'bookkeeping_overview' %}" class="btn btn-outline-secondary">Zurück zu den Transaktionen</a>
     </div>
@@ -29,6 +29,11 @@
         {% include "bookkeeping/_matching_rule_booking_templates.html" %}
     </form>
 
-    {% include "bookkeeping/_matching_rule_table.html" %}
+    <section class="bookkeeping-card bookkeeping-rules-list" aria-labelledby="matching-rules-list-heading">
+        <div class="bookkeeping-card-heading bookkeeping-rules-list-heading">
+            <h2 id="matching-rules-list-heading" class="bookkeeping-section-title">Vorhandene Regeln</h2>
+        </div>
+        {% include "bookkeeping/_matching_rule_table.html" %}
+    </section>
 </section>
 {% endblock %}

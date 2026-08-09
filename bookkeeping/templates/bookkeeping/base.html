@@ -19,6 +19,10 @@
             </a>
             <hr class="bookkeeping-sidebar-divider">
             <nav class="bookkeeping-nav" aria-label="Bookkeeping-Bereiche">
+                <a href="{% url 'bookkeeping_overview' %}" class="bookkeeping-nav-link {% if show_dashboard %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="dashboard" data-server-active="{% if show_dashboard %}true{% else %}false{% endif %}">
+                    <i class="bi bi-grid-1x2" aria-hidden="true"></i>
+                    <span>Dashboard</span>
+                </a>
                 <a href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import" class="bookkeeping-nav-link bookkeeping-nav-link-bank-import {% if selected_status == 'bank_import' %}bookkeeping-nav-link-active{% endif %}" data-bookkeeping-nav-link="bank-import" data-server-active="{% if selected_status == 'bank_import' %}true{% else %}false{% endif %}">
                     <i class="bi bi-upload" aria-hidden="true"></i>
                     <span>Bankimport</span>

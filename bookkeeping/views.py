@@ -9,13 +9,23 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import IntegrityError
-from django.db.models import Count, Max, Prefetch, Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.db import transaction as db_transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
+from .bank_statement_parser import BankStatementParseError
+from .bank_statements import (
+    BankStatementImportError,
+    display_bank_statement,
+    import_bank_statement,
+    json_control_for_statement,
+    refresh_pending_paperless_tasks,
+    refresh_unsynced_completed_references,
+    retry_bank_statement,
+)
 from .formatting import format_austrian_decimal, format_austrian_money
 from .category_display import category_description
 from .csv_export import (
@@ -26,13 +36,21 @@ from .csv_export import (
 from .matching import build_booking_entry_snapshot, match_imported_transactions
 from .forms import (
     BankTransactionNoteForm,
+    BankStatementUploadForm,
     BookingEntryForm,
     BookingEntryFormSet,
     MatchingRuleBookingTemplateFormSet,
     MatchingRuleForm,
     MatchingRuleVersionForm,
+    QuarterBalanceForm,
 )
-from .models import BankTransaction, BookingEntry, MatchingRule
+from .models import (
+    BankStatement,
+    BankTransaction,
+    BookingEntry,
+    MatchingRule,
+    QuarterBalance,
+)
 
 
 OPEN_FILTER = "open"
@@ -124,6 +142,7 @@ GERMAN_MONTH_NAMES = (
 )
 MONTH_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<month>0[1-9]|1[0-2])$")
 EXPORT_PERIOD_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<quarter>Q[1-4])$")
+PERIOD_TYPES = ("month", "quarter")
 logger = logging.getLogger(__name__)
 
 
@@ -162,18 +181,25 @@ def _month_filter(month_key):
 
 
 def _available_export_quarters():
-    return sorted(
-        {
-            (
-                payment_date.year,
-                f"Q{((payment_date.month - 1) // 3) + 1}",
-            )
-            for payment_date in BookingEntry.objects.filter(
-                bank_transaction__status__in=BOOKING_READY_STATUSES,
-            ).values_list("payment_date", flat=True)
-        },
-        reverse=True,
+    available_quarters = {
+        (
+            payment_date.year,
+            f"Q{((payment_date.month - 1) // 3) + 1}",
+        )
+        for payment_date in BookingEntry.objects.filter(
+            bank_transaction__status__in=BOOKING_READY_STATUSES,
+        ).values_list("payment_date", flat=True)
+    }
+    available_quarters.update(
+        (
+            booking_date.year,
+            f"Q{((booking_date.month - 1) // 3) + 1}",
+        )
+        for booking_date in BankTransaction.objects.filter(
+            status__in=BOOKING_READY_STATUSES,
+        ).values_list("booking_date", flat=True)
     )
+    return sorted(available_quarters, reverse=True)
 
 
 def _available_transaction_quarters():
@@ -191,40 +217,155 @@ def _available_transaction_quarters():
     )
 
 
-def _dashboard_period_selection(params, available_quarters):
-    available_periods = {
-        f"{year}-{quarter}" for year, quarter in available_quarters
-    }
-    requested_period = params.get("dashboard_period")
-    parsed_period = _parse_export_period(requested_period)
-    if parsed_period in available_periods:
-        return parsed_period
-    if available_quarters:
-        year, quarter = available_quarters[0]
-        return f"{year}-{quarter}"
+def _period_bounds(period_type, period):
+    if period_type == "month":
+        return _month_bounds(period)
+    if period_type == "quarter":
+        return _export_period_bounds(period)
+    return None
+
+
+def _period_label(period_type, period):
+    if period_type == "month":
+        return _month_label(period)
+    parsed_period = _parse_export_period(period)
+    if parsed_period is None:
+        return ""
+    year, quarter = parsed_period.split("-", 1)
+    return f"{quarter} {year}"
+
+
+def _period_value(period_type, value):
+    if period_type == "month":
+        parsed = _parse_month(value)
+        return value if parsed is not None else ""
+    if period_type == "quarter":
+        return _parse_export_period(value) or ""
     return ""
 
 
-def _bank_import_dashboard_context(params):
-    available_quarters = _available_transaction_quarters()
-    dashboard_period = _dashboard_period_selection(
+def _month_key(value):
+    if isinstance(value, date):
+        return value.strftime("%Y-%m")
+    return str(value or "")[:7]
+
+
+def _quarter_key(value):
+    if not isinstance(value, date):
+        return ""
+    return f"{value.year}-Q{((value.month - 1) // 3) + 1}"
+
+
+def _available_ready_months():
+    months = {
+        payment_date.strftime("%Y-%m")
+        for payment_date in BookingEntry.objects.filter(
+            bank_transaction__status__in=BOOKING_READY_STATUSES,
+        ).values_list("payment_date", flat=True)
+    }
+    months.update(
+        booking_date.strftime("%Y-%m")
+        for booking_date in BankTransaction.objects.filter(
+            status__in=BOOKING_READY_STATUSES,
+        ).values_list("booking_date", flat=True)
+    )
+    return sorted(months, reverse=True)
+
+
+def _available_dashboard_months():
+    months = {
+        booking_date.strftime("%Y-%m")
+        for booking_date in BankTransaction.objects.values_list(
+            "booking_date", flat=True
+        )
+    }
+    months.update(
+        payment_date.strftime("%Y-%m")
+        for payment_date in BookingEntry.objects.values_list(
+            "payment_date", flat=True
+        )
+    )
+    months.update(BankStatement.objects.values_list("booking_month", flat=True))
+    return sorted(months, reverse=True)
+
+
+def _available_dashboard_quarters():
+    quarters = {
+        _quarter_key(booking_date)
+        for booking_date in BankTransaction.objects.values_list(
+            "booking_date", flat=True
+        )
+    }
+    quarters.update(
+        _quarter_key(payment_date)
+        for payment_date in BookingEntry.objects.values_list(
+            "payment_date", flat=True
+        )
+    )
+    quarters.update(
+        BankStatement.objects.values_list("booking_quarter", flat=True)
+    )
+    return sorted(
+        (period for period in quarters if _parse_export_period(period)),
+        reverse=True,
+    )
+
+
+def _dashboard_period_selection(params, available_months, available_quarters):
+    requested_type = params.get("period_type")
+    requested_period = params.get("period")
+    if requested_type not in PERIOD_TYPES:
+        if params.get("dashboard_period"):
+            requested_type = "quarter"
+            requested_period = params.get("dashboard_period")
+        else:
+            requested_type = "month"
+    available = (
+        available_months if requested_type == "month" else available_quarters
+    )
+    selected = _period_value(requested_type, requested_period)
+    if selected in available:
+        return requested_type, selected
+    if available:
+        return requested_type, available[0]
+    return requested_type, ""
+
+
+def _dashboard_statement_queryset(period_type, period):
+    if period_type == "month":
+        return BankStatement.objects.filter(booking_month=period)
+    return BankStatement.objects.filter(booking_quarter=period)
+
+
+def _dashboard_context(params):
+    available_months = _available_dashboard_months()
+    available_quarters = _available_dashboard_quarters()
+    dashboard_period_type, dashboard_period = _dashboard_period_selection(
         params,
+        available_months,
         available_quarters,
     )
-    available_periods = [
-        {
-            "value": f"{year}-{quarter}",
-            "label": f"{quarter} {year}",
-        }
-        for year, quarter in available_quarters
-    ]
+    period_range = _period_bounds(dashboard_period_type, dashboard_period)
     context = {
-        "available_dashboard_periods": available_periods,
+        "available_dashboard_months": [
+            {"value": value, "label": _month_label(value)}
+            for value in available_months
+        ],
+        "available_dashboard_quarters": [
+            {"value": value, "label": _period_label("quarter", value)}
+            for value in available_quarters
+        ],
+        "dashboard_period_type": dashboard_period_type,
         "dashboard_period": dashboard_period,
+        "dashboard_period_label": _period_label(
+            dashboard_period_type,
+            dashboard_period,
+        ),
         "dashboard_has_data": False,
         "dashboard_total": 0,
         "dashboard_open": 0,
         "dashboard_ready": 0,
+        "dashboard_booking_entries": 0,
         "dashboard_processed_percentage": "0.00",
         "dashboard_processed_percent": "0,00 %",
         "dashboard_processed_width": "0",
@@ -233,10 +374,12 @@ def _bank_import_dashboard_context(params):
         "dashboard_balance": "0,00 EUR",
         "dashboard_auto_matched": 0,
         "dashboard_without_matching": 0,
-        "dashboard_latest_booking_date": "–",
-        "dashboard_active_matching_rules": 0,
+        "dashboard_active_matching_rules": MatchingRule.objects.filter(
+            active=True
+        ).count(),
+        "dashboard_statement_count": 0,
+        "dashboard_reconciliation": "–",
     }
-    period_range = _export_period_bounds(dashboard_period)
     if period_range is None:
         return context
 
@@ -254,17 +397,22 @@ def _bank_import_dashboard_context(params):
                 )
             ),
         ),
-        ready_count=Count(
-            "id",
-            filter=Q(status__in=BOOKING_READY_STATUSES),
-        ),
+        ready_count=Count("id", filter=Q(status__in=BOOKING_READY_STATUSES)),
         incoming=Sum("amount", filter=Q(amount__gt=0)),
         outgoing=Sum("amount", filter=Q(amount__lt=0)),
         balance=Sum("amount"),
         auto_matched=Count("id", filter=Q(matched_rule__isnull=False)),
         without_matching=Count("id", filter=Q(matched_rule__isnull=True)),
-        latest_booking_date=Max("booking_date"),
     )
+    statement_qs = _dashboard_statement_queryset(
+        dashboard_period_type,
+        dashboard_period,
+    )
+    statements = list(statement_qs.order_by("-statement_date", "-id"))
+    booking_entry_count = BookingEntry.objects.filter(
+        payment_date__gte=period_range[0],
+        payment_date__lte=period_range[1],
+    ).count()
     total = aggregate["total"] or 0
     ready_count = aggregate["ready_count"] or 0
     incoming = aggregate["incoming"] or Decimal("0")
@@ -272,39 +420,59 @@ def _bank_import_dashboard_context(params):
     balance = aggregate["balance"] or Decimal("0")
     processed_percentage = (
         (Decimal(ready_count) * Decimal("100") / Decimal(total)).quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP,
+            Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         if total
         else Decimal("0.00")
     )
+    reconciliation = "–"
+    if statements:
+        controls = [json_control_for_statement(statement) for statement in statements]
+        if any(control["status"] == "danger" for control in controls):
+            reconciliation = "Abweichung"
+        elif all(control["status"] == "success" for control in controls):
+            reconciliation = "Stimmt überein"
+        else:
+            reconciliation = "Noch offen"
     context.update(
         {
-            "dashboard_has_data": total > 0,
+            "dashboard_has_data": bool(total or booking_entry_count or statements),
             "dashboard_total": total,
             "dashboard_open": aggregate["open_count"] or 0,
             "dashboard_ready": ready_count,
+            "dashboard_booking_entries": booking_entry_count,
             "dashboard_processed_percentage": str(processed_percentage),
-            "dashboard_processed_percent": (
-                f"{format_austrian_decimal(processed_percentage)} %"
-            ),
+            "dashboard_processed_percent": f"{format_austrian_decimal(processed_percentage)} %",
             "dashboard_processed_width": str(processed_percentage),
             "dashboard_incoming": format_austrian_money(incoming, "EUR"),
             "dashboard_outgoing": format_austrian_money(abs(outgoing), "EUR"),
             "dashboard_balance": format_austrian_money(balance, "EUR"),
             "dashboard_auto_matched": aggregate["auto_matched"] or 0,
             "dashboard_without_matching": aggregate["without_matching"] or 0,
-            "dashboard_latest_booking_date": (
-                aggregate["latest_booking_date"].strftime("%d.%m.%Y")
-                if aggregate["latest_booking_date"]
-                else "–"
-            ),
-            "dashboard_active_matching_rules": MatchingRule.objects.filter(
-                active=True
-            ).count(),
+            "dashboard_statement_count": len(statements),
+            "dashboard_reconciliation": reconciliation,
         }
     )
     return context
+
+
+def _bank_import_context(params):
+    del params
+    refresh_pending_paperless_tasks()
+    synchronization_errors = refresh_unsynced_completed_references()
+    bank_statements = []
+    for statement in BankStatement.objects.order_by(
+        "-statement_date", "-statement_year", "-statement_number"
+    ):
+        displayed_statement = display_bank_statement(statement)
+        displayed_statement["month"] = _month_label(statement.booking_month)
+        if statement.pk in synchronization_errors:
+            displayed_statement["paperless_error"] = synchronization_errors[
+                statement.pk
+            ]
+        bank_statements.append(displayed_statement)
+
+    return {"bank_statements": bank_statements}
 
 
 def _parse_export_period(value):
@@ -327,6 +495,268 @@ def _export_period_bounds(period):
     return quarter_bounds(year, quarter)
 
 
+MONEY_QUANTUM = Decimal("0.01")
+
+
+def _quantize_money(value):
+    return (value or Decimal("0")).quantize(MONEY_QUANTUM)
+
+
+def _quarter_balance_form(period, data=None):
+    parsed_period = _parse_export_period(period)
+    if parsed_period is None:
+        return QuarterBalanceForm(data)
+    year, quarter = parsed_period.split("-", 1)
+    balance = QuarterBalance.objects.filter(
+        year=int(year),
+        quarter=int(quarter[1]),
+    ).first()
+    return QuarterBalanceForm(data, instance=balance)
+
+
+def _period_control_context(period_type, period):
+    """Build the selected month or quarter's booking control."""
+    period_range = _period_bounds(period_type, period)
+    if period_range is None:
+        return {
+            "available": False,
+            "period": "",
+            "status": "",
+            "status_label": "",
+            "inconsistent_transactions": [],
+        }
+
+    start_date, end_date = period_range
+    ready_statuses = BOOKING_READY_STATUSES
+    ready_period_filter = BankTransaction.objects.filter(
+        status__in=ready_statuses,
+    ).filter(
+        Q(booking_date__gte=start_date, booking_date__lte=end_date)
+        | Q(
+            booking_entries__payment_date__gte=start_date,
+            booking_entries__payment_date__lte=end_date,
+        )
+    )
+    ready_transactions = list(
+        ready_period_filter.distinct()
+        .prefetch_related(
+            Prefetch(
+                "booking_entries",
+                queryset=BookingEntry.objects.order_by(
+                    "payment_date", "created_at", "id"
+                ),
+                to_attr="quarter_control_booking_entries",
+            )
+        )
+        .order_by("-booking_date", "id")
+    )
+
+    open_transactions = BankTransaction.objects.filter(
+        status__in=(
+            BankTransaction.Status.IMPORTED,
+            BankTransaction.Status.MATCHED,
+        ),
+        booking_date__gte=start_date,
+        booking_date__lte=end_date,
+    ).count()
+    bank_movement = BankTransaction.objects.filter(
+        booking_date__gte=start_date,
+        booking_date__lte=end_date,
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+    booking_entry_count = 0
+    booking_entry_total = Decimal("0")
+    bank_transaction_total = Decimal("0")
+    ready_transaction_count = 0
+    inconsistent_transactions = []
+    for bank_transaction in ready_transactions:
+        bank_transaction_total += bank_transaction.amount
+        entries = getattr(bank_transaction, "quarter_control_booking_entries", ())
+        entries_in_quarter = [
+            entry
+            for entry in entries
+            if start_date <= entry.payment_date <= end_date
+        ]
+        has_entries_outside_quarter = any(
+            not start_date <= entry.payment_date <= end_date
+            for entry in entries
+        )
+        entry_total = sum(
+            (entry.gross_amount for entry in entries_in_quarter),
+            Decimal("0"),
+        )
+        entry_total = _quantize_money(entry_total)
+        difference = _quantize_money(bank_transaction.amount - entry_total)
+        booking_entry_count += len(entries_in_quarter)
+        booking_entry_total += entry_total
+        if entries_in_quarter:
+            ready_transaction_count += 1
+
+        if (
+            not entries_in_quarter
+            or difference != Decimal("0.00")
+            or has_entries_outside_quarter
+        ):
+            inconsistent_transactions.append(
+                {
+                    "id": bank_transaction.pk,
+                    "booking_date": bank_transaction.booking_date.strftime(
+                        "%d.%m.%Y"
+                    ),
+                    "name": bank_transaction.partner_name or "–",
+                    "bank_amount_value": _quantize_money(bank_transaction.amount),
+                    "booking_total_value": entry_total,
+                    "difference_value": difference,
+                    "bank_amount": format_austrian_money(
+                        bank_transaction.amount, "EUR"
+                    ),
+                    "booking_total": format_austrian_money(entry_total, "EUR"),
+                    "difference": format_austrian_money(difference, "EUR"),
+                    "edit_url": (
+                        f"{reverse('bank_transaction_booking', kwargs={'pk': bank_transaction.pk})}"
+                        f"?{urlencode({'status': BankTransaction.Status.REVIEWED, 'period': period, 'period_type': period_type})}"
+                    ),
+                }
+            )
+
+    bank_transaction_total = _quantize_money(bank_transaction_total)
+    booking_entry_total = _quantize_money(booking_entry_total)
+    difference = _quantize_money(bank_transaction_total - booking_entry_total)
+    has_inconsistencies = bool(inconsistent_transactions) or difference != Decimal(
+        "0.00"
+    )
+    if has_inconsistencies:
+        status = "danger"
+        status_label = "Buchungsdaten sind nicht konsistent"
+    elif open_transactions:
+        status = "warning"
+        status_label = (
+            "Monat noch nicht vollständig"
+            if period_type == "month"
+            else "Quartal noch nicht vollständig"
+        )
+    else:
+        status = "success"
+        status_label = (
+            "Monat vollständig und buchhalterisch konsistent"
+            if period_type == "month"
+            else "Quartal vollständig und buchhalterisch konsistent"
+        )
+
+    statement = None
+    statement_display = None
+    if period_type == "month":
+        statement = (
+            BankStatement.objects.filter(booking_month=period)
+            .order_by("-statement_date", "-id")
+            .first()
+        )
+        if statement is not None:
+            statement_display = display_bank_statement(statement)
+        opening_balance = statement.opening_balance if statement else None
+        closing_balance = statement.closing_balance if statement else None
+    else:
+        parsed_period = _parse_export_period(period)
+        year, quarter = parsed_period.split("-", 1)
+        balance = QuarterBalance.objects.filter(
+            year=int(year),
+            quarter=int(quarter[1]),
+        ).first()
+        opening_balance = balance.opening_balance if balance else None
+        closing_balance = balance.closing_balance if balance else None
+    bank_movement = _quantize_money(bank_movement)
+    calculated_balance = (
+        _quantize_money(opening_balance + bank_movement)
+        if opening_balance is not None
+        else None
+    )
+    balance_difference = (
+        _quantize_money(closing_balance - calculated_balance)
+        if closing_balance is not None and calculated_balance is not None
+        else None
+    )
+    if period_type == "month" and statement is None:
+        balance_mode = "missing_statement"
+        balance_message = "Für diesen Monat wurde noch kein Kontoauszug importiert."
+    elif opening_balance is None and closing_balance is None:
+        balance_mode = "none"
+        balance_message = "Bankkontostände sind optional und noch nicht eingetragen."
+    elif opening_balance is not None and closing_balance is None:
+        balance_mode = "opening_only"
+        balance_message = "Zwischenstand anhand der aktuell importierten Transaktionen."
+    elif opening_balance is None:
+        balance_mode = "closing_only"
+        balance_message = "Für eine vollständige Abstimmung fehlt der Anfangsstand."
+    else:
+        balance_mode = "complete"
+        if balance_difference == Decimal("0.00"):
+            balance_message = "Bankkonto stimmt überein"
+        else:
+            balance_message = (
+                "Bankkonto weist eine Differenz von "
+                f"{format_austrian_decimal(balance_difference)} EUR auf"
+            )
+
+    balance_context = {
+        "opening_balance_value": opening_balance,
+        "closing_balance_value": closing_balance,
+        "opening_balance": format_austrian_money(opening_balance, "EUR"),
+        "closing_balance": format_austrian_money(closing_balance, "EUR"),
+        "bank_movement_value": bank_movement,
+        "bank_movement": format_austrian_money(bank_movement, "EUR"),
+        "calculated_balance_value": calculated_balance,
+        "calculated_balance": format_austrian_money(calculated_balance, "EUR"),
+        "balance_difference_value": balance_difference,
+        "balance_difference": format_austrian_money(balance_difference, "EUR"),
+        "mode": balance_mode,
+        "message": balance_message,
+        "calculated_label": (
+            "Errechneter Zwischenstand"
+            if balance_mode == "opening_only"
+            else "Errechneter Endstand"
+        ),
+        "has_difference_warning": (
+            balance_mode == "complete"
+            and balance_difference != Decimal("0.00")
+        ),
+        "statement": statement_display,
+        "statement_control": (
+            json_control_for_statement(statement)
+            if statement is not None
+            else None
+        ),
+    }
+
+    return {
+        "available": True,
+        "period": period,
+        "status": status,
+        "status_label": status_label,
+        "open_transactions": open_transactions,
+        "ready_transactions": ready_transaction_count,
+        "ready_transaction_candidates": len(ready_transactions),
+        "booking_entries": booking_entry_count,
+        "bank_transaction_total_value": bank_transaction_total,
+        "bank_transaction_total": format_austrian_money(
+            bank_transaction_total, "EUR"
+        ),
+        "booking_entry_total_value": booking_entry_total,
+        "booking_entry_total": format_austrian_money(booking_entry_total, "EUR"),
+        "difference_value": difference,
+        "difference": format_austrian_money(difference, "EUR"),
+        "inconsistent_transactions": inconsistent_transactions,
+        "has_inconsistencies": has_inconsistencies,
+        "balance": balance_context,
+        "period_type": period_type,
+        "period_label": _period_label(period_type, period),
+    }
+
+
+def _quarter_control_context(period):
+    """Backward-compatible wrapper for the quarterly control."""
+    return _period_control_context("quarter", period)
+
+
 def _export_selection(params, available_quarters):
     requested_period = params.get("period")
     parsed_period = _parse_export_period(requested_period)
@@ -342,10 +772,14 @@ def _export_selection(params, available_quarters):
     return ""
 
 
-def _overview_url(status, month=None):
+def _overview_url(status, month=None, period=None, period_type=None):
     query = {"status": status}
     if month is not None:
         query["month"] = month
+    if period is not None:
+        query["period"] = period
+    if period_type is not None:
+        query["period_type"] = period_type
     return f"{reverse('bookkeeping_overview')}?{urlencode(query)}"
 
 
@@ -359,6 +793,10 @@ def _note_preview(note, max_length=90):
 def _bookkeeping_navigation_context(request, filter_params=None):
     params = filter_params if filter_params is not None else request.GET
     requested_status = params.get("status")
+    show_dashboard = (
+        request.resolver_match.url_name == "bookkeeping_overview"
+        and not requested_status
+    )
     selected_status = (
         requested_status if requested_status in STATUS_VALUES else OPEN_FILTER
     )
@@ -381,9 +819,6 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             if requested_month in available_month_keys and _parse_month(requested_month)
             else (available_month_keys[0] if available_month_keys else "")
         )
-    if selected_status in BOOKING_READY_STATUSES and "month" not in params:
-        selected_month = ""
-
     count_query = BankTransaction.objects
     if selected_month:
         count_query = count_query.filter(**_month_filter(selected_month))
@@ -453,9 +888,34 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         }
         for year, quarter in available_export_quarters
     ]
+    ready_months = _available_ready_months()
+    ready_quarters = [
+        f"{year}-{quarter}" for year, quarter in available_export_quarters
+    ]
+    ready_period_type = params.get("period_type")
+    ready_period = params.get("period")
+    if ready_period_type not in PERIOD_TYPES:
+        if _parse_export_period(ready_period):
+            ready_period_type = "quarter"
+        elif _parse_month(ready_period):
+            ready_period_type = "month"
+        elif _parse_month(params.get("month")):
+            ready_period_type = "month"
+            ready_period = params.get("month")
+        else:
+            ready_period_type = "month"
+    ready_available_periods = (
+        ready_months if ready_period_type == "month" else ready_quarters
+    )
+    ready_period = _period_value(ready_period_type, ready_period)
+    if ready_period not in ready_available_periods:
+        ready_period = (
+            ready_available_periods[0] if ready_available_periods else ""
+        )
     selected_status_details = STATUS_DETAILS[selected_status]
     month_suffix = f" für {_month_label(selected_month)}" if selected_month else ""
     return {
+        "show_dashboard": show_dashboard,
         "selected_status": selected_status,
         "selected_status_label": selected_status_details["label"],
         "page_heading": selected_status_details["heading"],
@@ -480,9 +940,29 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         "status_navigation": status_navigation,
         "available_export_periods": available_export_periods,
         "export_period": export_period,
+        "available_ready_months": [
+            {"value": value, "label": _month_label(value)}
+            for value in ready_months
+        ],
+        "available_ready_quarters": [
+            {"value": value, "label": _period_label("quarter", value)}
+            for value in ready_quarters
+        ],
+        "ready_period_type": ready_period_type,
+        "ready_period": ready_period,
+        "ready_period_label": _period_label(ready_period_type, ready_period),
         "empty_state_message": (
-            f"Keine {selected_status_details['empty_label']} Transaktionen"
-            f"{month_suffix} vorhanden."
+            (
+                f"Keine offenen Transaktionen für {_month_label(selected_month)}."
+                if selected_status in {
+                    OPEN_FILTER,
+                    BankTransaction.Status.IMPORTED,
+                    BankTransaction.Status.MATCHED,
+                }
+                and selected_month
+                else f"Keine {selected_status_details['empty_label']} Transaktionen"
+                f"{month_suffix} vorhanden."
+            )
         ),
     }
 
@@ -578,6 +1058,8 @@ class BookkeepingOverviewView(TemplateView):
 
     def get_context_data(self, **kwargs):
         filter_params = kwargs.pop("filter_params", None)
+        quarter_balance_form = kwargs.pop("quarter_balance_form", None)
+        bank_statement_form = kwargs.pop("bank_statement_form", None)
         context = super().get_context_data(**kwargs)
         navigation_context = _bookkeeping_navigation_context(
             self.request,
@@ -587,9 +1069,9 @@ class BookkeepingOverviewView(TemplateView):
         context["show_bank_import"] = (
             navigation_context["selected_status"] == BANK_IMPORT_FILTER
         )
-        if context["show_bank_import"]:
+        if navigation_context["show_dashboard"]:
             context.update(
-                _bank_import_dashboard_context(
+                _dashboard_context(
                     filter_params if filter_params is not None else self.request.GET
                 )
             )
@@ -597,19 +1079,49 @@ class BookkeepingOverviewView(TemplateView):
             context["show_preview"] = False
             context.setdefault("error_message", "")
             return context
-
-        export_period_bounds = None
-        if navigation_context["selected_status"] in BOOKING_READY_STATUSES:
-            export_period_bounds = _export_period_bounds(
-                navigation_context["export_period"]
+        if context["show_bank_import"]:
+            context.update(
+                _bank_import_context(
+                    filter_params if filter_params is not None else self.request.GET
+                )
             )
+            context["bank_statement_form"] = (
+                bank_statement_form or BankStatementUploadForm()
+            )
+            context["transactions"] = []
+            context["show_preview"] = False
+            context.setdefault("error_message", "")
+            return context
+
+        ready_period_bounds = None
+        if navigation_context["selected_status"] in BOOKING_READY_STATUSES:
+            ready_period_bounds = _period_bounds(
+                navigation_context["ready_period_type"],
+                navigation_context["ready_period"],
+            )
+            context["quarter_control"] = _period_control_context(
+                navigation_context["ready_period_type"],
+                navigation_context["ready_period"],
+            )
+            context["quarter_control_available"] = context["quarter_control"][
+                "available"
+            ]
+            if context["quarter_control"]["available"]:
+                if quarter_balance_form is None:
+                    if navigation_context["ready_period_type"] == "quarter":
+                        quarter_balance_form = _quarter_balance_form(
+                            navigation_context["ready_period"]
+                        )
+                context["quarter_balance_form"] = quarter_balance_form
+            else:
+                context["quarter_balance_form"] = None
         booking_entries_queryset = BookingEntry.objects.order_by(
             "created_at", "id"
         )
-        if export_period_bounds is not None:
+        if ready_period_bounds is not None:
             booking_entries_queryset = booking_entries_queryset.filter(
-                payment_date__gte=export_period_bounds[0],
-                payment_date__lte=export_period_bounds[1],
+                payment_date__gte=ready_period_bounds[0],
+                payment_date__lte=ready_period_bounds[1],
             )
         selected_transactions = BankTransaction.objects.select_related(
             "matched_rule"
@@ -634,18 +1146,28 @@ class BookkeepingOverviewView(TemplateView):
             selected_transactions = selected_transactions.filter(
                 status__in=BOOKING_READY_STATUSES
             )
-            if export_period_bounds is None:
+            if ready_period_bounds is None:
                 selected_transactions = selected_transactions.none()
             else:
                 selected_transactions = selected_transactions.filter(
-                    booking_entries__payment_date__gte=export_period_bounds[0],
-                    booking_entries__payment_date__lte=export_period_bounds[1],
+                    Q(
+                        booking_date__gte=ready_period_bounds[0],
+                        booking_date__lte=ready_period_bounds[1],
+                    )
+                    | Q(
+                        booking_entries__payment_date__gte=ready_period_bounds[0],
+                        booking_entries__payment_date__lte=ready_period_bounds[1],
+                    )
                 ).distinct()
         else:
             selected_transactions = selected_transactions.filter(
                 status=navigation_context["selected_status"]
             )
-        if navigation_context["selected_month"]:
+        if (
+            navigation_context["selected_month"]
+            and navigation_context["selected_status"]
+            not in BOOKING_READY_STATUSES
+        ):
             selected_transactions = selected_transactions.filter(
                 **_month_filter(navigation_context["selected_month"])
             )
@@ -663,6 +1185,15 @@ class BookkeepingOverviewView(TemplateView):
     def post(self, request, *args, **kwargs):
         if request.POST.get("action") == "export_csv":
             return self._export_csv(request)
+
+        if request.POST.get("action") == "save_quarter_balance":
+            return self._save_quarter_balance(request)
+
+        if request.POST.get("action") == "upload_bank_statement":
+            return self._upload_bank_statement(request)
+
+        if request.POST.get("action") == "retry_bank_statement":
+            return self._retry_bank_statement(request)
 
         if request.POST.get("action") == "run_matching":
             matching_result = match_imported_transactions()
@@ -750,6 +1281,85 @@ class BookkeepingOverviewView(TemplateView):
             )
         )
 
+    def _upload_bank_statement(self, request):
+        form = BankStatementUploadForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return self.render_to_response(
+                self.get_context_data(
+                    filter_params=request.POST,
+                    bank_statement_form=form,
+                )
+            )
+        try:
+            result = import_bank_statement(form.cleaned_data["pdf"])
+        except (BankStatementParseError, BankStatementImportError) as exc:
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message=str(exc),
+                    filter_params=request.POST,
+                    bank_statement_form=form,
+                )
+            )
+        if result.paperless_error:
+            messages.error(
+                request,
+                "Kontoauszug gespeichert, aber die Übertragung zu Paperless ist "
+                f"fehlgeschlagen: {result.paperless_error}",
+            )
+        else:
+            messages.success(
+                request,
+                "Kontoauszug gespeichert. Übertragung zu Paperless läuft.",
+            )
+        return redirect(_overview_url(BANK_IMPORT_FILTER))
+
+    def _retry_bank_statement(self, request):
+        statement = get_object_or_404(
+            BankStatement,
+            pk=request.POST.get("statement_id"),
+        )
+        try:
+            retry_bank_statement(statement)
+        except BankStatementImportError as exc:
+            messages.error(request, str(exc))
+        else:
+            messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
+        return redirect(_overview_url(BANK_IMPORT_FILTER))
+
+    def _save_quarter_balance(self, request):
+        period = _parse_export_period(request.POST.get("period", ""))
+        if period is None:
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message="Bitte einen gültigen Zeitraum auswählen.",
+                    filter_params=request.POST,
+                )
+            )
+
+        form = _quarter_balance_form(period, request.POST)
+        if not form.is_valid():
+            return self.render_to_response(
+                self.get_context_data(
+                    filter_params=request.POST,
+                    quarter_balance_form=form,
+                )
+            )
+
+        year, quarter = period.split("-", 1)
+        QuarterBalance.objects.update_or_create(
+            year=int(year),
+            quarter=int(quarter[1]),
+            defaults={
+                "opening_balance": form.cleaned_data["opening_balance"],
+                "closing_balance": form.cleaned_data["closing_balance"],
+            },
+        )
+        messages.success(request, "Kontostände gespeichert.")
+        selected_status = request.POST.get("status")
+        if selected_status not in BOOKING_READY_STATUSES:
+            selected_status = BankTransaction.Status.REVIEWED
+        return redirect(_overview_url(selected_status, period=period))
+
     def _export_csv(self, request):
         requested_period = request.POST.get("period", "")
         if requested_period:
@@ -778,6 +1388,20 @@ class BookkeepingOverviewView(TemplateView):
                 if requested_period
                 else "Bitte einen Zeitraum auswählen."
             )
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message=error_message,
+                    filter_params=request.POST,
+                )
+            )
+
+        quarter_control = _quarter_control_context(export_period)
+        if quarter_control["has_inconsistencies"]:
+            error_message = (
+                "CSV-Export nicht möglich: Buchungsdaten sind nicht konsistent."
+            )
+            if quarter_control["booking_entries"] == 0:
+                error_message += " Keine Buchungszeilen im ausgewählten Quartal."
             return self.render_to_response(
                 self.get_context_data(
                     error_message=error_message,

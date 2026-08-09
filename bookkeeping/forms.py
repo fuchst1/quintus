@@ -14,10 +14,12 @@ from .formatting import (
 )
 from .models import (
     BankTransaction,
+    BankStatement,
     BookingEntry,
     IBAN_PATTERN,
     MatchingRule,
     MatchingRuleBookingTemplate,
+    QuarterBalance,
     normalize_iban,
 )
 
@@ -62,6 +64,71 @@ class AustrianDecimalField(forms.DecimalField):
         if isinstance(value, Decimal):
             return format_austrian_decimal(value)
         return super().prepare_value(value)
+
+
+class QuarterBalanceForm(forms.ModelForm):
+    bound_field_class = MatchingRuleBoundField
+
+    opening_balance = AustrianDecimalField(
+        max_digits=14,
+        decimal_places=2,
+        required=False,
+        label="Kontostand Quartalsbeginn",
+        error_messages={
+            "invalid": "Bitte einen gültigen Kontostand eingeben, zum Beispiel 1.234,56.",
+            "max_decimal_places": "Bitte höchstens zwei Nachkommastellen eingeben.",
+            "max_digits": "Bitte einen gültigen Kontostand eingeben.",
+        },
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+    closing_balance = AustrianDecimalField(
+        max_digits=14,
+        decimal_places=2,
+        required=False,
+        label="Kontostand Quartalsende",
+        error_messages={
+            "invalid": "Bitte einen gültigen Kontostand eingeben, zum Beispiel 1.234,56.",
+            "max_decimal_places": "Bitte höchstens zwei Nachkommastellen eingeben.",
+            "max_digits": "Bitte einen gültigen Kontostand eingeben.",
+        },
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
+
+    class Meta:
+        model = QuarterBalance
+        fields = ("opening_balance", "closing_balance")
+
+
+class BankStatementUploadForm(forms.Form):
+    max_file_size_bytes = 25 * 1024 * 1024
+    pdf = forms.FileField(
+        label="Kontoauszug als PDF",
+        widget=forms.ClearableFileInput(
+            attrs={"class": "form-control", "accept": "application/pdf,.pdf"}
+        ),
+    )
+
+    def clean_pdf(self):
+        uploaded_file = self.cleaned_data["pdf"]
+        if uploaded_file.size > self.max_file_size_bytes:
+            raise forms.ValidationError(
+                "Die PDF-Datei darf höchstens 25 MB groß sein."
+            )
+        if not str(uploaded_file.name or "").lower().endswith(".pdf"):
+            raise forms.ValidationError("Bitte eine PDF-Datei auswählen.")
+        current_position = uploaded_file.tell() if hasattr(uploaded_file, "tell") else 0
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        file_header = uploaded_file.read(5)
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(current_position)
+        if file_header != b"%PDF-":
+            raise forms.ValidationError("Die Datei ist kein gültiges PDF.")
+        return uploaded_file
 
 
 class MatchingRuleForm(forms.ModelForm):
