@@ -65,6 +65,12 @@ from .manual_invoices import (
     retry_manual_invoice,
     start_manual_invoice_upload,
 )
+from .invoice_ai import (
+    OCR_UNAVAILABLE_MESSAGE,
+    ai_ui_state,
+    formset_initial_from_analysis,
+    run_manual_invoice_analysis,
+)
 from .paperless import BookkeepingPaperlessError, PaperlessClient
 
 
@@ -1797,7 +1803,7 @@ class BookkeepingOverviewView(TemplateView):
             "manual_invoice": True,
             "manual_invoice_url": reverse(
                 "manual_invoice_edit",
-                kwargs={"pk": invoice.pk},
+                kwargs={"reference_uuid": invoice.reference_uuid},
             ),
             "paperless_document_url": PaperlessClient.document_url(
                 invoice.paperless_document_id
@@ -1897,12 +1903,14 @@ class ManualInvoiceListView(TemplateView):
         if request.POST.get("action") == "retry_manual_invoice":
             invoice = get_object_or_404(
                 ManualInvoice,
-                pk=request.POST.get("invoice_id"),
+                reference_uuid=request.POST.get("reference_uuid"),
             )
             try:
                 retry_manual_invoice(invoice)
-            except (ManualInvoiceImportError, BookkeepingPaperlessError) as exc:
+            except ManualInvoiceImportError as exc:
                 messages.error(request, str(exc))
+            except BookkeepingPaperlessError:
+                pass
             else:
                 messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
             return redirect("manual_invoice_list")
@@ -1919,13 +1927,15 @@ class ManualInvoiceListView(TemplateView):
             return self.render_to_response(
                 self.get_context_data(manual_invoice_upload_form=form)
             )
-        messages.success(
-            request,
-            "Rechnung als Entwurf angelegt. Bitte Zahlungsdaten und Buchungszeilen erfassen.",
-        )
+        try:
+            start_manual_invoice_upload(result.invoice)
+        except BookkeepingPaperlessError:
+            pass
+        else:
+            messages.success(request, "Rechnung hochgeladen. Paperless-OCR wird vorbereitet.")
         return redirect(
             "manual_invoice_edit",
-            pk=result.invoice.pk,
+            reference_uuid=result.invoice.reference_uuid,
         )
 
 
@@ -1934,13 +1944,17 @@ class ManualInvoiceEditView(TemplateView):
     formset_prefix = "entries"
 
     def _invoice(self):
-        return get_object_or_404(ManualInvoice, pk=self.kwargs["pk"])
+        return get_object_or_404(
+            ManualInvoice,
+            reference_uuid=self.kwargs["reference_uuid"],
+        )
 
-    def _formset(self, invoice, data=None, final=False):
+    def _formset(self, invoice, data=None, final=False, initial=None):
         formset = ManualInvoiceEntryFormSet(
             data,
             instance=invoice,
             prefix=self.formset_prefix,
+            initial=initial,
             form_kwargs={
                 "manual_invoice": invoice,
                 "final": final,
@@ -1952,7 +1966,7 @@ class ManualInvoiceEditView(TemplateView):
         # that row a real form (index 0), so its values are included in the
         # POST even when the user does not click "Buchungszeile hinzufügen".
         if data is None and not invoice.booking_entries.exists():
-            formset.extra = 1
+            formset.extra = max(1, len(initial or []))
         return formset
 
     def _context(self, invoice, form, formset, error_message=""):
@@ -1966,21 +1980,120 @@ class ManualInvoiceEditView(TemplateView):
                 "return_url": reverse("manual_invoice_list"),
             }
         )
+        context.update(ai_ui_state(invoice))
         return context
+
+    @staticmethod
+    def _assign_manual_invoice_form(invoice, form):
+        invoice.payment_date = form.cleaned_data.get("payment_date")
+        invoice.invoice_number = form.cleaned_data.get("invoice_number", "")
+        invoice.invoice_date = form.cleaned_data.get("invoice_date")
+        invoice.partner_name = form.cleaned_data.get("partner_name", "")
+        invoice.gross_amount = form.cleaned_data.get("gross_amount")
+        invoice.notes = form.cleaned_data.get("notes", "")
+
+    @staticmethod
+    def _has_posted_booking_data(formset):
+        for form in formset.forms:
+            if any(
+                str(form.data.get(form.add_prefix(field_name), "")).strip()
+                for field_name in ("booking_text", "gross_amount", "category")
+            ):
+                return True
+        return False
+
+    def _analyze_post(self, request, invoice):
+        form = ManualInvoiceForm(request.POST, instance=invoice, final=False)
+        form_is_valid = form.is_valid()
+        formset = self._formset(invoice, request.POST, final=False)
+        has_posted_booking_data = self._has_posted_booking_data(formset)
+        if form_is_valid:
+            self._assign_manual_invoice_form(invoice, form)
+            invoice.save()
+
+        outcome = run_manual_invoice_analysis(invoice, force=True)
+        invoice.refresh_from_db()
+        if outcome.kind == "completed" and outcome.existing_data_untouched:
+            messages.info(request, "Bestehende Buchungsdaten wurden nicht verändert.")
+        elif outcome.kind == "failed" and outcome.message:
+            messages.error(request, outcome.message)
+        elif outcome.kind == "ocr_unavailable":
+            messages.info(
+                request,
+                "OCR wird noch verarbeitet"
+                if outcome.message == OCR_UNAVAILABLE_MESSAGE
+                else outcome.message,
+            )
+        elif outcome.kind == "paperless_failed" and outcome.message:
+            messages.error(request, outcome.message)
+        elif outcome.kind in {"paperless_pending", "paperless_not_started"}:
+            messages.info(request, outcome.message)
+
+        if form_is_valid and not has_posted_booking_data:
+            form = ManualInvoiceForm(instance=invoice)
+            formset = self._formset(
+                invoice,
+                initial=formset_initial_from_analysis(invoice),
+            )
+        return self.render_to_response(self._context(invoice, form, formset))
 
     def get(self, request, *args, **kwargs):
         invoice = self._invoice()
+        refresh_pending_manual_invoice_tasks()
+        invoice.refresh_from_db()
+        run_manual_invoice_analysis(invoice)
+        invoice.refresh_from_db()
         return self.render_to_response(
             self._context(
                 invoice,
                 ManualInvoiceForm(instance=invoice),
-                self._formset(invoice),
+                self._formset(
+                    invoice,
+                    initial=formset_initial_from_analysis(invoice),
+                ),
             )
         )
 
     def post(self, request, *args, **kwargs):
         invoice = self._invoice()
         action = request.POST.get("action", "save_draft")
+        if action == "retry_paperless":
+            try:
+                retry_manual_invoice(invoice)
+            except ManualInvoiceImportError as exc:
+                messages.error(request, str(exc))
+            except BookkeepingPaperlessError:
+                pass
+            else:
+                messages.success(request, "Paperless-Übertragung erneut gestartet.")
+            return redirect(
+                "manual_invoice_edit",
+                reference_uuid=invoice.reference_uuid,
+            )
+        if action == "retry_paperless_dates":
+            if invoice.status != ManualInvoice.Status.READY:
+                return redirect(
+                    "manual_invoice_edit",
+                    reference_uuid=invoice.reference_uuid,
+                )
+            try:
+                PaperlessClient.update_manual_invoice_dates(invoice)
+            except BookkeepingPaperlessError as exc:
+                invoice.paperless_error = (
+                    "Paperless-Datumsfelder konnten nicht aktualisiert werden: "
+                    f"{exc}"
+                )[:500]
+                invoice.save(update_fields=("paperless_error", "updated_at"))
+            else:
+                invoice.paperless_error = ""
+                invoice.save(update_fields=("paperless_error", "updated_at"))
+                messages.success(request, "Paperless-Datumsfelder aktualisiert.")
+            return redirect(
+                "manual_invoice_edit",
+                reference_uuid=invoice.reference_uuid,
+            )
+        if action == "analyze_ai":
+            return self._analyze_post(request, invoice)
         finalize = action == "finalize"
         form = ManualInvoiceForm(
             request.POST,
@@ -1996,12 +2109,7 @@ class ManualInvoiceEditView(TemplateView):
 
         if form_is_valid and formset.is_valid():
             rounding_difference = formset.rounding_difference
-            invoice.payment_date = form.cleaned_data.get("payment_date")
-            invoice.invoice_number = form.cleaned_data.get("invoice_number", "")
-            invoice.invoice_date = form.cleaned_data.get("invoice_date")
-            invoice.partner_name = form.cleaned_data.get("partner_name", "")
-            invoice.gross_amount = form.cleaned_data.get("gross_amount")
-            invoice.notes = form.cleaned_data.get("notes", "")
+            self._assign_manual_invoice_form(invoice, form)
             invoice.status = (
                 ManualInvoice.Status.READY
                 if finalize
@@ -2015,21 +2123,46 @@ class ManualInvoiceEditView(TemplateView):
                     formset.apply_rounding_difference()
                 formset.save()
 
-            paperless_error = ""
-            if invoice.payment_date and invoice.partner_name and invoice.gross_amount is not None:
-                if invoice.paperless_status != ManualInvoice.PaperlessStatus.COMPLETED:
-                    try:
-                        start_manual_invoice_upload(invoice)
-                    except BookkeepingPaperlessError as exc:
-                        paperless_error = str(exc)
-                        invoice.status = ManualInvoice.Status.DRAFT
-                        invoice.save(update_fields=("status", "updated_at"))
-            if paperless_error:
-                messages.error(request, paperless_error)
             warning = duplicate_manual_invoice_warning(invoice)
             if warning:
                 messages.warning(request, warning)
-            if finalize and not paperless_error:
+            if finalize:
+                if (
+                    invoice.paperless_status
+                    != ManualInvoice.PaperlessStatus.COMPLETED
+                    or not invoice.paperless_document_id
+                ):
+                    paperless_error = (
+                        invoice.paperless_error
+                        or "Die Rechnung kann erst abgeschlossen werden, wenn sie in "
+                        "Paperless abgelegt ist."
+                    )
+                    invoice.status = ManualInvoice.Status.DRAFT
+                    invoice.paperless_error = paperless_error[:500]
+                    invoice.save(
+                        update_fields=("status", "paperless_error", "updated_at")
+                    )
+                    return redirect(
+                        "manual_invoice_edit",
+                        reference_uuid=invoice.reference_uuid,
+                    )
+                try:
+                    PaperlessClient.update_manual_invoice_dates(invoice)
+                except BookkeepingPaperlessError as exc:
+                    paperless_error = (
+                        "Paperless-Datumsfelder konnten nicht aktualisiert werden: "
+                        f"{exc}"
+                    )[:500]
+                    invoice.paperless_error = paperless_error
+                    invoice.save(
+                        update_fields=("paperless_error", "updated_at")
+                    )
+                    return redirect(
+                        "manual_invoice_edit",
+                        reference_uuid=invoice.reference_uuid,
+                    )
+                invoice.paperless_error = ""
+                invoice.save(update_fields=("paperless_error", "updated_at"))
                 messages.success(request, "Rechnung geprüft und abgeschlossen.")
                 if abs(rounding_difference) == Decimal("0.01"):
                     messages.warning(
@@ -2039,11 +2172,11 @@ class ManualInvoiceEditView(TemplateView):
                         "wurde in der größten Buchungszeile ausgeglichen.",
                     )
                 return redirect("manual_invoice_list")
-            if not finalize and not paperless_error:
+            if not finalize:
                 messages.success(request, "Rechnungsentwurf gespeichert.")
                 return redirect(
                     "manual_invoice_edit",
-                    pk=invoice.pk,
+                    reference_uuid=invoice.reference_uuid,
                 )
 
         return self.render_to_response(

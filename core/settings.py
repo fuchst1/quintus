@@ -215,6 +215,13 @@ PAPERLESS_METER_READING_DOCUMENT_TYPE_ID = _env_int(
     default=6,
 )
 
+# Bookkeeping invoice analysis. The API key is never exposed to templates or
+# persisted in the database.
+BOOKKEEPING_OPENAI_API_KEY = os.getenv("BOOKKEEPING_OPENAI_API_KEY", "").strip()
+BOOKKEEPING_OPENAI_MODEL = (
+    os.getenv("BOOKKEEPING_OPENAI_MODEL", "").strip() or "gpt-4.1-mini"
+)
+
 # E-Mail
 # Standard: direkter SMTP-Versand über den Provider (ohne lokalen Postfix).
 # Für Produktivbetrieb bitte die Werte in .env setzen.

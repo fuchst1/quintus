@@ -404,6 +404,11 @@ class ManualInvoice(models.Model):
         COMPLETED = "completed", "In Paperless abgelegt"
         FAILED = "failed", "Übertragung fehlgeschlagen"
 
+    class AIStatus(models.TextChoices):
+        NOT_STARTED = "not_started", "Nicht analysiert"
+        COMPLETED = "completed", "KI-Vorschlag erstellt"
+        FAILED = "failed", "KI-Analyse fehlgeschlagen"
+
     reference_uuid = models.UUIDField(
         default=uuid.uuid4,
         unique=True,
@@ -439,6 +444,15 @@ class ManualInvoice(models.Model):
         blank=True,
     )
     notes = models.TextField(blank=True)
+    ai_status = models.CharField(
+        max_length=11,
+        choices=AIStatus.choices,
+        default=AIStatus.NOT_STARTED,
+    )
+    ai_model_used = models.CharField(max_length=100, blank=True)
+    ai_analyzed_at = models.DateTimeField(null=True, blank=True)
+    ai_result = models.JSONField(null=True, blank=True)
+    ai_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

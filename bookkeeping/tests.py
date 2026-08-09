@@ -7,7 +7,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -18,6 +18,16 @@ from .choices import CATEGORY_CHOICES, RECEIPT_GROUP_BANK
 from .category_display import category_description
 from .csv_export import quarter_bounds
 from .formatting import format_austrian_decimal
+from . import invoice_ai
+from .invoice_ai import (
+    AI_INCONSISTENT_MESSAGE,
+    AI_NOT_CONFIGURED_MESSAGE,
+    InvoiceAIError,
+    apply_analysis_to_invoice,
+    formset_initial_from_analysis,
+    run_manual_invoice_analysis,
+    validate_analysis,
+)
 from .bank_statement_parser import ParsedBankStatement, parse_bank_statement
 from .bank_statements import (
     BankStatementImportError,
@@ -45,7 +55,11 @@ from .models import (
     ManualInvoiceEntry,
     QuarterBalance,
 )
-from .manual_invoices import refresh_pending_manual_invoice_tasks
+from .manual_invoices import (
+    refresh_pending_manual_invoice_tasks,
+    retry_manual_invoice,
+    start_manual_invoice_upload,
+)
 from .paperless import BookkeepingPaperlessError, PaperlessClient
 from .views import BookkeepingOverviewView
 
@@ -5938,7 +5952,586 @@ class MatchingRuleVersionTests(TestCase):
         self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
 
 
+class InvoiceAITests(TestCase):
+    def analysis_payload(self, *, total="19.32", lines=None):
+        return {
+            "supplier": "Spusu",
+            "invoice_number": "RG-42",
+            "invoice_date": "2026-07-10",
+            "payment_date": None,
+            "currency": "EUR",
+            "total_gross": total,
+            "summary": "Mobilfunkrechnung",
+            "warnings": [],
+            "booking_lines": lines or [
+                {
+                    "booking_text": "Mobilfunk Juli",
+                    "gross_amount": total,
+                    "vat_code": "20",
+                    "category_code": "7600",
+                }
+            ],
+        }
+
+    def invoice(self, **overrides):
+        values = {
+            "file_hash": uuid.uuid4().hex * 2,
+            "paperless_document_id": 256,
+            "paperless_status": ManualInvoice.PaperlessStatus.COMPLETED,
+        }
+        values.update(overrides)
+        return ManualInvoice.objects.create(**values)
+
+    def openai_client(self, payload):
+        client = Mock()
+        client.responses.create.return_value = SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            text=json.dumps(payload),
+                        )
+                    ],
+                )
+            ],
+        )
+        return client
+
+    def test_structured_outputs_configuration_and_schema_constraints(self):
+        payload = self.analysis_payload()
+        client = self.openai_client(payload)
+        with override_settings(BOOKKEEPING_OPENAI_API_KEY="test-secret"), patch.object(
+            invoice_ai, "OpenAI", return_value=client
+        ):
+            result, model_name = invoice_ai.analyze_ocr_text("OCR")
+
+        self.assertEqual(result["total_gross"], "19.32")
+        self.assertEqual(model_name, invoice_ai.AI_MODEL_FALLBACK)
+        request_format = client.responses.create.call_args.kwargs["text"]["format"]
+        self.assertEqual(request_format["type"], "json_schema")
+        self.assertTrue(request_format["strict"])
+        self.assertEqual(request_format["name"], "invoice_analysis")
+        schema = request_format["schema"]
+        self.assertEqual(
+            schema["required"],
+            [
+                "supplier",
+                "invoice_number",
+                "invoice_date",
+                "payment_date",
+                "currency",
+                "total_gross",
+                "summary",
+                "warnings",
+                "booking_lines",
+            ],
+        )
+        self.assertEqual(
+            schema["properties"]["booking_lines"]["items"]["required"],
+            ["booking_text", "gross_amount", "vat_code", "category_code"],
+        )
+        self.assertEqual(
+            schema["properties"]["booking_lines"]["items"]["properties"]["vat_code"]["enum"],
+            ["0", "10", "13", "20", "IG", "unknown"],
+        )
+        self.assertEqual(
+            schema["properties"]["booking_lines"]["items"]["properties"]["category_code"]["anyOf"][0]["enum"],
+            sorted(invoice_ai.ALLOWED_CATEGORY_CODES),
+        )
+        self.assertEqual(
+            schema["properties"]["total_gross"]["anyOf"][0]["type"],
+            "string",
+        )
+        self.assertEqual(
+            schema["properties"]["booking_lines"]["items"]["properties"]["gross_amount"]["type"],
+            "string",
+        )
+
+        def assert_closed_objects(node):
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "object":
+                self.assertIs(node.get("additionalProperties"), False)
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    assert_closed_objects(value)
+
+        assert_closed_objects(schema)
+
+    def test_response_must_be_completed_structured_output(self):
+        valid_payload = self.analysis_payload()
+        responses = (
+            SimpleNamespace(status="completed", output=[]),
+            SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[
+                            SimpleNamespace(
+                                type="refusal",
+                                refusal="Nicht möglich",
+                            )
+                        ],
+                    )
+                ],
+            ),
+            SimpleNamespace(status="incomplete", output=[]),
+            SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[
+                            SimpleNamespace(type="output_text", text="{\"extra\": true}")
+                        ],
+                    )
+                ],
+            ),
+            SimpleNamespace(status="completed", output_text=json.dumps(valid_payload)),
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(
+                    InvoiceAIError, invoice_ai.AI_INVALID_RESPONSE_MESSAGE
+                ):
+                    invoice_ai._response_json(response)
+
+    def test_paperless_ocr_text_is_loaded_from_document_content(self):
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value={"id": 256, "content": "OCR-Rechnungstext"},
+        ) as request_json:
+            content = PaperlessClient.document_ocr_text(256)
+
+        self.assertEqual(content, "OCR-Rechnungstext")
+        request_json.assert_called_once_with(endpoint="documents/256/")
+
+    def test_validate_one_line_per_vat_rate_for_20_10_and_zero_percent(self):
+        cases = (
+            (
+                [
+                    {
+                        "booking_text": "20 Prozent",
+                        "gross_amount": "19.32",
+                        "vat_code": "20",
+                        "category_code": "7600",
+                    }
+                ],
+                "19.32",
+            ),
+            (
+                [
+                    {
+                        "booking_text": "10 Prozent",
+                        "gross_amount": "10.00",
+                        "vat_code": "10",
+                        "category_code": "7600",
+                    },
+                    {
+                        "booking_text": "20 Prozent",
+                        "gross_amount": "9.32",
+                        "vat_code": "20",
+                        "category_code": "7600",
+                    },
+                ],
+                "19.32",
+            ),
+            (
+                [
+                    {
+                        "booking_text": "Steuerfreie Leistung",
+                        "gross_amount": "19.32",
+                        "vat_code": "0",
+                        "category_code": None,
+                    }
+                ],
+                "19.32",
+            ),
+        )
+        for lines, total in cases:
+            with self.subTest(lines=lines):
+                result = validate_analysis(
+                    self.analysis_payload(total=total, lines=lines)
+                )
+                self.assertEqual(len(result["booking_lines"]), len(lines))
+
+    def test_unknown_vat_and_invalid_category_are_not_prefilled(self):
+        result = validate_analysis(
+            self.analysis_payload(
+                lines=[
+                    {
+                        "booking_text": "Unklare Rechnung",
+                        "gross_amount": "19.32",
+                        "vat_code": "unknown",
+                        "category_code": "erfunden",
+                    }
+                ]
+            )
+        )
+
+        line = result["booking_lines"][0]
+        self.assertEqual(line["vat_code"], "unknown")
+        self.assertIsNone(line["category_code"])
+        self.assertIn("USt-Satz konnte nicht eindeutig vorgeschlagen werden.", result["warnings"])
+        self.assertIn("Kategorie konnte nicht eindeutig vorgeschlagen werden.", result["warnings"])
+
+        invoice = self.invoice(ai_result=result)
+        initial = formset_initial_from_analysis(invoice)
+        self.assertEqual(initial[0]["vat_symbol"], "")
+        self.assertEqual(initial[0]["category"], "")
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="test-secret",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_credit_note_does_not_receive_an_automatic_pr_sign(self):
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        client = self.openai_client(self.analysis_payload())
+        with patch.object(
+            PaperlessClient,
+            "document_ocr_text",
+            return_value="Gutschrift 19,32 EUR",
+        ), patch.object(invoice_ai, "OpenAI", return_value=client):
+            outcome = run_manual_invoice_analysis(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(outcome.kind, "completed")
+        self.assertIsNone(invoice.gross_amount)
+        self.assertEqual(formset_initial_from_analysis(invoice), [])
+        self.assertIn(
+            invoice_ai.DIRECTION_UNCLEAR_MESSAGE,
+            invoice.ai_result["warnings"],
+        )
+
+    def test_exact_and_one_cent_difference_are_accepted_but_larger_difference_is_rejected(self):
+        exact = validate_analysis(self.analysis_payload(total="19.32"))
+        one_cent = validate_analysis(self.analysis_payload(total="19.33"))
+        self.assertEqual(exact["total_gross"], "19.32")
+        self.assertEqual(one_cent["total_gross"], "19.33")
+
+        with self.assertRaisesRegex(InvoiceAIError, AI_INCONSISTENT_MESSAGE):
+            validate_analysis(
+                self.analysis_payload(
+                    total="19.34",
+                    lines=[
+                        {
+                            "booking_text": "Mobilfunk Juli",
+                            "gross_amount": "19.32",
+                            "vat_code": "20",
+                            "category_code": "7600",
+                        }
+                    ],
+                )
+            )
+
+    def test_missing_ocr_keeps_invoice_available_for_manual_entry(self):
+        invoice = self.invoice()
+        with patch.object(PaperlessClient, "document_ocr_text", return_value=""):
+            outcome = run_manual_invoice_analysis(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(outcome.kind, "ocr_unavailable")
+        self.assertEqual(invoice.ai_status, ManualInvoice.AIStatus.NOT_STARTED)
+        self.assertEqual(invoice.ai_error, "OCR noch nicht verfügbar")
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_missing_openai_key_is_safe_and_manual_workflow_remains_available(self):
+        invoice = self.invoice()
+        with patch.object(PaperlessClient, "document_ocr_text", return_value="OCR"):
+            outcome = run_manual_invoice_analysis(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(outcome.kind, "failed")
+        self.assertEqual(invoice.ai_error, AI_NOT_CONFIGURED_MESSAGE)
+        self.assertNotIn("BOOKKEEPING_OPENAI_API_KEY", invoice.ai_error)
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="test-secret",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_timeout_and_invalid_structured_response_are_safe_failures(self):
+        timeout_client = Mock()
+        timeout_client.responses.create.side_effect = TimeoutError()
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        with patch.object(PaperlessClient, "document_ocr_text", return_value="OCR"), patch.object(
+            invoice_ai, "OpenAI", return_value=timeout_client
+        ):
+            outcome = run_manual_invoice_analysis(invoice)
+        self.assertEqual(outcome.kind, "failed")
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.ai_error, invoice_ai.AI_REQUEST_ERROR_MESSAGE)
+
+        invalid_client = Mock()
+        invalid_client.responses.create.return_value = SimpleNamespace(
+            output_text="kein JSON"
+        )
+        second_invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        with patch.object(PaperlessClient, "document_ocr_text", return_value="OCR"), patch.object(
+            invoice_ai, "OpenAI", return_value=invalid_client
+        ):
+            outcome = run_manual_invoice_analysis(second_invoice)
+        self.assertEqual(outcome.kind, "failed")
+        second_invoice.refresh_from_db()
+        self.assertEqual(second_invoice.ai_error, invoice_ai.AI_INVALID_RESPONSE_MESSAGE)
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="test-secret",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_successful_analysis_prefills_without_payment_date_or_auto_completion(self):
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        client = self.openai_client(self.analysis_payload())
+        with patch.object(
+            PaperlessClient,
+            "document_ocr_text",
+            return_value="OCR-only",
+        ) as ocr, patch.object(
+            invoice_ai, "OpenAI", return_value=client
+        ):
+            response = self.client.get(
+                reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
+            )
+            second_response = self.client.get(
+                reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
+            )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(invoice.ai_status, ManualInvoice.AIStatus.COMPLETED)
+        self.assertEqual(invoice.partner_name, "Spusu")
+        self.assertEqual(invoice.invoice_number, "RG-42")
+        self.assertEqual(invoice.invoice_date, date(2026, 7, 10))
+        self.assertEqual(invoice.gross_amount, Decimal("-19.32"))
+        self.assertIsNone(invoice.payment_date)
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertFalse(invoice.booking_entries.exists())
+        self.assertContains(response, "Vorschlag erstellt")
+        self.assertContains(response, "Rechnungsdatum")
+        self.assertContains(response, "Zahlungsdatum")
+        self.assertContains(response, "Die vorausgefüllten Werte sind KI-Vorschläge")
+        self.assertContains(response, "Mobilfunk Juli")
+        self.assertNotContains(response, "OCR-only")
+        self.assertNotContains(response, "test-secret")
+        self.assertEqual(second_response.status_code, 200)
+        self.assertIsNotNone(invoice.ai_analyzed_at)
+        self.assertEqual(invoice.ai_model_used, "test-model")
+        self.assertNotIn("OCR-only", json.dumps(invoice.ai_result))
+        request_input = json.dumps(client.responses.create.call_args.kwargs["input"])
+        self.assertIn("OCR-only", request_input)
+        self.assertNotIn("%PDF", request_input)
+        ocr.assert_called_once_with(256)
+        client.responses.create.assert_called_once()
+        self.assertEqual(
+            client.responses.create.call_args.kwargs["model"],
+            "test-model",
+        )
+
+    def test_payment_date_is_validated_prefilled_and_used_for_receipt_number(self):
+        payload = self.analysis_payload()
+        payload["payment_date"] = "2026-08-15"
+        payload["warnings"] = [
+            "Zahlungsdatum wurde aus dem Rechnungsdatum übernommen."
+        ]
+
+        result = validate_analysis(payload)
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        invoice_ai.apply_analysis_to_invoice(invoice, result, "test-model")
+        invoice.refresh_from_db()
+
+        self.assertEqual(result["payment_date"], "2026-08-15")
+        self.assertEqual(
+            invoice.payment_date,
+            date(2026, 8, 15),
+        )
+        self.assertIn(
+            "Zahlungsdatum wurde aus dem Rechnungsdatum übernommen.",
+            invoice.ai_result["warnings"],
+        )
+        initial = formset_initial_from_analysis(invoice)
+        self.assertEqual(initial[0]["payment_date"], date(2026, 8, 15))
+        self.assertEqual(initial[0]["receipt_number"], "8")
+
+    def test_unknown_payment_date_remains_null(self):
+        payload = self.analysis_payload()
+        payload["payment_date"] = None
+        result = validate_analysis(payload)
+        self.assertIsNone(result["payment_date"])
+
+        invalid = self.analysis_payload()
+        invalid["payment_date"] = "not-a-date"
+        with self.assertRaisesRegex(InvoiceAIError, "KI-Zahlungsdatum ist ungültig"):
+            validate_analysis(invalid)
+
+    def test_payment_date_warning_is_displayed_as_neutral_hint(self):
+        invoice = self.invoice(
+            file_hash=uuid.uuid4().hex * 2,
+            ai_status=ManualInvoice.AIStatus.COMPLETED,
+            ai_result={
+                "warnings": [
+                    "Zahlungsdatum wurde aus dem Rechnungsdatum übernommen."
+                ]
+            },
+        )
+        response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+
+        self.assertContains(
+            response,
+            "Hinweis: Zahlungsdatum wurde aus dem Rechnungsdatum übernommen. Bitte prüfen.",
+        )
+        self.assertContains(response, "bookkeeping-ai-warnings")
+        self.assertNotContains(response, "bookkeeping-formset-errors")
+
+    def test_draft_hides_stale_date_metadata_error_and_retry(self):
+        invoice = self.invoice(
+            file_hash=uuid.uuid4().hex * 2,
+            ai_status=ManualInvoice.AIStatus.COMPLETED,
+            ai_result={"warnings": []},
+            paperless_error=(
+                "Paperless-Datumsfelder konnten nicht aktualisiert werden: "
+                "altes Fehlersignal"
+            ),
+        )
+        response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+
+        self.assertNotContains(response, "altes Fehlersignal")
+        self.assertNotContains(response, "Paperless-Datumsfelder erneut aktualisieren")
+
+    @override_settings(BOOKKEEPING_OPENAI_API_KEY="test-secret")
+    @patch.object(PaperlessClient, "update_manual_invoice_dates")
+    @patch.object(PaperlessClient, "document_ocr_text", return_value="OCR")
+    @patch.object(invoice_ai, "OpenAI")
+    def test_analysis_and_editing_never_update_paperless_dates(
+        self, openai, ocr, date_update
+    ):
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        openai.return_value = self.openai_client(self.analysis_payload())
+
+        response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        date_update.assert_not_called()
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="test-secret",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_manual_analysis_button_keeps_workflow_editable(self):
+        invoice = self.invoice(file_hash=uuid.uuid4().hex * 2)
+        client = self.openai_client(self.analysis_payload())
+        data = {
+            "action": "analyze_ai",
+            "invoice_number": "",
+            "invoice_date": "",
+            "payment_date": "",
+            "partner_name": "",
+            "gross_amount": "",
+            "notes": "",
+            "entries-TOTAL_FORMS": "1",
+            "entries-INITIAL_FORMS": "0",
+            "entries-MIN_NUM_FORMS": "0",
+            "entries-MAX_NUM_FORMS": "1000",
+            "entries-0-position": "",
+            "entries-0-receipt_group": "PR",
+            "entries-0-receipt_number": "",
+            "entries-0-payment_date": "",
+            "entries-0-booking_text": "",
+            "entries-0-invoice_number": "",
+            "entries-0-partner_name": "",
+            "entries-0-gross_amount": "",
+            "entries-0-vat_symbol": "20",
+            "entries-0-category": "",
+        }
+        with patch.object(PaperlessClient, "document_ocr_text", return_value="OCR"), patch.object(
+            invoice_ai, "OpenAI", return_value=client
+        ):
+            response = self.client.post(
+                reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
+                data,
+            )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(invoice.ai_status, ManualInvoice.AIStatus.COMPLETED)
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertEqual(invoice.booking_entries.count(), 0)
+        self.assertContains(response, "Mobilfunk Juli")
+
+    @override_settings(
+        BOOKKEEPING_OPENAI_API_KEY="test-secret",
+        BOOKKEEPING_OPENAI_MODEL="test-model",
+    )
+    def test_existing_fields_and_booking_lines_are_not_overwritten(self):
+        invoice = self.invoice(
+            file_hash=uuid.uuid4().hex * 2,
+            partner_name="Bestehender Lieferant",
+            invoice_number="ALT-1",
+            invoice_date=date(2026, 6, 1),
+            payment_date=date(2026, 7, 15),
+            gross_amount=Decimal("-19.32"),
+        )
+        entry = ManualInvoiceEntry.objects.create(
+            manual_invoice=invoice,
+            payment_date=invoice.payment_date,
+            booking_text="Bestehende Buchung",
+            partner_name="Bestehender Lieferant",
+            gross_amount=Decimal("-19.32"),
+            vat_symbol="20",
+            category="7600",
+        )
+        client = self.openai_client(self.analysis_payload())
+        with patch.object(PaperlessClient, "document_ocr_text", return_value="OCR"), patch.object(
+            invoice_ai, "OpenAI", return_value=client
+        ):
+            outcome = run_manual_invoice_analysis(invoice)
+
+        invoice.refresh_from_db()
+        entry.refresh_from_db()
+        self.assertTrue(outcome.existing_data_untouched)
+        self.assertEqual(invoice.partner_name, "Bestehender Lieferant")
+        self.assertEqual(invoice.invoice_number, "ALT-1")
+        self.assertEqual(invoice.invoice_date, date(2026, 6, 1))
+        self.assertEqual(invoice.gross_amount, Decimal("-19.32"))
+        self.assertEqual(entry.booking_text, "Bestehende Buchung")
+        self.assertEqual(invoice.booking_entries.count(), 1)
+
+
 class ManualInvoiceTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        self.paperless_date_update = patch.object(
+            PaperlessClient,
+            "update_manual_invoice_dates",
+            return_value=None,
+        )
+        self.paperless_date_update_mock = self.paperless_date_update.start()
+        self.addCleanup(self.paperless_date_update.stop)
+
     def upload_invoice(self, content=b"%PDF- manual invoice"):
         uploaded_file = SimpleUploadedFile(
             "rechnung.pdf",
@@ -5991,10 +6584,27 @@ class ManualInvoiceTests(TestCase):
             )
         return data
 
-    def uploaded_invoice(self):
-        response = self.upload_invoice()
+    def uploaded_invoice(self, *, paperless_ready=True):
+        with patch.object(
+            PaperlessClient,
+            "upload_manual_invoice",
+            return_value="initial-task",
+        ):
+            response = self.upload_invoice()
         self.assertEqual(response.status_code, 302)
-        return ManualInvoice.objects.get()
+        invoice = ManualInvoice.objects.get()
+        self.assertEqual(invoice.paperless_task_id, "initial-task")
+        if paperless_ready:
+            invoice.paperless_document_id = 256
+            invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+            invoice.save(
+                update_fields=(
+                    "paperless_document_id",
+                    "paperless_status",
+                    "updated_at",
+                )
+            )
+        return invoice
 
     def test_manual_invoice_worklist_contains_only_drafts(self):
         draft = ManualInvoice.objects.create(
@@ -6023,6 +6633,26 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Keine offenen manuellen Belege vorhanden.")
 
+    def test_manual_invoice_without_paperless_does_not_show_ocr_as_root_cause(self):
+        invoice = self.uploaded_invoice(paperless_ready=False)
+
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={"status": "pending", "document_id": None},
+        ):
+            response = self.client.get(
+                reverse(
+                    "manual_invoice_edit",
+                    kwargs={"reference_uuid": invoice.reference_uuid},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Übertragung läuft")
+        self.assertContains(response, "Nicht gestartet")
+        self.assertNotContains(response, "OCR noch nicht verfügbar")
+
     def test_completed_invoice_leaves_worklist_and_remains_available(self):
         invoice = self.uploaded_invoice()
         original_uuid = invoice.reference_uuid
@@ -6037,7 +6667,7 @@ class ManualInvoiceTests(TestCase):
         )
 
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(),
         )
 
@@ -6064,10 +6694,10 @@ class ManualInvoiceTests(TestCase):
         self.assertContains(ready_response, "Büromaterial")
         self.assertContains(
             ready_response,
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
         )
         edit_response = self.client.get(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk})
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
         )
         self.assertEqual(edit_response.status_code, 200)
         self.assertContains(edit_response, "Büromaterial")
@@ -6079,7 +6709,7 @@ class ManualInvoiceTests(TestCase):
     ):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(),
         )
         self.assertEqual(response.status_code, 302)
@@ -6134,18 +6764,30 @@ class ManualInvoiceTests(TestCase):
             )
             self.assertContains(ready_response, "Normale Banktransaktion")
 
-        upload.assert_called_once_with(invoice)
+        upload.assert_not_called()
 
     @override_settings(PAPERLESS_BASE_URL="https://paperless.example")
     @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
     def test_ready_manual_invoice_without_paperless_id_has_no_link(self, upload):
         invoice = self.uploaded_invoice()
+        invoice.paperless_document_id = None
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.NOT_STARTED
+        invoice.save(
+            update_fields=(
+                "paperless_document_id",
+                "paperless_status",
+                "updated_at",
+            )
+        )
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(),
         )
 
         self.assertEqual(response.status_code, 302)
+        invoice.refresh_from_db()
+        invoice.status = ManualInvoice.Status.READY
+        invoice.save(update_fields=("status", "updated_at"))
         ready_response = self.client.get(
             reverse("bookkeeping_overview"),
             {
@@ -6157,12 +6799,12 @@ class ManualInvoiceTests(TestCase):
         self.assertContains(ready_response, "Bearbeiten")
         self.assertNotContains(ready_response, "In Paperless öffnen")
         self.assertNotContains(ready_response, "/documents/")
-        upload.assert_called_once_with(invoice)
+        upload.assert_not_called()
 
     def test_initial_visible_line_is_submitted_with_negative_amount(self):
-        invoice = self.uploaded_invoice()
+        invoice = self.uploaded_invoice(paperless_ready=False)
         response = self.client.get(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk})
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
         )
 
         self.assertEqual(response.status_code, 200)
@@ -6170,6 +6812,16 @@ class ManualInvoiceTests(TestCase):
         self.assertContains(response, 'name="entries-0-booking_text"')
         self.assertContains(response, 'name="entries-0-gross_amount"')
         self.assertContains(response, 'name="entries-__prefix__-booking_text"')
+
+        invoice.paperless_document_id = 256
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+        invoice.save(
+            update_fields=(
+                "paperless_document_id",
+                "paperless_status",
+                "updated_at",
+            )
+        )
 
         with patch.object(
             PaperlessClient,
@@ -6184,7 +6836,7 @@ class ManualInvoiceTests(TestCase):
             # server must calculate the position before saving the instance.
             data["entries-0-position"] = ""
             response = self.client.post(
-                reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+                reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
                 data,
             )
 
@@ -6197,14 +6849,14 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(entry.gross_amount, Decimal("-19.32"))
         self.assertEqual(entry.vat_symbol, "20")
         self.assertEqual(entry.category, "7600")
-        upload.assert_called_once_with(invoice)
+        upload.assert_not_called()
 
     @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
     def test_invoice_with_one_line_is_ready_with_private_receipt_defaults(self, upload):
         invoice = self.uploaded_invoice()
 
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(),
         )
 
@@ -6213,17 +6865,42 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], reverse("manual_invoice_list"))
         self.assertEqual(invoice.status, ManualInvoice.Status.READY)
-        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.PENDING)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
         self.assertEqual(entry.receipt_group, "PR")
         self.assertEqual(entry.receipt_number, "7")
         self.assertEqual(entry.payment_date, date(2026, 7, 15))
-        upload.assert_called_once_with(invoice)
+        upload.assert_not_called()
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-draft")
+    def test_payment_date_alone_starts_paperless_before_manual_completion(self, upload):
+        invoice = self.uploaded_invoice()
+        data = self.finalize_data()
+        data.update(
+            {
+                "action": "save_draft",
+                "partner_name": "",
+                "gross_amount": "",
+            }
+        )
+
+        response = self.client.post(
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
+            data,
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
+        self.assertEqual(invoice.paperless_task_id, "initial-task")
+        self.paperless_date_update_mock.assert_not_called()
+        upload.assert_not_called()
 
     @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
     def test_multiple_vat_rates_and_negative_line_are_supported(self, upload):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(
                 rows=[
                     {
@@ -6257,13 +6934,13 @@ class ManualInvoiceTests(TestCase):
             sum(invoice.booking_entries.values_list("gross_amount", flat=True)),
             Decimal("100.00"),
         )
-        upload.assert_called_once()
+        upload.assert_not_called()
 
     @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-manual")
     def test_rounding_tolerance_is_applied_to_largest_line(self, upload):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(amount="99,99"),
         )
 
@@ -6276,7 +6953,7 @@ class ManualInvoiceTests(TestCase):
     def test_larger_sum_difference_blocks_completion(self, upload):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(amount="90,00"),
         )
 
@@ -6294,7 +6971,7 @@ class ManualInvoiceTests(TestCase):
     def test_deleted_line_is_not_counted(self, upload):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(
                 rows=[
                     {
@@ -6323,12 +7000,12 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(invoice.status, ManualInvoice.Status.READY)
         self.assertEqual(invoice.booking_entries.count(), 1)
         self.assertEqual(invoice.booking_entries.get().booking_text, "Übrige Zeile")
-        upload.assert_called_once_with(invoice)
+        upload.assert_not_called()
 
     def test_empty_formset_still_requires_a_booking_line(self):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(rows=[]),
         )
 
@@ -6338,14 +7015,110 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
         self.assertFalse(invoice.booking_entries.exists())
 
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-immediate")
+    def test_finalization_updates_dates_without_a_second_upload(self, upload):
+        response = self.upload_invoice(content=b"%PDF- finalize dates")
+        invoice = ManualInvoice.objects.get()
+        invoice.paperless_document_id = 256
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+        invoice.save(
+            update_fields=(
+                "paperless_document_id",
+                "paperless_status",
+                "updated_at",
+            )
+        )
+
+        response = self.client.post(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            self.finalize_data(),
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("manual_invoice_list"))
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.paperless_date_update_mock.assert_called_once_with(invoice)
+        upload.assert_called_once_with(invoice)
+
+    def test_failed_date_update_keeps_completed_booking_data_and_does_not_upload(self):
+        invoice = self.uploaded_invoice()
+        self.paperless_date_update_mock.side_effect = BookkeepingPaperlessError(
+            "Paperless vorübergehend nicht erreichbar."
+        )
+
+        response = self.client.post(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            self.finalize_data(),
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertTrue(invoice.booking_entries.exists())
+        self.assertIn("Paperless-Datumsfelder konnten nicht aktualisiert werden", invoice.paperless_error)
+        self.assertEqual(invoice.paperless_document_id, 256)
+        with patch.object(PaperlessClient, "document_ocr_text", return_value=""):
+            status_response = self.client.get(response["Location"])
+        status_content = status_response.content.decode()
+        self.assertEqual(
+            status_content.count("Paperless-Datumsfelder konnten nicht aktualisiert werden"),
+            1,
+        )
+
+    def test_draft_cannot_trigger_paperless_date_retry(self):
+        invoice = self.uploaded_invoice()
+        response = self.client.post(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            {"action": "retry_paperless_dates"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.paperless_date_update_mock.assert_not_called()
+
     def test_identical_file_hash_is_rejected_without_second_invoice(self):
-        first = self.upload_invoice()
+        with patch.object(
+            PaperlessClient,
+            "upload_manual_invoice",
+            return_value="initial-task",
+        ) as upload:
+            first = self.upload_invoice()
+            upload.assert_called_once()
         self.assertEqual(first.status_code, 302)
         second = self.upload_invoice()
 
         self.assertEqual(second.status_code, 200)
         self.assertContains(second, "Diese Rechnung wurde bereits importiert.")
         self.assertEqual(ManualInvoice.objects.count(), 1)
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", return_value="task-immediate")
+    def test_pdf_upload_starts_paperless_without_payment_date_and_uses_uuid_url(
+        self, upload
+    ):
+        response = self.upload_invoice(content=b"%PDF- immediate upload")
+        invoice = ManualInvoice.objects.get()
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+        )
+        self.assertIsNone(invoice.payment_date)
+        self.assertEqual(invoice.paperless_task_id, "task-immediate")
+        self.assertNotIn(f"/{invoice.pk}/edit/", response["Location"])
+        upload.assert_called_once_with(invoice)
 
     @override_settings(
         PAPERLESS_BASE_URL="https://paperless.example",
@@ -6360,7 +7133,6 @@ class ManualInvoiceTests(TestCase):
     ):
         invoice = ManualInvoice.objects.create(
             file_hash="a" * 64,
-            payment_date=date(2026, 7, 15),
             invoice_date=date(2026, 7, 10),
             invoice_number="RG-7",
             partner_name="Lieferant",
@@ -6374,34 +7146,306 @@ class ManualInvoiceTests(TestCase):
         fields = dict(multipart.call_args.kwargs["form_fields"])
         custom_values = json.loads(fields["custom_fields"])
         self.assertEqual(custom_values["6"], str(invoice.reference_uuid))
-        self.assertEqual(custom_values["7"], "2026-07-15")
-        self.assertEqual(custom_values["8"], "2026-07")
-        self.assertEqual(custom_values["9"], "2026-Q3")
+        self.assertNotIn("7", custom_values)
+        self.assertNotIn("8", custom_values)
+        self.assertNotIn("9", custom_values)
         self.assertEqual(fields["document_type"], "2")
         self.assertEqual(fields["correspondent"], "1")
         self.assertEqual(fields["storage_path"], "5")
         self.assertEqual(fields["created"], "2026-07-10")
 
-    @patch.object(PaperlessClient, "upload_manual_invoice", side_effect=BookkeepingPaperlessError("Paperless nicht erreichbar."))
-    def test_paperless_error_keeps_draft_and_booking_data_and_retry_is_possible(self, upload):
-        invoice = self.uploaded_invoice()
-        response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
-            self.finalize_data(),
+    @patch.object(PaperlessClient, "_require_custom_field", side_effect=(7, 8, 9))
+    @patch.object(
+        PaperlessClient,
+        "_request_json",
+        side_effect=[
+            {
+                "id": 256,
+                "custom_fields": {
+                    "6": "existing-uuid",
+                    "99": "unknown-field-value",
+                },
+                "tags": [1, 2],
+                "title": "Originaltitel",
+            },
+            {},
+        ],
+    )
+    def test_manual_invoice_date_update_preserves_all_existing_custom_fields(
+        self, request_json, custom_fields
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="u" * 64,
+            paperless_document_id=256,
+            paperless_status=ManualInvoice.PaperlessStatus.COMPLETED,
+            payment_date=date(2026, 7, 15),
+        )
+
+        self.paperless_date_update.stop()
+        try:
+            PaperlessClient.update_manual_invoice_dates(invoice)
+        finally:
+            self.paperless_date_update_mock = self.paperless_date_update.start()
+
+        self.assertEqual(request_json.call_count, 2)
+        patch_call = request_json.call_args_list[1]
+        self.assertEqual(patch_call.kwargs["method"], "PATCH")
+        self.assertEqual(patch_call.kwargs["endpoint"], "documents/256/")
+        self.assertEqual(
+            patch_call.kwargs["payload"]["custom_fields"],
+            {
+                "6": "existing-uuid",
+                "7": "2026-07-15",
+                "8": "2026-07",
+                "9": "2026-Q3",
+                "99": "unknown-field-value",
+            },
+        )
+        self.assertEqual(custom_fields.call_count, 3)
+
+    @patch.object(
+        PaperlessClient,
+        "_require_custom_field",
+        side_effect=BookkeepingPaperlessError(
+            "Das Paperless-Custom-Field 'q_buchungsdatum' fehlt."
+        ),
+    )
+    @patch.object(
+        PaperlessClient,
+        "_request_json",
+        return_value={"custom_fields": {"6": "existing-uuid"}},
+    )
+    def test_global_missing_custom_field_is_a_clear_error(
+        self, request_json, custom_field
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="v" * 64,
+            paperless_document_id=256,
+            paperless_status=ManualInvoice.PaperlessStatus.COMPLETED,
+            payment_date=date(2026, 7, 15),
+        )
+
+        self.paperless_date_update.stop()
+        try:
+            with self.assertRaisesRegex(
+                BookkeepingPaperlessError,
+                "q_buchungsdatum.*fehlt",
+            ):
+                PaperlessClient.update_manual_invoice_dates(invoice)
+        finally:
+            self.paperless_date_update_mock = self.paperless_date_update.start()
+
+        request_json.assert_called_once_with(endpoint="documents/256/")
+        custom_field.assert_called_once()
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example",
+        PAPERLESS_API_TOKEN="test-token",
+    )
+    @patch.object(PaperlessClient, "_require_named", side_effect=(1, 2, 3, 4))
+    @patch.object(PaperlessClient, "_find_exact_name", return_value=None)
+    def test_missing_manual_invoice_storage_path_is_reported_without_creation(
+        self, find_name, named
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="m" * 64,
+            payment_date=date(2026, 7, 15),
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        with self.assertRaisesRegex(
+            BookkeepingPaperlessError,
+            "IFKG Eingangsrechnungen",
+        ):
+            PaperlessClient.upload_manual_invoice(invoice)
+
+    @patch.object(
+        PaperlessClient,
+        "task_status",
+        return_value={"status": "pending", "document_id": None, "found": True},
+    )
+    @patch.object(PaperlessClient, "upload_manual_invoice")
+    def test_pending_manual_invoice_task_is_not_uploaded_again(self, upload, task_status):
+        invoice = ManualInvoice.objects.create(
+            file_hash="p" * 64,
+            paperless_task_id="task-running",
+            paperless_status=ManualInvoice.PaperlessStatus.PENDING,
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        task_id = start_manual_invoice_upload(invoice, check_existing_reference=True)
+
+        self.assertEqual(task_id, "task-running")
+        upload.assert_not_called()
+        task_status.assert_called_once_with("task-running")
+
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "completed", "document_id": 321},
+    )
+    @patch.object(
+        PaperlessClient,
+        "task_status",
+        return_value={
+            "status": "needs_fallback",
+            "document_id": None,
+            "found": True,
+        },
+    )
+    @patch.object(PaperlessClient, "upload_manual_invoice")
+    def test_successful_task_without_document_id_links_reference_document(
+        self, upload, task_status, find_document
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="f" * 64,
+            paperless_task_id="task-success",
+            paperless_status=ManualInvoice.PaperlessStatus.PENDING,
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        document_id = start_manual_invoice_upload(
+            invoice,
+            check_existing_reference=True,
+        )
+
+        invoice.refresh_from_db()
+        self.assertEqual(document_id, "321")
+        self.assertEqual(invoice.paperless_document_id, 321)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
+        upload.assert_not_called()
+        task_status.assert_called_once_with("task-success")
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "completed", "document_id": 654},
+    )
+    @patch.object(PaperlessClient, "upload_manual_invoice")
+    @patch.object(PaperlessClient, "is_configured", return_value=True)
+    def test_existing_reference_document_prevents_retry_upload(
+        self, is_configured, upload, find_document
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="e" * 64,
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+            paperless_error="Vorheriger Fehler",
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        document_id = retry_manual_invoice(invoice)
+
+        invoice.refresh_from_db()
+        self.assertEqual(document_id, "654")
+        self.assertEqual(invoice.paperless_document_id, 654)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.COMPLETED)
+        upload.assert_not_called()
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+
+    @patch.object(
+        PaperlessClient,
+        "find_document_by_reference",
+        return_value={"status": "pending", "document_id": None},
+    )
+    @patch.object(PaperlessClient, "upload_manual_invoice")
+    @patch.object(PaperlessClient, "is_configured", return_value=True)
+    def test_retry_without_pdf_returns_reupload_instruction(
+        self, is_configured, upload, find_document
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="n" * 64,
+            paperless_status=ManualInvoice.PaperlessStatus.FAILED,
+        )
+
+        with self.assertRaisesRegex(
+            BookkeepingPaperlessError,
+            "ursprüngliche PDF ist nicht mehr verfügbar",
+        ):
+            retry_manual_invoice(invoice)
+
+        upload.assert_not_called()
+        find_document.assert_called_once_with(str(invoice.reference_uuid))
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", side_effect=BookkeepingPaperlessError("Upload fehlgeschlagen"))
+    @patch.object(invoice_ai, "OpenAI")
+    def test_failed_paperless_upload_does_not_start_openai(self, openai, upload):
+        response = self.upload_invoice(content=b"%PDF- failed upload")
+        invoice = ManualInvoice.objects.get()
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.FAILED)
+        openai.assert_not_called()
+        upload.assert_called_once_with(invoice)
+
+    @patch.object(PaperlessClient, "document_ocr_text", return_value="")
+    @patch.object(invoice_ai, "OpenAI")
+    def test_completed_paperless_document_with_empty_ocr_waits_without_openai(
+        self, openai, ocr
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="o" * 64,
+            paperless_document_id=256,
+            paperless_status=ManualInvoice.PaperlessStatus.COMPLETED,
+        )
+
+        response = self.client.get(
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
         )
 
         invoice.refresh_from_db()
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Paperless nicht erreichbar.")
+        self.assertContains(response, "Abgelegt")
+        self.assertContains(response, "Nicht verfügbar")
+        self.assertContains(response, "Nicht gestartet")
+        self.assertNotContains(response, "OCR noch nicht verfügbar")
+        self.assertEqual(invoice.ai_status, ManualInvoice.AIStatus.NOT_STARTED)
+        openai.assert_not_called()
+        ocr.assert_called_once_with(256)
+
+    @override_settings(PAPERLESS_BASE_URL="https://paperless.example")
+    @patch.object(PaperlessClient, "document_ocr_text", return_value="")
+    def test_paperless_link_is_visible_after_document_association(self, ocr):
+        invoice = ManualInvoice.objects.create(
+            file_hash="l" * 64,
+            paperless_document_id=256,
+            paperless_status=ManualInvoice.PaperlessStatus.COMPLETED,
+        )
+
+        response = self.client.get(
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid})
+        )
+
+        self.assertContains(response, "In Paperless öffnen")
+        self.assertContains(response, 'href="https://paperless.example/documents/256/"')
+        self.assertContains(response, 'target="_blank"')
+        self.assertContains(response, 'rel="noopener noreferrer"')
+        ocr.assert_called_once_with(256)
+
+    @patch.object(PaperlessClient, "upload_manual_invoice", side_effect=BookkeepingPaperlessError("Paperless nicht erreichbar."))
+    @patch.object(PaperlessClient, "find_document_by_reference", return_value={"status": "pending", "document_id": None})
+    def test_paperless_error_keeps_draft_and_booking_data_and_retry_is_possible(self, find_document, upload):
+        response = self.upload_invoice(content=b"%PDF- retryable upload")
+        invoice = ManualInvoice.objects.get()
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertContains(
+            self.client.get(response["Location"]),
+            "Paperless nicht erreichbar.",
+        )
         self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
-        self.assertTrue(invoice.booking_entries.exists())
         self.assertEqual(invoice.paperless_status, ManualInvoice.PaperlessStatus.FAILED)
 
         upload.side_effect = None
         upload.return_value = "retry-task"
         retry_response = self.client.post(
             reverse("manual_invoice_list"),
-            {"action": "retry_manual_invoice", "invoice_id": invoice.pk},
+            {
+                "action": "retry_manual_invoice",
+                "reference_uuid": str(invoice.reference_uuid),
+            },
         )
 
         invoice.refresh_from_db()
@@ -6438,7 +7482,7 @@ class ManualInvoiceTests(TestCase):
     def test_ready_manual_entries_are_in_period_control_and_csv(self, upload):
         invoice = self.uploaded_invoice()
         response = self.client.post(
-            reverse("manual_invoice_edit", kwargs={"pk": invoice.pk}),
+            reverse("manual_invoice_edit", kwargs={"reference_uuid": invoice.reference_uuid}),
             self.finalize_data(),
         )
         self.assertEqual(response.status_code, 302)
@@ -6462,4 +7506,4 @@ class ManualInvoiceTests(TestCase):
             end_date=date(2026, 7, 31),
         ).decode("utf-8-sig")
         self.assertIn("PR;7;15.07.2026;Büromaterial", csv_content)
-        upload.assert_called_once()
+        upload.assert_not_called()

@@ -22,7 +22,7 @@ urlpatterns = [
         name='manual_invoice_list',
     ),
     path(
-        'manual-invoices/<int:pk>/edit/',
+        'manual-invoices/<uuid:reference_uuid>/edit/',
         ManualInvoiceEditView.as_view(),
         name='manual_invoice_edit',
     ),

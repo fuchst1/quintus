@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from django.conf import settings
+from django.utils import timezone
 
 
 class BookkeepingPaperlessError(Exception):
@@ -259,26 +260,17 @@ class PaperlessClient:
                 f"Der Paperless-Speicherpfad '{cls.MANUAL_STORAGE_PATH_NAME}' fehlt. "
                 "Bitte zuerst exakt unter diesem Namen anlegen."
             )
-        custom_field_ids = {
-            name: cls._require_custom_field(name, data_type)
-            for name, data_type in cls.CUSTOM_FIELDS.items()
-        }
-        payment_date = invoice.payment_date
-        if payment_date is None:
-            raise BookkeepingPaperlessError(
-                "Für die Paperless-Übertragung fehlt das Zahlungsdatum."
-            )
+        reference_field_id = cls._require_custom_field(
+            "q_bookkeeping_referenz",
+            cls.CUSTOM_FIELDS["q_bookkeeping_referenz"],
+        )
         title = (
             f"Eingangsrechnung {invoice.invoice_number or 'ohne Rechnungsnummer'}"
             f" – {invoice.partner_name or 'Diverse'}"
         )
-        booking_month = payment_date.strftime("%Y-%m")
-        booking_quarter = (
-            f"{payment_date.year}-Q{((payment_date.month - 1) // 3) + 1}"
-        )
         form_fields = [
             ("title", title),
-            ("created", (invoice.invoice_date or payment_date).isoformat()),
+            ("created", (invoice.invoice_date or timezone.localdate()).isoformat()),
             ("correspondent", str(correspondent_id)),
             ("document_type", str(document_type_id)),
             ("storage_path", str(storage_path_id)),
@@ -287,12 +279,7 @@ class PaperlessClient:
                 "custom_fields",
                 json.dumps(
                     {
-                        str(custom_field_ids["q_buchungsdatum"]): payment_date.isoformat(),
-                        str(custom_field_ids["q_buchungsmonat"]): booking_month,
-                        str(custom_field_ids["q_buchungsquartal"]): booking_quarter,
-                        str(custom_field_ids["q_bookkeeping_referenz"]): str(
-                            invoice.reference_uuid
-                        ),
+                        str(reference_field_id): str(invoice.reference_uuid),
                     },
                     ensure_ascii=False,
                 ),
@@ -317,6 +304,51 @@ class PaperlessClient:
                     return str(response[key])
         raise BookkeepingPaperlessError(
             "Paperless hat keine Task-ID für den Rechnungsupload zurückgegeben."
+        )
+
+    @classmethod
+    def update_manual_invoice_dates(cls, invoice) -> None:
+        """Update only the confirmed booking-date fields of an existing document."""
+        document_id = int(invoice.paperless_document_id or 0)
+        if document_id <= 0:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Datumsfelder fehlt die Dokument-ID."
+            )
+        if invoice.payment_date is None:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Datumsfelder fehlt das Zahlungsdatum."
+            )
+        document = cls._request_json(endpoint=f"documents/{document_id}/")
+        if not isinstance(document, dict):
+            raise BookkeepingPaperlessError(
+                "Paperless hat keine verwertbaren Dokumentdaten zurückgegeben."
+            )
+        custom_fields = document.get("custom_fields")
+        values = {
+            "q_buchungsdatum": invoice.payment_date.isoformat(),
+            "q_buchungsmonat": invoice.payment_date.strftime("%Y-%m"),
+            "q_buchungsquartal": (
+                f"{invoice.payment_date.year}-Q"
+                f"{((invoice.payment_date.month - 1) // 3) + 1}"
+            ),
+        }
+        updated_custom_fields = custom_fields
+        for field_name, value in values.items():
+            field_id = cls._require_custom_field(
+                field_name,
+                cls.CUSTOM_FIELDS[field_name],
+            )
+            updated_custom_fields = cls._replace_custom_field_value(
+                updated_custom_fields,
+                field_id=field_id,
+                field_name=field_name,
+                value=value,
+                append_if_missing=True,
+            )
+        cls._request_json(
+            endpoint=f"documents/{document_id}/",
+            method="PATCH",
+            payload={"custom_fields": updated_custom_fields},
         )
 
     @classmethod
@@ -516,6 +548,7 @@ class PaperlessClient:
         field_id: int,
         field_name: str,
         value: str,
+        append_if_missing: bool = False,
     ):
         if isinstance(custom_fields, dict):
             updated = dict(custom_fields)
@@ -523,6 +556,9 @@ class PaperlessClient:
                 if str(key) == str(field_id) or str(key) == field_name:
                     updated[key] = value
                     return updated
+            if append_if_missing:
+                updated[str(field_id)] = value
+                return updated
         elif isinstance(custom_fields, list):
             updated = []
             replaced = False
@@ -549,8 +585,13 @@ class PaperlessClient:
                 updated.append(copied_entry)
             if replaced:
                 return updated
+            if append_if_missing:
+                updated.append({"field": field_id, "value": value})
+                return updated
+        if custom_fields is None and append_if_missing:
+            return [{"field": field_id, "value": value}]
         raise BookkeepingPaperlessError(
-            f"Das Paperless-Dokument enthält kein '{field_name}'-Feld."
+            f"Das Paperless-Dokument enthält kein '{field_name}'-Feld und konnte nicht ergänzt werden."
         )
 
     @classmethod
@@ -639,6 +680,22 @@ class PaperlessClient:
         if document_id is None or not cls.base_url():
             return ""
         return urljoin(f"{cls.base_url()}/", f"documents/{int(document_id)}/")
+
+    @classmethod
+    def document_ocr_text(cls, document_id: int | None) -> str:
+        if document_id is None:
+            raise BookkeepingPaperlessError(
+                "Für die OCR-Abfrage fehlt die Paperless-Dokument-ID."
+            )
+        payload = cls._request_json(endpoint=f"documents/{int(document_id)}/")
+        if not isinstance(payload, dict):
+            raise BookkeepingPaperlessError(
+                "Paperless hat keine verwertbaren Dokumentdaten zurückgegeben."
+            )
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return ""
+        return content.strip()
 
     @classmethod
     def _request_multipart(

@@ -534,6 +534,7 @@ class ManualInvoiceForm(forms.ModelForm):
 
     invoice_date = forms.DateField(
         required=False,
+        label="Rechnungsdatum",
         input_formats=("%d.%m.%Y", "%Y-%m-%d"),
         widget=forms.DateInput(
             format="%d.%m.%Y",
@@ -542,6 +543,7 @@ class ManualInvoiceForm(forms.ModelForm):
     )
     payment_date = forms.DateField(
         required=False,
+        label="Zahlungsdatum",
         input_formats=("%d.%m.%Y", "%Y-%m-%d"),
         widget=forms.DateInput(
             format="%d.%m.%Y",

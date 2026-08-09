@@ -43,14 +43,114 @@ def _remove_temporary_pdf(invoice: ManualInvoice) -> None:
     invoice.temporary_pdf = None
 
 
-def start_manual_invoice_upload(invoice: ManualInvoice) -> str:
-    if invoice.paperless_status == ManualInvoice.PaperlessStatus.COMPLETED:
-        return str(invoice.paperless_document_id or "")
+def _has_temporary_pdf(invoice: ManualInvoice) -> bool:
+    if not invoice.temporary_pdf:
+        return False
+    try:
+        return invoice.temporary_pdf.storage.exists(invoice.temporary_pdf.name)
+    except OSError:
+        return False
+
+
+def _complete_manual_invoice_paperless(invoice: ManualInvoice, document_id: int) -> str:
+    invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
+    invoice.paperless_document_id = document_id
+    invoice.paperless_error = ""
+    _remove_temporary_pdf(invoice)
+    invoice.save(
+        update_fields=(
+            "temporary_pdf",
+            "paperless_status",
+            "paperless_document_id",
+            "paperless_error",
+            "updated_at",
+        )
+    )
+    return str(document_id)
+
+
+def _resolve_before_manual_invoice_upload(invoice: ManualInvoice) -> dict[str, object]:
+    if invoice.paperless_document_id:
+        return {
+            "status": "completed",
+            "document_id": int(invoice.paperless_document_id),
+        }
+
+    task_result = None
+    if invoice.paperless_task_id:
+        try:
+            task_result = PaperlessClient.task_status(invoice.paperless_task_id)
+        except BookkeepingPaperlessError as task_error:
+            try:
+                reference_result = PaperlessClient.find_document_by_reference(
+                    str(invoice.reference_uuid)
+                )
+            except BookkeepingPaperlessError:
+                raise task_error
+            if reference_result["status"] == "completed":
+                return reference_result
+            raise task_error
+        if task_result["status"] in {"pending", "completed"}:
+            return task_result
+
+    if not PaperlessClient.is_configured():
+        return {"status": "not_found", "document_id": None}
+
+    reference_result = PaperlessClient.find_document_by_reference(
+        str(invoice.reference_uuid)
+    )
+    if reference_result["status"] == "completed":
+        return reference_result
+
+    if task_result is None:
+        return {"status": "not_found", "document_id": None}
+    if task_result["status"] == "failed":
+        return task_result
+    if not task_result.get("found", True):
+        return {"status": "not_found", "document_id": None}
+
+    # A successful task without a document ID is deliberately kept pending.
+    # Re-uploading in this ambiguous state could create a duplicate document.
+    return {
+        "status": "pending",
+        "document_id": None,
+        "message": task_result.get("message") or "Paperless-Task wird geprüft.",
+    }
+
+
+def start_manual_invoice_upload(
+    invoice: ManualInvoice,
+    *,
+    check_existing_reference: bool = False,
+) -> str:
     if (
-        invoice.paperless_status == ManualInvoice.PaperlessStatus.PENDING
-        and invoice.paperless_task_id
+        invoice.paperless_document_id
+        or invoice.paperless_task_id
+        or check_existing_reference
+        or invoice.paperless_status
+        in {
+            ManualInvoice.PaperlessStatus.FAILED,
+            ManualInvoice.PaperlessStatus.COMPLETED,
+        }
     ):
+        resolved = _resolve_before_manual_invoice_upload(invoice)
+    else:
+        resolved = {"status": "not_found", "document_id": None}
+    if resolved["status"] == "completed" and resolved.get("document_id"):
+        return _complete_manual_invoice_paperless(
+            invoice,
+            int(resolved["document_id"]),
+        )
+    if resolved["status"] == "pending":
+        invoice.paperless_status = ManualInvoice.PaperlessStatus.PENDING
+        invoice.paperless_error = ""
+        invoice.save(update_fields=("paperless_status", "paperless_error", "updated_at"))
         return invoice.paperless_task_id
+    if not _has_temporary_pdf(invoice):
+        raise BookkeepingPaperlessError(
+            "Die ursprüngliche PDF ist nicht mehr verfügbar. "
+            "Bitte laden Sie die Rechnung erneut hoch."
+        )
     try:
         task_id = PaperlessClient.upload_manual_invoice(invoice)
     except BookkeepingPaperlessError as exc:
@@ -75,11 +175,14 @@ def start_manual_invoice_upload(invoice: ManualInvoice) -> str:
 
 
 def retry_manual_invoice(invoice: ManualInvoice) -> str:
-    if invoice.paperless_status != ManualInvoice.PaperlessStatus.FAILED:
+    if invoice.paperless_status not in {
+        ManualInvoice.PaperlessStatus.NOT_STARTED,
+        ManualInvoice.PaperlessStatus.FAILED,
+    }:
         raise ManualInvoiceImportError(
             "Diese Rechnung kann derzeit nicht erneut übertragen werden."
         )
-    return start_manual_invoice_upload(invoice)
+    return start_manual_invoice_upload(invoice, check_existing_reference=True)
 
 
 def refresh_pending_manual_invoice_tasks() -> None:
@@ -116,18 +219,9 @@ def refresh_pending_manual_invoice_tasks() -> None:
             if result["status"] == "pending":
                 continue
         if result["status"] == "completed":
-            invoice.paperless_status = ManualInvoice.PaperlessStatus.COMPLETED
-            invoice.paperless_document_id = result["document_id"]
-            invoice.paperless_error = ""
-            _remove_temporary_pdf(invoice)
-            invoice.save(
-                update_fields=(
-                    "temporary_pdf",
-                    "paperless_status",
-                    "paperless_document_id",
-                    "paperless_error",
-                    "updated_at",
-                )
+            _complete_manual_invoice_paperless(
+                invoice,
+                int(result["document_id"]),
             )
             continue
         invoice.paperless_status = ManualInvoice.PaperlessStatus.FAILED
@@ -185,6 +279,9 @@ def display_manual_invoice(invoice: ManualInvoice) -> dict:
             invoice.paperless_document_id
         ),
         "can_retry": invoice.paperless_status
-        == ManualInvoice.PaperlessStatus.FAILED
+        in {
+            ManualInvoice.PaperlessStatus.NOT_STARTED,
+            ManualInvoice.PaperlessStatus.FAILED,
+        }
         and bool(invoice.temporary_pdf),
     }

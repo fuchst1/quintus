@@ -55,13 +55,13 @@
                     <tr>
                         <td class="bookkeeping-actions">
                             <div class="bookkeeping-action-buttons">
-                                <a href="{% url 'manual_invoice_edit' invoice.id %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
-                                {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
+                                <a href="{% url 'manual_invoice_edit' invoice.reference_uuid %}" class="btn btn-sm btn-outline-primary">Bearbeiten</a>
+                                {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>{% endif %}
                                 {% if invoice.can_retry %}
                                 <form method="post">
                                     {% csrf_token %}
                                     <input type="hidden" name="action" value="retry_manual_invoice">
-                                    <input type="hidden" name="invoice_id" value="{{ invoice.id }}">
+                                    <input type="hidden" name="reference_uuid" value="{{ invoice.reference_uuid }}">
                                     <button type="submit" class="btn btn-sm btn-outline-secondary">Übertragung wiederholen</button>
                                 </form>
                                 {% endif %}

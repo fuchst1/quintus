@@ -31,6 +31,40 @@
 
     <form method="post" class="bookkeeping-entry-form">
         {% csrf_token %}
+        <div class="bookkeeping-manual-invoice-statuses" aria-live="polite">
+            <div class="bookkeeping-manual-invoice-status-item">
+                <span class="bookkeeping-status-name">Paperless:</span>
+                <span class="badge bookkeeping-status-badge bookkeeping-status-badge-{{ paperless_status_class }}">{{ paperless_status_display }}</span>
+                {% if paperless_document_url %}
+                <a href="{{ paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>
+                {% elif paperless_can_retry %}
+                <button type="submit" name="action" value="retry_paperless" class="btn btn-sm btn-outline-secondary">Paperless-Übertragung erneut versuchen</button>
+                {% endif %}
+                {% if paperless_can_retry_dates %}
+                <button type="submit" name="action" value="retry_paperless_dates" class="btn btn-sm btn-outline-secondary">Paperless-Datumsfelder erneut aktualisieren</button>
+                {% endif %}
+                {% if paperless_error %}<small class="bookkeeping-status-error">{{ paperless_error }}</small>{% endif %}
+            </div>
+            <div class="bookkeeping-manual-invoice-status-item">
+                <span class="bookkeeping-status-name">OCR:</span>
+                <span class="badge bookkeeping-status-badge bookkeeping-status-badge-{{ ocr_status_class }}">{{ ocr_status_label }}</span>
+                {% if ocr_action_label %}
+                <button type="submit" name="action" value="analyze_ai" class="btn btn-sm btn-outline-secondary">{{ ocr_action_label }}</button>
+                {% endif %}
+                {% if ocr_error %}<div class="bookkeeping-formset-error">{{ ocr_error }}</div>{% endif %}
+            </div>
+            <div class="bookkeeping-manual-invoice-status-item">
+                <span class="bookkeeping-status-name">KI:</span>
+                <span class="badge bookkeeping-status-badge bookkeeping-status-badge-{{ ai_status_class }}">{{ ai_status_label }}</span>
+                {% if ai_action_label %}
+                <button type="submit" name="action" value="analyze_ai" class="btn btn-sm btn-outline-secondary">{{ ai_action_label }}</button>
+                {% endif %}
+                {% if ai_error %}<div class="bookkeeping-formset-error">{{ ai_error }}</div>{% endif %}
+            </div>
+            {% if ai_suggestion_created %}
+            <span class="bookkeeping-ai-note">Die vorausgefüllten Werte sind KI-Vorschläge und müssen geprüft werden.</span>
+            {% endif %}
+        </div>
         <section class="bookkeeping-card bookkeeping-manual-invoice-data" aria-labelledby="manual-invoice-data-heading">
             <h2 id="manual-invoice-data-heading" class="bookkeeping-section-title">Rechnungsdaten</h2>
             <div class="bookkeeping-manual-invoice-data-grid">
@@ -67,6 +101,11 @@
                 <h2 id="manual-booking-rows-heading" class="bookkeeping-section-title">Buchungszeilen</h2>
                 <button type="button" class="btn btn-sm btn-outline-primary" id="add-manual-invoice-row">Buchungszeile hinzufügen</button>
             </div>
+            {% if ai_warnings %}
+            <div class="bookkeeping-ai-warnings" role="status">
+                {% for warning in ai_warnings %}<div>Hinweis: {{ warning }}{% if warning == "Zahlungsdatum wurde aus dem Rechnungsdatum übernommen." %} Bitte prüfen.{% endif %}</div>{% endfor %}
+            </div>
+            {% endif %}
             {{ manual_invoice_formset.management_form }}
             {% if manual_invoice_formset.non_form_errors %}
             <div class="bookkeeping-formset-errors" role="alert">
