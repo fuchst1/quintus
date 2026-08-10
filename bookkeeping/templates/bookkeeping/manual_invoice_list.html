@@ -20,7 +20,14 @@
     {% endif %}
 
     <section class="bookkeeping-card bookkeeping-manual-invoice-upload" aria-labelledby="manual-invoice-upload-heading">
-        <h2 id="manual-invoice-upload-heading" class="bookkeeping-section-title">Rechnung hochladen</h2>
+        <div class="bookkeeping-card-heading">
+            <h2 id="manual-invoice-upload-heading" class="bookkeeping-section-title">Rechnung hochladen</h2>
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="import_paperless_invoices">
+                <button type="submit" class="btn btn-outline-primary">Paperless-Eingang prüfen</button>
+            </form>
+        </div>
         <form method="post" enctype="multipart/form-data" class="bookkeeping-manual-invoice-upload-form">
             {% csrf_token %}
             <div>

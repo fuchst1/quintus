@@ -461,6 +461,13 @@ class ManualInvoice(models.Model):
 
     class Meta:
         ordering = ("-updated_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("paperless_document_id",),
+                condition=Q(paperless_document_id__isnull=False),
+                name="unique_manual_invoice_paperless_document",
+            ),
+        ]
 
 
 class ManualInvoiceEntry(models.Model):

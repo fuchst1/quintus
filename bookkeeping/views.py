@@ -12,7 +12,7 @@ from django.contrib import messages
 from django.db import IntegrityError
 from django.db.models import Count, Prefetch, Q, Sum
 from django.db import transaction as db_transaction
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views.generic import DeleteView, TemplateView, UpdateView
@@ -30,6 +30,11 @@ from .bank_statements import (
     refresh_pending_paperless_tasks,
     refresh_unsynced_completed_references,
     retry_bank_statement,
+)
+from .accountant_package import (
+    AccountantPackageError,
+    build_accountant_package,
+    inspect_accountant_package,
 )
 from .formatting import format_austrian_decimal, format_austrian_money
 from .category_display import category_description
@@ -74,6 +79,10 @@ from .manual_invoices import (
     refresh_pending_manual_invoice_tasks,
     retry_manual_invoice,
     start_manual_invoice_upload,
+)
+from .paperless_invoice_import import (
+    PaperlessInvoiceImportError,
+    import_paperless_invoices,
 )
 from .invoice_ai import (
     OCR_UNAVAILABLE_MESSAGE,
@@ -579,6 +588,45 @@ def _export_period_bounds(period):
         return None
     year, quarter = parsed_period.split("-", 1)
     return quarter_bounds(year, quarter)
+
+
+def _validate_accountant_package_period(period_type, period):
+    available_periods = (
+        _available_ready_months()
+        if period_type == "month"
+        else [
+            f"{year}-{quarter}"
+            for year, quarter in _available_export_quarters()
+        ]
+        if period_type == "quarter"
+        else []
+    )
+    if period not in available_periods:
+        raise AccountantPackageError(
+            "Der ausgewählte Zeitraum ist nicht als buchungsfertiger Zeitraum verfügbar."
+        )
+    return period_type, period
+
+
+def _accountant_package_response(request):
+    period_type = request.POST.get("period_type") or request.GET.get(
+        "period_type",
+        "",
+    )
+    period = request.POST.get("period") or request.GET.get("period", "")
+    _validate_accountant_package_period(period_type, period)
+    result = build_accountant_package(
+        period_type=period_type,
+        period=period,
+    )
+    response = FileResponse(
+        result.file,
+        as_attachment=True,
+        filename=result.filename,
+        content_type="application/zip",
+    )
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -1183,6 +1231,40 @@ def _matching_result_message(result):
     )
 
 
+class AccountantPackageDownloadView(TemplateView):
+    """Download endpoint for callers outside the overview form."""
+
+    def get(self, request, *args, **kwargs):
+        return self._download(request)
+
+    def post(self, request, *args, **kwargs):
+        return self._download(request)
+
+    def _download(self, request):
+        try:
+            return _accountant_package_response(request)
+        except AccountantPackageError as exc:
+            messages.error(request, str(exc))
+            period_type = request.POST.get("period_type") or request.GET.get(
+                "period_type",
+                "month",
+            )
+            period = request.POST.get("period") or request.GET.get("period", "")
+            status = request.POST.get("status") or request.GET.get(
+                "status",
+                BankTransaction.Status.REVIEWED,
+            )
+            if status not in BOOKING_READY_STATUSES:
+                status = BankTransaction.Status.REVIEWED
+            return redirect(
+                _overview_url(
+                    status,
+                    period=period,
+                    period_type=period_type,
+                )
+            )
+
+
 class BookkeepingOverviewView(TemplateView):
     template_name = "bookkeeping/overview.html"
 
@@ -1245,6 +1327,13 @@ class BookkeepingOverviewView(TemplateView):
                 context["quarter_balance_form"] = quarter_balance_form
             else:
                 context["quarter_balance_form"] = None
+            try:
+                context["accountant_package"] = inspect_accountant_package(
+                    period_type=navigation_context["ready_period_type"],
+                    period=navigation_context["ready_period"],
+                )
+            except AccountantPackageError:
+                context["accountant_package"] = None
         booking_entries_queryset = BookingEntry.objects.order_by(
             "created_at", "id"
         )
@@ -1351,6 +1440,9 @@ class BookkeepingOverviewView(TemplateView):
         if request.POST.get("action") == "export_csv":
             return self._export_csv(request)
 
+        if request.POST.get("action") == "download_accountant_package":
+            return self._download_accountant_package(request)
+
         if request.POST.get("action") == "save_quarter_balance":
             return self._save_quarter_balance(request)
 
@@ -1445,6 +1537,25 @@ class BookkeepingOverviewView(TemplateView):
                 newest_imported_month_key,
             )
         )
+
+    def _download_accountant_package(self, request):
+        try:
+            return _accountant_package_response(request)
+        except AccountantPackageError as exc:
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message=str(exc),
+                    filter_params=request.POST,
+                )
+            )
+        except Exception:
+            logger.exception("Accountant package creation failed")
+            return self.render_to_response(
+                self.get_context_data(
+                    error_message="Das Übergabepaket konnte nicht erstellt werden.",
+                    filter_params=request.POST,
+                )
+            )
 
     def _upload_bank_statement(self, request):
         form = BankStatementUploadForm(request.POST, request.FILES)
@@ -1972,6 +2083,35 @@ class ManualInvoiceListView(TemplateView):
         return context
 
     def post(self, request, *args, **kwargs):
+        if request.POST.get("action") == "import_paperless_invoices":
+            try:
+                summary = import_paperless_invoices()
+            except PaperlessInvoiceImportError as exc:
+                messages.error(request, str(exc))
+            except BookkeepingPaperlessError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(
+                    request,
+                    (
+                        f"{summary.new_count} Beleg(e) übernommen, "
+                        f"{summary.existing_count} bereits vorhanden, "
+                        f"{summary.ocr_unavailable_count} ohne OCR, "
+                        f"{summary.ai_suggestion_count} KI-Vorschlag/-Vorschläge erstellt."
+                    ),
+                )
+                if summary.error_count:
+                    messages.warning(
+                        request,
+                        f"{summary.error_count} Beleg(e) konnten nicht vollständig verarbeitet werden.",
+                    )
+                if summary.waiting_count:
+                    messages.info(
+                        request,
+                        f"{summary.waiting_count} weitere(s) Dokument(e) warten auf den nächsten Lauf.",
+                    )
+            return redirect("manual_invoice_list")
+
         if request.POST.get("action") == "retry_manual_invoice":
             invoice = get_object_or_404(
                 ManualInvoice,

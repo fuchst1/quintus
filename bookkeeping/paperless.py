@@ -15,8 +15,17 @@ from django.utils import timezone
 class BookkeepingPaperlessError(Exception):
     """User-facing Paperless error without response or credential details."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class PaperlessClient:
+    MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+    INVOICE_IMPORT_TAG_NAME = "Quintus-Import"
+    INVOICE_IMPORTED_TAG_NAME = "Quintus-Importiert"
+    INVOICE_ERROR_TAG_NAME = "Quintus-Fehler"
+    BOOKKEEPING_REFERENCE_FIELD_NAME = "q_bookkeeping_referenz"
     CORRESPONDENT_NAME = "Erste Bank"
     DOCUMENT_TYPE_NAME = "Kontoauszug"
     TAG_NAMES = ("Buchhaltung", "Immo-Fuchs KG")
@@ -126,6 +135,11 @@ class PaperlessClient:
 
     @classmethod
     def _find_exact_name(cls, endpoint: str, name: str) -> int | None:
+        exact_ids = cls._find_exact_ids(endpoint, name)
+        return exact_ids[0] if exact_ids else None
+
+    @classmethod
+    def _find_exact_ids(cls, endpoint: str, name: str) -> list[int]:
         payload = cls._request_json(
             endpoint=endpoint,
             query={"page_size": "200", "name": name},
@@ -136,14 +150,17 @@ class PaperlessClient:
             results = payload
         else:
             results = []
+        exact_ids = []
         for item in results:
             if not isinstance(item, dict) or item.get("name") != name:
                 continue
             try:
-                return int(item["id"])
+                item_id = int(item["id"])
             except (KeyError, TypeError, ValueError):
                 continue
-        return None
+            if item_id > 0 and item_id not in exact_ids:
+                exact_ids.append(item_id)
+        return exact_ids
 
     @classmethod
     def _require_named(cls, endpoint: str, name: str) -> int:
@@ -554,6 +571,241 @@ class PaperlessClient:
         return {"status": "completed", "document_id": document_id, "message": ""}
 
     @classmethod
+    def paperless_invoice_import_master_data(cls) -> dict[str, object]:
+        """Resolve import tags and the reference field by their exact names."""
+        import_tag_ids = cls._find_exact_ids(
+            "tags/",
+            cls.INVOICE_IMPORT_TAG_NAME,
+        )
+        if not import_tag_ids:
+            raise BookkeepingPaperlessError(
+                f"Das Paperless-Objekt '{cls.INVOICE_IMPORT_TAG_NAME}' fehlt. "
+                "Bitte zuerst exakt unter diesem Namen anlegen."
+            )
+        return {
+            "import_tag_id": import_tag_ids[0],
+            "import_tag_ids": tuple(import_tag_ids),
+            "imported_tag_id": cls._require_named(
+                "tags/",
+                cls.INVOICE_IMPORTED_TAG_NAME,
+            ),
+            "error_tag_id": cls._require_named(
+                "tags/",
+                cls.INVOICE_ERROR_TAG_NAME,
+            ),
+            "reference_field_id": cls._require_custom_field(
+                cls.BOOKKEEPING_REFERENCE_FIELD_NAME,
+                "string",
+            ),
+        }
+
+    @classmethod
+    def documents_by_tag_id(
+        cls,
+        tag_id: int | list[int] | tuple[int, ...],
+    ) -> list[dict]:
+        """Return all documents matching one exact Paperless tag ID."""
+        raw_tag_ids = tag_id if isinstance(tag_id, (list, tuple)) else (tag_id,)
+        normalized_tag_ids = []
+        for raw_tag_id in raw_tag_ids:
+            try:
+                normalized_tag_id = int(raw_tag_id)
+            except (TypeError, ValueError):
+                normalized_tag_id = 0
+            if normalized_tag_id > 0 and normalized_tag_id not in normalized_tag_ids:
+                normalized_tag_ids.append(normalized_tag_id)
+        if not normalized_tag_ids:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Dokumentabfrage fehlt eine gültige Tag-ID."
+            )
+
+        documents = []
+        page_size = 100
+        seen_document_ids = set()
+        for normalized_tag_id in normalized_tag_ids:
+            page = 1
+            tag_result_count = 0
+            while True:
+                payload = cls._request_json(
+                    endpoint="documents/",
+                    query={
+                        "tags__id": str(normalized_tag_id),
+                        "page": str(page),
+                        "page_size": str(page_size),
+                    },
+                )
+                if isinstance(payload, dict):
+                    page_results = payload.get("results", [])
+                    total_count = payload.get("count")
+                    next_page = payload.get("next")
+                elif isinstance(payload, list):
+                    page_results = payload
+                    total_count = None
+                    next_page = None
+                else:
+                    page_results = []
+                    total_count = 0
+                    next_page = None
+                if not isinstance(page_results, list):
+                    raise BookkeepingPaperlessError(
+                        "Paperless hat eine ungültige Dokumentliste geliefert."
+                    )
+                tag_result_count += len(page_results)
+                for item in page_results:
+                    if not isinstance(item, dict):
+                        continue
+                    document_id = cls._coerce_document_id(item.get("id"))
+                    if document_id is not None:
+                        if document_id in seen_document_ids:
+                            continue
+                        seen_document_ids.add(document_id)
+                    documents.append(item)
+                if not next_page:
+                    try:
+                        complete = total_count is not None and tag_result_count >= int(
+                            total_count
+                        )
+                    except (TypeError, ValueError):
+                        complete = len(page_results) < page_size
+                    if complete or len(page_results) < page_size:
+                        break
+                page += 1
+                if page > 10000:
+                    raise BookkeepingPaperlessError(
+                        "Paperless liefert eine unerwartet lange Dokumentpagination."
+                    )
+        return documents
+
+    @classmethod
+    def document_details(cls, document_id: int) -> dict:
+        normalized_id = cls._coerce_document_id(document_id)
+        if normalized_id is None:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Dokumentdetails fehlt die Dokument-ID."
+            )
+        payload = cls._request_json(endpoint=f"documents/{normalized_id}/")
+        if not isinstance(payload, dict):
+            raise BookkeepingPaperlessError(
+                "Paperless hat keine verwertbaren Dokumentdetails zurückgegeben."
+            )
+        return payload
+
+    @classmethod
+    def update_invoice_import_markers(
+        cls,
+        document_id: int,
+        *,
+        reference_uuid: str,
+        import_tag_id: int,
+        imported_tag_id: int,
+        error_tag_id: int,
+        reference_field_id: int,
+        import_tag_ids: tuple[int, ...] | list[int] | None = None,
+    ) -> None:
+        """Preserve document metadata while updating only process markers."""
+        document = cls.document_details(document_id)
+        tags = cls._document_tag_ids(document.get("tags"))
+        custom_fields = cls._replace_custom_field_value(
+            document.get("custom_fields"),
+            field_id=int(reference_field_id),
+            field_name=cls.BOOKKEEPING_REFERENCE_FIELD_NAME,
+            value=str(reference_uuid),
+            append_if_missing=True,
+        )
+        updated_tags = cls._merge_process_tags(
+            tags,
+            remove_ids={
+                int(import_tag_id),
+                int(error_tag_id),
+                *(
+                    int(tag_id)
+                    for tag_id in (import_tag_ids or ())
+                ),
+            },
+            add_id=int(imported_tag_id),
+        )
+        if (
+            updated_tags == tags
+            and custom_fields == document.get("custom_fields")
+        ):
+            return
+        cls._request_json(
+            endpoint=f"documents/{int(document_id)}/",
+            method="PATCH",
+            payload={
+                "tags": updated_tags,
+                "custom_fields": custom_fields,
+            },
+        )
+
+    @classmethod
+    def update_invoice_import_error_tag(
+        cls,
+        document_id: int,
+        *,
+        import_tag_id: int,
+        imported_tag_id: int,
+        error_tag_id: int,
+        import_tag_ids: tuple[int, ...] | list[int] | None = None,
+    ) -> None:
+        """Mark a document as failed without changing its other tags."""
+        document = cls.document_details(document_id)
+        tags = cls._document_tag_ids(document.get("tags"))
+        updated_tags = cls._merge_process_tags(
+            tags,
+            remove_ids={
+                int(import_tag_id),
+                int(imported_tag_id),
+                *(
+                    int(tag_id)
+                    for tag_id in (import_tag_ids or ())
+                ),
+            },
+            add_id=int(error_tag_id),
+        )
+        if updated_tags == tags:
+            return
+        cls._request_json(
+            endpoint=f"documents/{int(document_id)}/",
+            method="PATCH",
+            payload={"tags": updated_tags},
+        )
+
+    @staticmethod
+    def _document_tag_ids(raw_tags) -> list[int]:
+        if not isinstance(raw_tags, list):
+            raise BookkeepingPaperlessError(
+                "Das Paperless-Dokument enthält keine verwertbare Tag-Liste."
+            )
+        tag_ids = []
+        for tag in raw_tags:
+            candidate = tag.get("id") if isinstance(tag, dict) else tag
+            try:
+                normalized = int(candidate)
+            except (TypeError, ValueError):
+                raise BookkeepingPaperlessError(
+                    "Das Paperless-Dokument enthält eine ungültige Tag-ID."
+                ) from None
+            if normalized > 0 and normalized not in tag_ids:
+                tag_ids.append(normalized)
+        return tag_ids
+
+    @staticmethod
+    def _merge_process_tags(
+        current_tag_ids: list[int],
+        *,
+        remove_ids: set[int],
+        add_id: int,
+    ) -> list[int]:
+        result = [
+            tag_id
+            for tag_id in current_tag_ids
+            if tag_id not in remove_ids and tag_id != add_id
+        ]
+        result.append(add_id)
+        return result
+
+    @classmethod
     def synchronize_statement_reference(cls, statement) -> dict[str, object]:
         document_id = int(statement.paperless_document_id or 0)
         if document_id <= 0:
@@ -808,6 +1060,109 @@ class PaperlessClient:
         if not isinstance(content, str):
             return ""
         return content.strip()
+
+    @classmethod
+    def download_document(cls, document_id: int | None) -> bytes:
+        """Download the original binary document from Paperless."""
+        normalized_id = cls._coerce_document_id(document_id)
+        if normalized_id is None:
+            raise BookkeepingPaperlessError(
+                "Für den Paperless-Download fehlt eine gültige Dokument-ID."
+            )
+        if not cls.is_configured():
+            raise BookkeepingPaperlessError(
+                "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
+            )
+
+        request = Request(
+            cls._api_url(f"documents/{normalized_id}/download/"),
+            headers={
+                "Authorization": f"Token {cls._token()}",
+                "Accept": "application/pdf, application/octet-stream, */*",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=cls._timeout()) as response:
+                content_type = cls._response_content_type(response)
+                if not cls._is_binary_content_type(content_type):
+                    raise BookkeepingPaperlessError(
+                        "Paperless hat statt einer Binärdatei eine unerwartete "
+                        "Antwort geliefert."
+                    )
+                content_length = cls._response_content_length(response)
+                if content_length is not None and content_length > cls.MAX_DOWNLOAD_BYTES:
+                    raise BookkeepingPaperlessError(
+                        "Das Paperless-Dokument ist für den Übergabepaket-Download zu groß."
+                    )
+                content = bytearray()
+                while True:
+                    chunk = response.read(min(1024 * 1024, cls.MAX_DOWNLOAD_BYTES + 1))
+                    if not chunk:
+                        break
+                    content.extend(chunk)
+                    if len(content) > cls.MAX_DOWNLOAD_BYTES:
+                        raise BookkeepingPaperlessError(
+                            "Das Paperless-Dokument ist für den Übergabepaket-Download zu groß."
+                        )
+                return bytes(content)
+        except HTTPError as exc:
+            if exc.code == 404:
+                raise BookkeepingPaperlessError(
+                    "Das Paperless-Dokument wurde nicht gefunden.",
+                    status_code=404,
+                ) from None
+            if exc.code in {401, 403}:
+                raise BookkeepingPaperlessError(
+                    "Paperless hat den Zugriff abgelehnt. Bitte den API-Token prüfen.",
+                    status_code=exc.code,
+                ) from None
+            raise BookkeepingPaperlessError(
+                f"Paperless antwortet mit HTTP-Status {exc.code}.",
+                status_code=exc.code,
+            ) from None
+        except (URLError, TimeoutError):
+            raise BookkeepingPaperlessError(
+                "Paperless ist nicht erreichbar oder die Anfrage hat zu lange gedauert."
+            ) from None
+        except BookkeepingPaperlessError:
+            raise
+        except Exception:
+            raise BookkeepingPaperlessError(
+                "Der Paperless-Download konnte nicht ausgeführt werden."
+            ) from None
+
+    @staticmethod
+    def _response_content_type(response) -> str:
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return ""
+        getter = getattr(headers, "get_content_type", None)
+        if callable(getter):
+            return str(getter() or "").lower().strip()
+        value = headers.get("Content-Type", "") if hasattr(headers, "get") else ""
+        return str(value or "").split(";", 1)[0].lower().strip()
+
+    @staticmethod
+    def _response_content_length(response) -> int | None:
+        headers = getattr(response, "headers", None)
+        value = headers.get("Content-Length") if headers is not None else None
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_binary_content_type(content_type: str) -> bool:
+        if not content_type:
+            return False
+        if content_type.startswith("text/"):
+            return False
+        return content_type in {
+            "application/octet-stream",
+            "application/pdf",
+            "application/x-pdf",
+        } or content_type.startswith("image/")
 
     @classmethod
     def _request_multipart(

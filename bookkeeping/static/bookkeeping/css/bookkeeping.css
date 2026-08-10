@@ -1928,6 +1928,46 @@
     margin: 0.55rem 0 0;
 }
 
+.bookkeeping-package-summary {
+    display: grid;
+    gap: 0.35rem 1rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-top: 0.8rem;
+}
+
+.bookkeeping-package-summary > div {
+    background: #f8fafc;
+    border: 1px solid #dfe3e8;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.45rem 0.6rem;
+}
+
+.bookkeeping-package-summary span {
+    color: #6c7782;
+    font-size: 0.72rem;
+}
+
+.bookkeeping-package-summary strong {
+    font-size: 0.9rem;
+}
+
+.bookkeeping-package-warnings {
+    color: #5f4b00;
+    font-size: 0.8rem;
+    margin-top: 0.55rem;
+}
+
+.bookkeeping-package-warnings ul {
+    margin: 0.35rem 0 0;
+    padding-left: 1.15rem;
+}
+
+.bookkeeping-package-complete {
+    margin: 0.55rem 0 0;
+}
+
 .bookkeeping-ready-control-card .bookkeeping-quarter-control {
     box-shadow: none;
     margin: 0.8rem 0 0;
@@ -1997,6 +2037,10 @@
 
     .bookkeeping-period-control-fields .form-select {
         min-width: 0;
+    }
+
+    .bookkeeping-package-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .bookkeeping-import-grid {

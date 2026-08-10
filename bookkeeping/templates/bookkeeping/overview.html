@@ -281,11 +281,46 @@
             <button type="submit" class="btn btn-primary">CSV exportieren</button>
         </form>
         {% endif %}
+        {% if accountant_package %}
+        <form method="post" class="bookkeeping-export-form">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="download_accountant_package">
+            <input type="hidden" name="status" value="{{ selected_status }}">
+            <input type="hidden" name="period_type" value="{{ ready_period_type }}">
+            <input type="hidden" name="period" value="{{ ready_period }}">
+            <button type="submit" class="btn btn-primary">Übergabepaket herunterladen</button>
+        </form>
+        {% endif %}
     </div>
     {% if ready_period_type == 'quarter' %}
-    <p class="bookkeeping-export-hint">Der Export enthält immer das vollständige Quartal.</p>
+    <p class="bookkeeping-export-hint">Der separate CSV-Export enthält immer das vollständige Quartal.</p>
     {% else %}
-    <p class="bookkeeping-export-hint">Der CSV-Export erfolgt quartalsweise. <a href="{% url 'bookkeeping_overview' %}?status={{ selected_status }}&amp;period_type=quarter">Zum Quartal wechseln</a></p>
+    <p class="bookkeeping-export-hint">Das Übergabepaket enthält den ausgewählten Monat. Der CSV-Export erfolgt quartalsweise. <a href="{% url 'bookkeeping_overview' %}?status={{ selected_status }}&amp;period_type=quarter">Zum Quartal wechseln</a></p>
+    {% endif %}
+    {% if accountant_package %}
+    <div class="bookkeeping-package-summary" aria-label="Übergabepaket-Übersicht">
+        <div><span>Buchungszeilen</span><strong>{{ accountant_package.booking_entries }}</strong></div>
+        <div><span>Gefundene Dokumente</span><strong>{{ accountant_package.found_documents }}</strong></div>
+        <div><span>Kontoauszüge</span><strong>{{ accountant_package.statements_present }}/{{ accountant_package.statements_expected }}</strong></div>
+        <div>
+            <span>Hinweise</span>
+            <strong class="{% if accountant_package.complete %}text-success{% elif accountant_package.warnings %}text-warning{% endif %}">
+                {% if accountant_package.complete %}Paket vollständig{% else %}{{ accountant_package.warnings }}{% endif %}
+            </strong>
+        </div>
+    </div>
+    {% if accountant_package.warnings %}
+    <details class="bookkeeping-package-warnings">
+        <summary><span class="badge bg-warning text-dark">{{ accountant_package.status_label }}</span></summary>
+        <ul>
+            {% for warning in accountant_package.warning_items %}
+            <li>{{ warning }}</li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% else %}
+    <p class="bookkeeping-package-complete"><span class="badge bg-success">Paket vollständig</span></p>
+    {% endif %}
     {% endif %}
 
     {% if quarter_control_available %}

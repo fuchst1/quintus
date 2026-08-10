@@ -46,8 +46,8 @@ def quarter_bounds(year, quarter):
     return start, end
 
 
-def export_reviewed_transactions_csv(*, start_date, end_date):
-    """Create a repeatable full-quarter report without changing any status."""
+def get_export_booking_entries(*, start_date, end_date):
+    """Return the booking rows used by the bookkeeping CSV export."""
     booking_entries = list(
         BookingEntry.objects.filter(
             bank_transaction__status__in=(
@@ -76,6 +76,15 @@ def export_reviewed_transactions_csv(*, start_date, end_date):
             getattr(entry, "position", 0),
             str(entry.pk),
         )
+    )
+    return all_entries
+
+
+def export_reviewed_transactions_csv(*, start_date, end_date):
+    """Create a repeatable report without changing any status."""
+    all_entries = get_export_booking_entries(
+        start_date=start_date,
+        end_date=end_date,
     )
     if not all_entries:
         raise CsvExportError(
