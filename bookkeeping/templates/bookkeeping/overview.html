@@ -29,7 +29,7 @@
 
 {% if show_dashboard %}
 <section class="bookkeeping-dashboard" aria-labelledby="dashboard-period-heading">
-    <form method="get" class="bookkeeping-dashboard-period-filter">
+    <form method="get" class="bookkeeping-dashboard-period-filter" data-bookkeeping-period-form>
         <input type="hidden" name="period_type" value="{{ dashboard_period_type }}">
         <div class="bookkeeping-period-type-switch" role="group" aria-label="Ansicht">
             <button type="submit" name="period_type" value="month" class="btn btn-sm {% if dashboard_period_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Monat</button>
@@ -48,7 +48,6 @@
                 {% endfor %}
                 {% endif %}
             </select>
-            <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
         </div>
     </form>
     {% if dashboard_has_data %}
@@ -66,11 +65,11 @@
             <strong class="bookkeeping-dashboard-card-value">{{ dashboard_ready }}</strong>
         </article>
         <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-positive">
-            <span class="bookkeeping-dashboard-card-label">Eingänge</span>
+            <span class="bookkeeping-dashboard-card-label">Einnahmen</span>
             <strong class="bookkeeping-dashboard-card-value">{{ dashboard_incoming }}</strong>
         </article>
         <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-negative">
-            <span class="bookkeeping-dashboard-card-label">Ausgänge</span>
+            <span class="bookkeeping-dashboard-card-label">Ausgaben</span>
             <strong class="bookkeeping-dashboard-card-value">{{ dashboard_outgoing }}</strong>
         </article>
         <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-balance">
@@ -249,7 +248,7 @@
 {% if available_ready_months or available_ready_quarters %}
 <section class="bookkeeping-card bookkeeping-ready-control-card" aria-labelledby="quarter-control-heading">
     <div class="bookkeeping-ready-control-toolbar">
-        <form method="get" class="bookkeeping-period-control">
+        <form method="get" class="bookkeeping-period-control" data-bookkeeping-period-form>
             <input type="hidden" name="status" value="{{ selected_status }}">
             <input type="hidden" name="period_type" value="{{ ready_period_type }}">
             <div class="bookkeeping-period-type-switch" role="group" aria-label="Ansicht">
@@ -269,7 +268,6 @@
                     {% endfor %}
                     {% endif %}
                 </select>
-                <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
             </div>
         </form>
         {% if ready_period_type == 'quarter' and export_period %}
@@ -331,6 +329,12 @@
                 <p class="bookkeeping-quarter-control-period">{{ ready_period_label }}</p>
             </div>
             <span class="bookkeeping-quarter-control-status bookkeeping-quarter-control-status-{{ quarter_control.status }}">{{ quarter_control.status_label }}</span>
+        </div>
+
+        <div class="bookkeeping-quarter-control-grid bookkeeping-quarter-control-totals">
+            <div class="bookkeeping-quarter-control-total-income"><span>Einnahmen</span><strong>{{ quarter_control.ready_income }}</strong></div>
+            <div class="bookkeeping-quarter-control-total-expenses"><span>Ausgaben</span><strong>{{ quarter_control.ready_expenses }}</strong></div>
+            <div class="bookkeeping-quarter-control-total-balance"><span>Saldo</span><strong>{{ quarter_control.ready_balance }}</strong></div>
         </div>
 
         <div class="bookkeeping-quarter-control-grid">
@@ -460,7 +464,7 @@
         <h1 id="transactions-heading" class="bookkeeping-page-title">{% if selected_status == "open" %}Offene Buchungen{% else %}{{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}{% endif %}</h1>
         {% if selected_status == "open" %}<p class="bookkeeping-page-description">Offene Buchungen nach Monat erledigen.</p>{% endif %}
     </div>
-    <form method="get" class="bookkeeping-filter-card">
+    <form method="get" class="bookkeeping-filter-card" data-bookkeeping-period-form>
         <input type="hidden" name="status" value="{{ selected_status }}">
         <label for="transaction-month" class="form-label">Monat</label>
         <div class="bookkeeping-period-control-fields">
@@ -470,7 +474,6 @@
                 <option value="{{ month.value }}"{% if month.value == selected_month %} selected{% endif %}>{{ month.label }}</option>
                 {% endfor %}
             </select>
-            <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
         </div>
     </form>
 </div>

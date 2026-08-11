@@ -19,13 +19,16 @@
     </div>
     {% endif %}
 
-    <section class="bookkeeping-card bookkeeping-manual-invoice-upload" aria-labelledby="manual-invoice-upload-heading">
+    <section id="manual-invoice-upload" class="bookkeeping-card bookkeeping-manual-invoice-upload" aria-labelledby="manual-invoice-upload-heading">
         <div class="bookkeeping-card-heading">
-            <h2 id="manual-invoice-upload-heading" class="bookkeeping-section-title">Rechnung hochladen</h2>
+            <div>
+                <h2 id="manual-invoice-upload-heading" class="bookkeeping-section-title">Rechnung hochladen</h2>
+                <p class="bookkeeping-card-help">PDF direkt hochladen oder den Eingang aus Paperless übernehmen.</p>
+            </div>
             <form method="post">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="import_paperless_invoices">
-                <button type="submit" class="btn btn-outline-primary">Paperless-Eingang prüfen</button>
+                <button type="submit" class="btn btn-sm btn-outline-primary">Paperless-Eingang prüfen</button>
             </form>
         </div>
         <form method="post" enctype="multipart/form-data" class="bookkeeping-manual-invoice-upload-form">
@@ -41,7 +44,10 @@
 
     <section class="bookkeeping-card" aria-labelledby="manual-invoice-list-heading">
         <div class="bookkeeping-card-heading">
-            <h2 id="manual-invoice-list-heading" class="bookkeeping-section-title">Offene manuelle Belege</h2>
+            <div class="bookkeeping-manual-invoice-list-heading">
+                <h2 id="manual-invoice-list-heading" class="bookkeeping-section-title">Offene manuelle Belege</h2>
+                <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-info">{{ manual_invoices|length }} offen</span>
+            </div>
         </div>
         {% if manual_invoices %}
         <div class="bookkeeping-table-wrap" role="region" aria-label="Manuelle Belege" tabindex="0">
@@ -49,8 +55,7 @@
                 <thead class="table-light">
                     <tr>
                         <th scope="col">Aktionen</th>
-                        <th scope="col">Status</th>
-                        <th scope="col">Zahlungsdatum</th>
+                        <th class="bookkeeping-date" scope="col">Zahlungsdatum</th>
                         <th scope="col">Rechnungsnummer</th>
                         <th scope="col">Lieferant/Kunde</th>
                         <th class="bookkeeping-amount" scope="col">Bruttobetrag</th>
@@ -64,7 +69,6 @@
                             <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
                                 <a href="{% url 'manual_invoice_edit' invoice.reference_uuid %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span></a>
                                 {% if invoice.paperless_document_url %}<a href="{{ invoice.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span></a>{% endif %}
-                                {% if invoice.paperless_can_delete %}<a href="{% url 'manual_invoice_paperless_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Nur aus Paperless löschen" aria-label="Nur aus Paperless löschen"><i class="bi bi-file-earmark-x" aria-hidden="true"></i><span class="visually-hidden">Nur aus Paperless löschen</span></a>{% endif %}
                                 {% if invoice.can_retry %}
                                 <form method="post" class="bookkeeping-icon-action-form">
                                     {% csrf_token %}
@@ -73,15 +77,20 @@
                                     <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Übertragung wiederholen" aria-label="Übertragung wiederholen"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Übertragung wiederholen</span></button>
                                 </form>
                                 {% endif %}
-                                <a href="{% url 'manual_invoice_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Beleg vollständig löschen" aria-label="Beleg vollständig löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Beleg vollständig löschen</span></a>
                             </div>
+                            <details class="bookkeeping-table-more-actions">
+                                <summary>Weitere Aktionen</summary>
+                                <div class="bookkeeping-table-more-action-list">
+                                    {% if invoice.paperless_can_delete %}<a href="{% url 'manual_invoice_paperless_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger">Nur aus Paperless löschen</a>{% endif %}
+                                    <a href="{% url 'manual_invoice_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger">Beleg vollständig löschen</a>
+                                </div>
+                            </details>
                         </td>
-                        <td><span class="badge bookkeeping-badge bookkeeping-badge-status">{{ invoice.status }}</span></td>
-                        <td>{{ invoice.payment_date }}</td>
-                        <td>{{ invoice.invoice_number }}</td>
-                        <td>{{ invoice.partner_name }}</td>
+                        <td class="bookkeeping-date">{{ invoice.payment_date }}</td>
+                        <td class="bookkeeping-manual-invoice-number">{{ invoice.invoice_number }}</td>
+                        <td class="bookkeeping-name">{{ invoice.partner_name }}</td>
                         <td class="bookkeeping-amount">{{ invoice.gross_amount }}</td>
-                        <td>
+                        <td class="bookkeeping-paperless-cell">
                             {% if invoice.paperless_status == "completed" %}
                             <span class="badge bookkeeping-status-badge bookkeeping-status-badge-success">Abgelegt</span>
                             {% elif invoice.paperless_status == "deleted" %}
@@ -101,7 +110,10 @@
             </table>
         </div>
         {% else %}
-        <p class="bookkeeping-empty-state">Keine offenen manuellen Belege vorhanden.</p>
+        <div class="bookkeeping-empty-state bookkeeping-manual-invoice-empty">
+            <p>Keine offenen manuellen Belege vorhanden.</p>
+            <a href="#manual-invoice-upload" class="btn btn-sm btn-outline-primary"><i class="bi bi-upload" aria-hidden="true"></i> Rechnung hochladen</a>
+        </div>
         {% endif %}
     </section>
 </section>

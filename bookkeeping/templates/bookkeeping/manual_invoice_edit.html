@@ -1,16 +1,15 @@
 {% extends "bookkeeping/base.html" %}
 {% load bookkeeping_formatting %}
 
-{% block title %}Manueller Beleg – Quintus Buchhaltung{% endblock %}
+{% block title %}{% if manual_invoice_is_new %}Manuellen Beleg erfassen{% else %}Manuellen Beleg bearbeiten{% endif %} – Quintus Buchhaltung{% endblock %}
 
 {% block content %}
 <section class="bookkeeping-rules-section" aria-labelledby="manual-invoice-edit-heading">
     <div class="bookkeeping-page-heading">
         <div>
-            <h1 id="manual-invoice-edit-heading" class="bookkeeping-page-title">Manuellen Beleg erfassen</h1>
+            <h1 id="manual-invoice-edit-heading" class="bookkeeping-page-title">{% if manual_invoice_is_new %}Manuellen Beleg erfassen{% else %}Manuellen Beleg bearbeiten{% endif %}</h1>
             <p class="bookkeeping-page-description">Rechnungsdaten und Buchungszeilen für einen privat bezahlten Beleg.</p>
         </div>
-        <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
     </div>
 
     {% if messages %}
@@ -39,9 +38,6 @@
                 <a href="{{ paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary">In Paperless öffnen</a>
                 {% elif paperless_can_retry %}
                 <button type="submit" name="action" value="retry_paperless" class="btn btn-sm btn-outline-secondary">Paperless-Übertragung erneut versuchen</button>
-                {% endif %}
-                {% if paperless_can_delete %}
-                <a href="{{ manual_invoice_paperless_delete_url }}" class="btn btn-sm btn-outline-danger">Nur aus Paperless löschen</a>
                 {% endif %}
                 {% if paperless_can_retry_dates %}
                 <button type="submit" name="action" value="retry_paperless_dates" class="btn btn-sm btn-outline-secondary">Paperless-Datumsfelder erneut aktualisieren</button>
@@ -156,13 +152,40 @@
             <label for="{{ manual_invoice_form.notes.id_for_label }}" class="form-label">{{ manual_invoice_form.notes.label }}</label>
             {{ manual_invoice_form.notes }}
         </div>
-        <div class="bookkeeping-entry-form-actions">
+        <div class="bookkeeping-entry-form-actions bookkeeping-manual-invoice-actions">
             <button type="submit" name="action" value="finalize" class="btn btn-primary">Prüfen und abschließen</button>
             <button type="submit" name="action" value="save_draft" class="btn btn-outline-primary">Entwurf speichern</button>
             <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
-            <a href="{% url 'manual_invoice_reset_booking' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-secondary">Buchungssatz zurücksetzen</a>
-            <a href="{% url 'manual_invoice_delete' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger">Beleg vollständig löschen</a>
         </div>
+
+        <details class="bookkeeping-manual-invoice-more-actions">
+            <summary>Weitere Aktionen</summary>
+            <div class="bookkeeping-manual-invoice-more-action-list">
+                <div class="bookkeeping-manual-invoice-more-action">
+                    <div>
+                        <strong>Buchungssatz zurücksetzen</strong>
+                        <p>Löscht nur die Buchungszeilen und setzt den Beleg auf Entwurf zurück. Quelldaten und Dokumente bleiben erhalten.</p>
+                    </div>
+                    <a href="{% url 'manual_invoice_reset_booking' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-warning">Buchungssatz zurücksetzen</a>
+                </div>
+                {% if paperless_can_delete %}
+                <div class="bookkeeping-manual-invoice-more-action">
+                    <div>
+                        <strong>Nur aus Paperless löschen</strong>
+                        <p>Löscht nur das Dokument in Paperless. Der manuelle Beleg, die Buchungszeilen sowie OCR- und KI-Daten bleiben in Quintus erhalten.</p>
+                    </div>
+                    <a href="{{ manual_invoice_paperless_delete_url }}" class="btn btn-sm btn-outline-danger">Nur aus Paperless löschen</a>
+                </div>
+                {% endif %}
+                <div class="bookkeeping-manual-invoice-more-action">
+                    <div>
+                        <strong>Beleg vollständig löschen</strong>
+                        <p>Löscht den manuellen Beleg und alle Buchungszeilen sowie – sofern vorhanden – das zugehörige Paperless-Dokument dauerhaft. Bereits nach Excel kopierte Daten bleiben unverändert.</p>
+                    </div>
+                    <a href="{% url 'manual_invoice_delete' manual_invoice.reference_uuid %}" class="btn btn-sm btn-danger">Beleg vollständig löschen</a>
+                </div>
+            </div>
+        </details>
     </form>
 </section>
 <script>
@@ -188,6 +211,9 @@
         const invoiceTotal = parseAmount(total.textContent);
         linesTotal.textContent = `${formatAmount(lineSum)} EUR`;
         difference.textContent = `${formatAmount(invoiceTotal - lineSum)} EUR`;
+        const balanced = Math.abs(invoiceTotal - lineSum) < 0.005;
+        difference.classList.toggle("bookkeeping-total-valid", balanced);
+        difference.classList.toggle("bookkeeping-total-warning", !balanced);
     };
     addButton.addEventListener("click", () => {
         const index = Number(totalForms.value);

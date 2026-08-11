@@ -941,7 +941,10 @@ class BookkeepingOverviewFilteringTests(TestCase):
             ],
         )
         self.assertContains(response, 'name="period"')
-        self.assertContains(response, '<form method="get" class="bookkeeping-period-control">')
+        self.assertContains(
+            response,
+            '<form method="get" class="bookkeeping-period-control" data-bookkeeping-period-form>',
+        )
         self.assertContains(response, "Der CSV-Export erfolgt quartalsweise.")
 
     def test_ready_table_filters_transactions_by_selected_quarter(self):
@@ -2579,6 +2582,32 @@ class QuarterControlTests(TestCase):
         values.update(overrides)
         return BookingEntry.objects.create(**values)
 
+    def create_manual_invoice(
+        self,
+        amount,
+        *,
+        payment_date=date(2026, 7, 20),
+        status=ManualInvoice.Status.READY,
+        entry_amount=None,
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash=f"manual-summary-{uuid.uuid4().hex}",
+            status=status,
+            payment_date=payment_date,
+            partner_name="Manueller Beleg",
+            gross_amount=amount,
+        )
+        ManualInvoiceEntry.objects.create(
+            manual_invoice=invoice,
+            payment_date=payment_date,
+            booking_text="Manuelle Buchung",
+            partner_name=invoice.partner_name,
+            gross_amount=amount if entry_amount is None else entry_amount,
+            vat_symbol="20",
+            category="7600",
+        )
+        return invoice
+
     def overview(self, period=None):
         return self.client.get(
             reverse("bookkeeping_overview"),
@@ -2623,6 +2652,138 @@ class QuarterControlTests(TestCase):
         self.assertEqual(control["booking_entry_total_value"], Decimal("100.00"))
         self.assertEqual(control["difference_value"], Decimal("0.00"))
         self.assertContains(response, "Quartal vollständig und buchhalterisch konsistent")
+
+    def test_month_with_only_ready_manual_expense_has_meaningful_totals(self):
+        self.create_manual_invoice(
+            Decimal("-19.32"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        response = self.overview(period="2026-08")
+        control = response.context["quarter_control"]
+
+        self.assertEqual(control["ready_income_value"], Decimal("0.00"))
+        self.assertEqual(control["ready_expenses_value"], Decimal("19.32"))
+        self.assertEqual(control["ready_balance_value"], Decimal("-19.32"))
+        self.assertContains(response, "Einnahmen")
+        self.assertContains(response, "19,32 EUR")
+        self.assertContains(response, "-19,32 EUR")
+
+        dashboard_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"period_type": "month", "period": "2026-08"},
+        )
+        self.assertEqual(dashboard_response.context["dashboard_outgoing"], "19,32 EUR")
+        self.assertEqual(dashboard_response.context["dashboard_balance"], "-19,32 EUR")
+
+    def test_ready_manual_income_is_classified_by_its_signed_amount(self):
+        self.create_transaction(
+            booking_date=date(2026, 8, 15),
+            source=BankTransaction.Source.MANUAL,
+            amount=Decimal("75.00"),
+            partner_name="Manueller Eingang",
+        )
+
+        control = self.overview(period="2026-08").context["quarter_control"]
+
+        self.assertEqual(control["ready_income_value"], Decimal("75.00"))
+        self.assertEqual(control["ready_expenses_value"], Decimal("0.00"))
+        self.assertEqual(control["ready_balance_value"], Decimal("75.00"))
+
+    def test_ready_bank_and_manual_invoice_totals_are_combined_once(self):
+        bank_transaction = self.create_transaction(
+            booking_date=date(2026, 8, 10),
+            amount=Decimal("50.00"),
+        )
+        self.create_entry(bank_transaction, payment_date=date(2026, 8, 10))
+        self.create_manual_invoice(
+            Decimal("-19.32"),
+            payment_date=date(2026, 8, 15),
+        )
+
+        control = self.overview(period="2026-08").context["quarter_control"]
+
+        self.assertEqual(control["ready_income_value"], Decimal("50.00"))
+        self.assertEqual(control["ready_expenses_value"], Decimal("19.32"))
+        self.assertEqual(control["ready_balance_value"], Decimal("30.68"))
+
+    def test_split_booking_rows_do_not_double_count_source_transaction(self):
+        transaction = self.create_transaction(
+            amount=Decimal("100.00"),
+        )
+        self.create_entry(transaction, gross_amount=Decimal("60.00"))
+        self.create_entry(transaction, gross_amount=Decimal("40.00"))
+
+        control = self.overview().context["quarter_control"]
+
+        self.assertEqual(control["booking_entries"], 2)
+        self.assertEqual(control["ready_income_value"], Decimal("100.00"))
+        self.assertEqual(control["ready_expenses_value"], Decimal("0.00"))
+        self.assertEqual(control["ready_balance_value"], Decimal("100.00"))
+
+    def test_non_ready_sources_are_excluded_from_ready_totals(self):
+        ready = self.create_transaction(amount=Decimal("100.00"))
+        self.create_entry(ready, gross_amount=Decimal("100.00"))
+        open_transaction = self.create_transaction(
+            status=BankTransaction.Status.IMPORTED,
+            amount=Decimal("-30.00"),
+            direction=BankTransaction.Direction.OUTGOING,
+        )
+        self.create_entry(open_transaction, gross_amount=Decimal("-30.00"))
+        self.create_manual_invoice(
+            Decimal("-20.00"),
+            status=ManualInvoice.Status.DRAFT,
+        )
+
+        control = self.overview().context["quarter_control"]
+
+        self.assertEqual(control["ready_income_value"], Decimal("100.00"))
+        self.assertEqual(control["ready_expenses_value"], Decimal("0.00"))
+        self.assertEqual(control["ready_balance_value"], Decimal("100.00"))
+
+    def test_month_and_quarter_totals_use_the_selected_period(self):
+        july = self.create_transaction(
+            booking_date=date(2026, 7, 15),
+            amount=Decimal("100.00"),
+        )
+        self.create_entry(july, payment_date=date(2026, 7, 15))
+        august = self.create_transaction(
+            booking_date=date(2026, 8, 15),
+            amount=Decimal("-19.32"),
+            direction=BankTransaction.Direction.OUTGOING,
+        )
+        self.create_entry(august, payment_date=date(2026, 8, 15))
+
+        august_control = self.overview(period="2026-08").context["quarter_control"]
+        q3_control = self.overview(period="2026-Q3").context["quarter_control"]
+
+        self.assertEqual(august_control["ready_balance_value"], Decimal("-19.32"))
+        self.assertEqual(q3_control["ready_income_value"], Decimal("100.00"))
+        self.assertEqual(q3_control["ready_expenses_value"], Decimal("19.32"))
+        self.assertEqual(q3_control["ready_balance_value"], Decimal("80.68"))
+
+    def test_period_selectors_auto_submit_without_export_fallback_button(self):
+        transaction = self.create_transaction()
+        self.create_entry(transaction)
+
+        ready_response = self.overview()
+        ready_content = ready_response.content.decode()
+
+        self.assertIn("data-bookkeeping-period-form", ready_content)
+        self.assertNotIn(">Anzeigen<", ready_content)
+        self.assertIn("HTMLFormElement.prototype.submit.call(form)", ready_content)
+
+        open_response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": BankTransaction.Status.IMPORTED, "month": "2026-07"},
+        )
+        self.assertContains(open_response, "data-bookkeeping-period-form")
+        self.assertNotContains(open_response, ">Anzeigen<")
+
+        self.assertIn(
+            '<form method="post" class="bookkeeping-export-form">',
+            ready_content,
+        )
 
     def test_open_transactions_make_status_yellow_without_blocking_export(self):
         transaction = self.create_transaction(amount=Decimal("100.00"))
@@ -4168,10 +4329,73 @@ class BookingEntryTests(TestCase):
         self.assertContains(response, 'class="bookkeeping-entry-form"')
         self.assertContains(response, 'class="bookkeeping-entry-rows-section"')
         self.assertContains(response, 'class="bookkeeping-entry-table-wrap"')
-        self.assertContains(response, 'class="bookkeeping-entry-form-actions"')
+        self.assertContains(response, 'class="bookkeeping-entry-form-actions')
         self.assertContains(response, "Anmerkung (optional)")
         self.assertIn('name="notes"', content)
         self.assertIn('rows="3"', content)
+
+    def test_booking_edit_page_has_compact_source_document_bar_and_one_action_bar(self):
+        bank_transaction = self.create_transaction(
+            value_date=date(2026, 7, 20),
+            purpose="Miete und Betriebskosten für die Liegenschaft",
+        )
+
+        response = self.client.get(self.booking_url(bank_transaction))
+        content = response.content.decode()
+
+        self.assertEqual(content.count(">Abbrechen</a>"), 1)
+        self.assertNotIn("<details", content)
+        self.assertNotIn("<summary", content)
+        self.assertContains(response, "Kein Beleg hinterlegt")
+        self.assertContains(response, "Beleg hochladen")
+        self.assertContains(response, "PDF-Beleg")
+        self.assertContains(response, "Originale Banktransaktion")
+        for value in (
+            "15.07.2026",
+            "20.07.2026",
+            "Lieferant",
+            "Ausgang",
+            "100,00 EUR",
+            "Miete und Betriebskosten für die Liegenschaft",
+        ):
+            self.assertContains(response, value)
+
+        self.assertIn("bookkeeping-booking-actions", content)
+        self.assertIn("Prüfen und abschließen", content)
+        self.assertIn("Entwurf speichern", content)
+        self.assertIn('name="entries-TOTAL_FORMS"', content)
+        self.assertIn('name="entries-0-receipt_group" value="BK"', content)
+        self.assertIn('class="bookkeeping-entry-readonly-value"', content)
+        self.assertIn('name="entries-0-booking_text"', content)
+        self.assertIn('name="entries-0-gross_amount"', content)
+        self.assertNotIn('name="entries-0-receipt_group" class="form-select"', content)
+        self.assertNotIn('name="entries-0-payment_date" class="form-control"', content)
+
+        upload_form_start = content.index(
+            '<form method="post" enctype="multipart/form-data"'
+        )
+        booking_form_start = content.index(
+            '<form method="post" class="bookkeeping-entry-form"'
+        )
+        self.assertLess(
+            content.index("</form>", upload_form_start),
+            booking_form_start,
+        )
+        self.assertEqual(content.count("<form"), 2)
+
+    def test_booking_entry_post_requires_csrf(self):
+        bank_transaction = self.create_transaction()
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            self.booking_url(bank_transaction),
+            {"action": "save_draft", "category": "7600"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(
+            BookingEntry.objects.filter(bank_transaction=bank_transaction).exists()
+        )
 
     def test_booking_entries_render_as_compact_table_rows_in_requested_order(self):
         bank_transaction = self.create_transaction()
@@ -4254,7 +4478,8 @@ class BookingEntryTests(TestCase):
             'name="entries-0-payment_date" value="2026-07-20"',
             body,
         )
-        self.assertIn('value="20.07.2026"', body)
+        self.assertIn("bookkeeping-entry-readonly-value", body)
+        self.assertIn("20.07.2026", body)
 
     def test_booking_table_keeps_field_errors_in_their_row_cells(self):
         bank_transaction = self.create_transaction(amount=Decimal("-100.00"))
@@ -4302,7 +4527,7 @@ class BookingEntryTests(TestCase):
         self.assertTrue(form.fields["payment_date"].disabled)
         self.assertContains(response, "BK – Bank")
         self.assertContains(response, 'name="entries-0-receipt_number" value="7"')
-        self.assertContains(response, 'name="entries-0-payment_date" value="20.07.2026"')
+        self.assertContains(response, "20.07.2026")
 
         self.client.post(
             self.booking_url(bank_transaction),
@@ -7711,6 +7936,8 @@ class ManualInvoiceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Keine offenen manuellen Belege vorhanden.")
+        self.assertContains(response, 'href="#manual-invoice-upload"')
+        self.assertContains(response, "Rechnung hochladen")
 
     def test_manual_invoice_without_paperless_does_not_show_ocr_as_root_cause(self):
         invoice = self.uploaded_invoice(paperless_ready=False)
@@ -9636,6 +9863,116 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         )
         self.assertContains(ready_response, "Buchungssatz zurücksetzen")
         self.assertContains(ready_response, "Beleg vollständig löschen")
+
+    def test_manual_invoice_list_prioritizes_daily_actions_and_groups_deletions(self):
+        draft = self.invoice(status=ManualInvoice.Status.DRAFT)
+
+        response = self.client.get(reverse("manual_invoice_list"))
+        content = response.content.decode()
+
+        self.assertContains(response, "1 offen")
+        self.assertNotIn('<th scope="col">Status</th>', content)
+        self.assertIn('class="bookkeeping-date"', content)
+        self.assertIn('class="bookkeeping-paperless-cell"', content)
+
+        action_cell = content.split('<td class="bookkeeping-actions">', 1)[1]
+        primary_actions = action_cell.split(
+            '<details class="bookkeeping-table-more-actions">', 1
+        )[0]
+        more_actions = action_cell.split(
+            '<details class="bookkeeping-table-more-actions">', 1
+        )[1].split("</details>", 1)[0]
+
+        self.assertIn("Bearbeiten", primary_actions)
+        self.assertNotIn("Nur aus Paperless löschen", primary_actions)
+        self.assertNotIn("Beleg vollständig löschen", primary_actions)
+        self.assertIn("Weitere Aktionen", more_actions)
+        self.assertIn("Nur aus Paperless löschen", more_actions)
+        self.assertIn("Beleg vollständig löschen", more_actions)
+        self.assertIn(
+            reverse(
+                "manual_invoice_paperless_delete",
+                kwargs={"reference_uuid": draft.reference_uuid},
+            ),
+            more_actions,
+        )
+        self.assertIn(
+            reverse(
+                "manual_invoice_delete",
+                kwargs={"reference_uuid": draft.reference_uuid},
+            ),
+            more_actions,
+        )
+
+    def test_manual_invoice_edit_groups_primary_and_rare_actions(self):
+        invoice = self.invoice(status=ManualInvoice.Status.DRAFT)
+        response = self.client.get(
+            reverse(
+                "manual_invoice_edit",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            )
+        )
+        content = response.content.decode()
+
+        self.assertContains(response, "Manuellen Beleg bearbeiten")
+        self.assertNotContains(response, "Manuellen Beleg erfassen")
+        self.assertEqual(content.count(">Abbrechen</a>"), 1)
+        self.assertEqual(content.count("<form"), 1)
+
+        status_row = content.split(
+            '<div class="bookkeeping-manual-invoice-statuses"', 1
+        )[1].split("<section", 1)[0]
+        self.assertNotIn("Buchungssatz zurücksetzen", status_row)
+        self.assertNotIn("Nur aus Paperless löschen", status_row)
+        self.assertNotIn("Beleg vollständig löschen", status_row)
+
+        primary_actions = content.split(
+            '<div class="bookkeeping-entry-form-actions bookkeeping-manual-invoice-actions">',
+            1,
+        )[1].split("</div>", 1)[0]
+        self.assertEqual(primary_actions.count('name="action"'), 2)
+        self.assertIn("Prüfen und abschließen", primary_actions)
+        self.assertIn("Entwurf speichern", primary_actions)
+        self.assertIn("Abbrechen", primary_actions)
+        self.assertNotIn("Buchungssatz zurücksetzen", primary_actions)
+        self.assertNotIn("Beleg vollständig löschen", primary_actions)
+
+        more_actions = content.split(
+            '<details class="bookkeeping-manual-invoice-more-actions">', 1
+        )[1]
+        self.assertNotIn(
+            '<details class="bookkeeping-manual-invoice-more-actions" open',
+            content,
+        )
+        self.assertIn("Weitere Aktionen", more_actions)
+        self.assertIn("Löscht nur die Buchungszeilen", more_actions)
+        self.assertIn("OCR- und KI-Daten bleiben in Quintus erhalten", more_actions)
+        self.assertIn("Beleg vollständig löschen", more_actions)
+        self.assertLess(
+            more_actions.index("Buchungssatz zurücksetzen"),
+            more_actions.index("Nur aus Paperless löschen"),
+        )
+        self.assertLess(
+            more_actions.index("Nur aus Paperless löschen"),
+            more_actions.index("Beleg vollständig löschen"),
+        )
+        for url in (
+            reverse(
+                "manual_invoice_reset_booking",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            reverse(
+                "manual_invoice_paperless_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+            reverse(
+                "manual_invoice_delete",
+                kwargs={"reference_uuid": invoice.reference_uuid},
+            ),
+        ):
+            self.assertEqual(content.count(f'href="{url}"'), 1)
+        self.assertIn("name=\"csrfmiddlewaretoken\"", content)
+        self.assertIn("bookkeeping-total-valid", content)
 
     def test_paperless_only_action_is_visible_in_draft_edit_and_ready_views(self):
         draft = self.invoice(status=ManualInvoice.Status.DRAFT)

@@ -428,6 +428,59 @@ def _dashboard_statement_queryset(period_type, period):
     return BankStatement.objects.filter(booking_quarter=period)
 
 
+def _ready_bank_transactions_in_period(start_date, end_date):
+    return BankTransaction.objects.filter(
+        status__in=BOOKING_READY_STATUSES,
+    ).filter(
+        Q(booking_date__gte=start_date, booking_date__lte=end_date)
+        | Q(
+            booking_entries__payment_date__gte=start_date,
+            booking_entries__payment_date__lte=end_date,
+        )
+    ).distinct()
+
+
+def _ready_manual_invoices_in_period(start_date, end_date):
+    return ManualInvoice.objects.filter(
+        status=ManualInvoice.Status.READY,
+        payment_date__gte=start_date,
+        payment_date__lte=end_date,
+    )
+
+
+def _booking_ready_amount_summary(bank_transactions, manual_invoices):
+    """Return period totals once per ready source transaction or invoice.
+
+    Booking rows are deliberately not used here: one source object may have
+    several rows after a VAT/category split.  The source amount is the
+    authoritative signed total and therefore cannot be counted twice.
+    """
+    amounts = [
+        transaction.amount
+        for transaction in bank_transactions
+        if transaction.amount is not None
+    ]
+    amounts.extend(
+        invoice.gross_amount
+        for invoice in manual_invoices
+        if invoice.gross_amount is not None
+    )
+    incoming = sum((amount for amount in amounts if amount > 0), Decimal("0"))
+    outgoing = sum(
+        (abs(amount) for amount in amounts if amount < 0),
+        Decimal("0"),
+    )
+    balance = sum(amounts, Decimal("0"))
+    return {
+        "incoming_value": _quantize_money(incoming),
+        "incoming": format_austrian_money(incoming, "EUR"),
+        "outgoing_value": _quantize_money(outgoing),
+        "outgoing": format_austrian_money(outgoing, "EUR"),
+        "balance_value": _quantize_money(balance),
+        "balance": format_austrian_money(balance, "EUR"),
+    }
+
+
 def _dashboard_context(params):
     available_months = _available_dashboard_months()
     available_quarters = _available_dashboard_quarters()
@@ -489,9 +542,6 @@ def _dashboard_context(params):
             ),
         ),
         ready_count=Count("id", filter=Q(status__in=BOOKING_READY_STATUSES)),
-        incoming=Sum("amount", filter=Q(amount__gt=0)),
-        outgoing=Sum("amount", filter=Q(amount__lt=0)),
-        balance=Sum("amount"),
         auto_matched=Count("id", filter=Q(matched_rule__isnull=False)),
         without_matching=Count("id", filter=Q(matched_rule__isnull=True)),
     )
@@ -508,11 +558,25 @@ def _dashboard_context(params):
         payment_date__gte=period_range[0],
         payment_date__lte=period_range[1],
     ).count()
-    total = aggregate["total"] or 0
-    ready_count = aggregate["ready_count"] or 0
-    incoming = aggregate["incoming"] or Decimal("0")
-    outgoing = aggregate["outgoing"] or Decimal("0")
-    balance = aggregate["balance"] or Decimal("0")
+    ready_bank_transactions = list(
+        _ready_bank_transactions_in_period(
+            period_range[0],
+            period_range[1],
+        )
+    )
+    ready_manual_invoices = list(
+        _ready_manual_invoices_in_period(
+            period_range[0],
+            period_range[1],
+        )
+    )
+    ready_amounts = _booking_ready_amount_summary(
+        ready_bank_transactions,
+        ready_manual_invoices,
+    )
+    ready_manual_invoice_count = len(ready_manual_invoices)
+    total = (aggregate["total"] or 0) + ready_manual_invoice_count
+    ready_count = (aggregate["ready_count"] or 0) + ready_manual_invoice_count
     processed_percentage = (
         (Decimal(ready_count) * Decimal("100") / Decimal(total)).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -539,9 +603,9 @@ def _dashboard_context(params):
             "dashboard_processed_percentage": str(processed_percentage),
             "dashboard_processed_percent": f"{format_austrian_decimal(processed_percentage)} %",
             "dashboard_processed_width": str(processed_percentage),
-            "dashboard_incoming": format_austrian_money(incoming, "EUR"),
-            "dashboard_outgoing": format_austrian_money(abs(outgoing), "EUR"),
-            "dashboard_balance": format_austrian_money(balance, "EUR"),
+            "dashboard_incoming": ready_amounts["incoming"],
+            "dashboard_outgoing": ready_amounts["outgoing"],
+            "dashboard_balance": ready_amounts["balance"],
             "dashboard_auto_matched": aggregate["auto_matched"] or 0,
             "dashboard_without_matching": aggregate["without_matching"] or 0,
             "dashboard_statement_count": len(statements),
@@ -661,15 +725,9 @@ def _period_control_context(period_type, period):
         }
 
     start_date, end_date = period_range
-    ready_statuses = BOOKING_READY_STATUSES
-    ready_period_filter = BankTransaction.objects.filter(
-        status__in=ready_statuses,
-    ).filter(
-        Q(booking_date__gte=start_date, booking_date__lte=end_date)
-        | Q(
-            booking_entries__payment_date__gte=start_date,
-            booking_entries__payment_date__lte=end_date,
-        )
+    ready_period_filter = _ready_bank_transactions_in_period(
+        start_date,
+        end_date,
     )
     ready_transactions = list(
         ready_period_filter.distinct()
@@ -759,6 +817,13 @@ def _period_control_context(period_type, period):
             payment_date__gte=start_date,
             payment_date__lte=end_date,
         ).select_related("manual_invoice")
+    )
+    manual_invoices = list(
+        _ready_manual_invoices_in_period(start_date, end_date)
+    )
+    ready_amounts = _booking_ready_amount_summary(
+        ready_transactions,
+        manual_invoices,
     )
     manual_booking_entry_total = sum(
         (
@@ -909,6 +974,12 @@ def _period_control_context(period_type, period):
         "manual_invoices": len(
             {entry.manual_invoice_id for entry in manual_entries}
         ),
+        "ready_income_value": ready_amounts["incoming_value"],
+        "ready_income": ready_amounts["incoming"],
+        "ready_expenses_value": ready_amounts["outgoing_value"],
+        "ready_expenses": ready_amounts["outgoing"],
+        "ready_balance_value": ready_amounts["balance_value"],
+        "ready_balance": ready_amounts["balance"],
         "bank_booking_entry_total_value": bank_booking_entry_total,
         "difference_value": difference,
         "difference": format_austrian_money(difference, "EUR"),
@@ -2186,6 +2257,7 @@ class ManualInvoiceEditView(TemplateView):
         context.update(
             {
                 "manual_invoice": invoice,
+                "manual_invoice_is_new": not invoice.pk,
                 "manual_invoice_form": form,
                 "manual_invoice_formset": formset,
                 "manual_invoice_error": error_message,

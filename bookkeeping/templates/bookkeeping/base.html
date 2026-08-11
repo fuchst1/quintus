@@ -70,6 +70,16 @@
             updateActiveLink();
             window.addEventListener("hashchange", updateActiveLink);
         })();
+
+        (() => {
+            document.querySelectorAll("[data-bookkeeping-period-form]").forEach((form) => {
+                form.addEventListener("change", (event) => {
+                    if (event.target.matches("select")) {
+                        HTMLFormElement.prototype.submit.call(form);
+                    }
+                });
+            });
+        })();
     </script>
 </body>
 </html>

@@ -736,6 +736,7 @@
     display: inline-flex;
     flex-wrap: wrap;
     gap: 0.3rem;
+    min-width: 0;
 }
 
 .bookkeeping-status-name {
@@ -944,6 +945,69 @@
     margin-top: 1rem;
     max-width: none;
     width: 100%;
+}
+
+.bookkeeping-manual-invoice-actions {
+    border-top: 1px solid #dfe3e8;
+    padding-top: 0.8rem;
+}
+
+.bookkeeping-manual-invoice-more-actions {
+    border-top: 1px solid #dfe3e8;
+    margin-top: 0.8rem;
+    padding-top: 0.7rem;
+}
+
+.bookkeeping-manual-invoice-more-actions summary {
+    color: #34495e;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 0.2rem 0;
+}
+
+.bookkeeping-manual-invoice-more-action-list {
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 0.65rem;
+}
+
+.bookkeeping-manual-invoice-more-action {
+    align-items: center;
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    padding: 0.55rem 0.7rem;
+}
+
+.bookkeeping-manual-invoice-more-action > div {
+    min-width: 0;
+}
+
+.bookkeeping-manual-invoice-more-action strong {
+    color: #34495e;
+    font-size: 0.82rem;
+}
+
+.bookkeeping-manual-invoice-more-action p {
+    color: #5f6b78;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    margin: 0.15rem 0 0;
+}
+
+.bookkeeping-manual-invoice-more-action .btn {
+    flex: 0 0 auto;
+}
+
+.bookkeeping-manual-invoice-totals strong.bookkeeping-total-valid {
+    color: #146c43;
+}
+
+.bookkeeping-manual-invoice-totals strong.bookkeeping-total-warning {
+    color: #b02a37;
 }
 
 .bookkeeping-validation-alert {
@@ -1367,6 +1431,22 @@
 .bookkeeping-quarter-balance-summary strong {
     color: #243447;
     font-size: 0.95rem;
+}
+
+.bookkeeping-quarter-control-totals {
+    margin-top: 0.8rem;
+}
+
+.bookkeeping-quarter-control-total-income strong {
+    color: #237a4b;
+}
+
+.bookkeeping-quarter-control-total-expenses strong {
+    color: #b02a37;
+}
+
+.bookkeeping-quarter-control-total-balance strong {
+    color: #345f8c;
 }
 
 .bookkeeping-quarter-control-subtitle {
@@ -2062,6 +2142,15 @@
     .bookkeeping-manual-invoice-totals {
         grid-template-columns: minmax(0, 1fr);
     }
+
+    .bookkeeping-manual-invoice-more-action {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bookkeeping-manual-invoice-more-action .btn {
+        align-self: flex-start;
+    }
 }
 
 /* Final compact refinements shared by all Bookkeeping pages. */
@@ -2370,4 +2459,296 @@
     .bookkeeping-dashboard-details {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+}
+
+/* Booking edit page: compact source summary, document bar and table fields. */
+.bookkeeping-original-transaction {
+    margin-bottom: 0.8rem;
+    padding: 0.7rem 0.85rem;
+}
+
+.bookkeeping-original-transaction-summary {
+    align-items: end;
+    display: grid;
+    gap: 0.35rem 0.8rem;
+    grid-template-columns: minmax(13rem, 2fr) auto minmax(8.5rem, auto) auto auto;
+    margin: 0;
+}
+
+.bookkeeping-original-transaction-summary > div,
+.bookkeeping-original-transaction-purpose {
+    min-width: 0;
+}
+
+.bookkeeping-original-transaction-summary dt,
+.bookkeeping-original-transaction-purpose dt {
+    color: #5f6b78;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.bookkeeping-original-transaction-summary dd,
+.bookkeeping-original-transaction-purpose dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.bookkeeping-original-transaction-identity dd {
+    color: #34495e;
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+
+.bookkeeping-original-transaction-direction dd {
+    white-space: nowrap;
+}
+
+.bookkeeping-original-transaction-amount {
+    text-align: right;
+}
+
+.bookkeeping-original-transaction-amount dd {
+    font-size: 0.95rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.bookkeeping-original-transaction-amount-incoming {
+    color: #237a4b;
+}
+
+.bookkeeping-original-transaction-amount-outgoing {
+    color: #b02a37;
+}
+
+.bookkeeping-original-transaction-purpose {
+    border-top: 1px solid #edf0f2;
+    display: grid;
+    gap: 0.25rem 0.8rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    margin: 0.55rem 0 0;
+    padding-top: 0.5rem;
+}
+
+.bookkeeping-supporting-documents-card {
+    border: 1px solid #dfe3e8;
+    margin-bottom: 0.8rem;
+    padding: 0.65rem 0.85rem;
+}
+
+.bookkeeping-supporting-documents-heading {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.65rem;
+    margin-bottom: 0.5rem;
+}
+
+.bookkeeping-supporting-documents-heading .bookkeeping-subsection-title {
+    margin: 0;
+}
+
+.bookkeeping-supporting-document-upload-form {
+    align-items: end;
+    display: grid;
+    gap: 0.35rem 0.65rem;
+    grid-template-columns: minmax(16rem, 1fr) auto;
+    margin: 0 0 0.55rem;
+}
+
+.bookkeeping-supporting-document-file {
+    min-width: 0;
+}
+
+.bookkeeping-supporting-document-file .form-label {
+    color: #5f6b78;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+}
+
+.bookkeeping-supporting-document-file .form-control {
+    min-width: 0;
+}
+
+.bookkeeping-entry-table {
+    background: #ffffff;
+}
+
+.bookkeeping-entry-table th,
+.bookkeeping-entry-table td {
+    border-left: 0;
+    border-right: 0;
+    padding: 0.25rem 0.35rem;
+}
+
+.bookkeeping-entry-table thead th {
+    border-right: 0;
+}
+
+.bookkeeping-entry-table tbody tr {
+    background: #ffffff;
+}
+
+.bookkeeping-entry-table tbody tr:hover {
+    background: #eef4fb;
+}
+
+.bookkeeping-entry-table .form-control,
+.bookkeeping-entry-table .form-select {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 0.15rem;
+    box-shadow: none;
+    height: 2.1rem;
+    min-height: 2.1rem;
+    overflow: visible;
+    padding: 0.2rem 0.35rem;
+    text-overflow: clip;
+    transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+    white-space: normal;
+}
+
+.bookkeeping-entry-table .form-control:hover,
+.bookkeeping-entry-table .form-select:hover {
+    background-color: #f8fbff;
+    border-color: #b9d5ef;
+}
+
+.bookkeeping-entry-table .form-control:focus,
+.bookkeeping-entry-table .form-select:focus {
+    background-color: #ffffff;
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 0.12rem rgba(13, 110, 253, 0.14);
+    outline: 0;
+}
+
+.bookkeeping-entry-table .form-control.is-invalid,
+.bookkeeping-entry-table .form-select.is-invalid {
+    background-color: #fff7f7;
+    border-color: #dc3545;
+}
+
+.bookkeeping-entry-table .bookkeeping-entry-readonly-cell {
+    color: #34495e;
+    font-size: 0.78rem;
+}
+
+.bookkeeping-entry-readonly-value {
+    align-items: center;
+    display: flex;
+    min-height: 2.1rem;
+    overflow-wrap: anywhere;
+    padding: 0.2rem 0.35rem;
+}
+
+.bookkeeping-entry-table .bookkeeping-entry-amount-cell .form-control {
+    text-align: right;
+}
+
+.bookkeeping-entry-table th:nth-child(8),
+.bookkeeping-entry-table td:nth-child(8) {
+    text-align: right;
+}
+
+.bookkeeping-booking-actions {
+    border-top: 1px solid #dfe3e8;
+    padding-top: 0.8rem;
+}
+
+@media (max-width: 991.98px) {
+    .bookkeeping-original-transaction-summary {
+        grid-template-columns: minmax(11rem, 2fr) auto minmax(8rem, auto) repeat(2, minmax(6rem, 1fr));
+    }
+}
+
+@media (max-width: 767.98px) {
+    .bookkeeping-original-transaction-summary,
+    .bookkeeping-original-transaction-purpose {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .bookkeeping-original-transaction-amount {
+        text-align: left;
+    }
+
+    .bookkeeping-supporting-document-upload-form {
+        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .bookkeeping-supporting-document-upload-form .btn {
+        justify-self: start;
+    }
+}
+
+/* Manual invoice worklist: keep daily actions compact and disclose deletions. */
+.bookkeeping-manual-invoice-list-heading {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.65rem;
+}
+
+.bookkeeping-manual-invoice-table {
+    min-width: 58rem;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-actions {
+    min-width: 7.25rem;
+    white-space: normal;
+    width: 7.25rem;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-date {
+    min-width: 7.2rem;
+}
+
+.bookkeeping-manual-invoice-number {
+    min-width: 9rem;
+    white-space: nowrap;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-name {
+    min-width: 12rem;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-amount {
+    min-width: 8rem;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-paperless-cell {
+    min-width: 12rem;
+}
+
+.bookkeeping-table-more-actions {
+    font-size: 0.72rem;
+    margin-top: 0.3rem;
+}
+
+.bookkeeping-table-more-actions summary {
+    color: #345f8c;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.bookkeeping-table-more-action-list {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.35rem;
+}
+
+.bookkeeping-manual-invoice-empty {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.65rem;
+    padding: 0.15rem 0;
+}
+
+.bookkeeping-manual-invoice-empty p {
+    margin: 0;
 }

@@ -7,21 +7,25 @@
             <span class="visually-hidden">Löschen</span>
         </button>
     </td>
-    <td>
+    <td class="bookkeeping-entry-readonly-cell">
         <label class="visually-hidden" for="{{ entry_form.receipt_group.id_for_label }}">Belegkreis</label>
-        {{ entry_form.receipt_group }}
+        <span class="bookkeeping-entry-readonly-value">
+            {% if entry_form.receipt_group.initial %}
+                {% for choice_value, choice_label in entry_form.receipt_group.field.choices %}{% if choice_value == entry_form.receipt_group.initial %}{{ choice_label }}{% endif %}{% endfor %}
+            {% else %}–{% endif %}
+        </span>
         <input type="hidden" name="{{ entry_form.receipt_group.html_name }}" value="{{ entry_form.receipt_group.initial|default_if_none:'' }}">
         {% if entry_form.receipt_group.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.receipt_group.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
     </td>
-    <td>
+    <td class="bookkeeping-entry-readonly-cell">
         <label class="visually-hidden" for="{{ entry_form.receipt_number.id_for_label }}">Belegnummer</label>
-        {{ entry_form.receipt_number }}
+        <span class="bookkeeping-entry-readonly-value">{{ entry_form.receipt_number.initial|default:"–" }}</span>
         <input type="hidden" name="{{ entry_form.receipt_number.html_name }}" value="{{ entry_form.receipt_number.initial|default_if_none:'' }}">
         {% if entry_form.receipt_number.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.receipt_number.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
     </td>
-    <td>
+    <td class="bookkeeping-entry-readonly-cell">
         <label class="visually-hidden" for="{{ entry_form.payment_date.id_for_label }}">Zahlungsdatum</label>
-        {{ entry_form.payment_date }}
+        <span class="bookkeeping-entry-readonly-value">{{ entry_form.payment_date.initial|date:"d.m.Y"|default:"–" }}</span>
         <input type="hidden" name="{{ entry_form.payment_date.html_name }}" value="{{ entry_form.payment_date.initial|date:'Y-m-d' }}">
         {% if entry_form.payment_date.errors %}<div class="bookkeeping-entry-cell-errors">{% for error in entry_form.payment_date.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
     </td>
@@ -40,7 +44,7 @@
         {{ entry_form.partner_name }}
         {% if entry_form.partner_name.errors %}<div id="{{ entry_form.partner_name.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.partner_name.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
     </td>
-    <td>
+    <td class="bookkeeping-entry-amount-cell">
         <label class="visually-hidden" for="{{ entry_form.gross_amount.id_for_label }}">Bruttobetrag</label>
         {{ entry_form.gross_amount }}
         {% if entry_form.gross_amount.errors %}<div id="{{ entry_form.gross_amount.id_for_label }}_error" class="bookkeeping-entry-cell-errors">{% for error in entry_form.gross_amount.errors %}<div>{{ error }}</div>{% endfor %}</div>{% endif %}
