@@ -2063,3 +2063,311 @@
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+/* Final compact refinements shared by all Bookkeeping pages. */
+.bookkeeping-page,
+.bookkeeping-main,
+.bookkeeping-main > *,
+.bookkeeping-card,
+.bookkeeping-rule-form,
+.bookkeeping-rule-detail-card,
+.bookkeeping-entry-form {
+    min-width: 0;
+}
+
+.bookkeeping-main {
+    padding-bottom: 1.35rem;
+    padding-top: 1rem;
+}
+
+.bookkeeping-main .form-control,
+.bookkeeping-main .form-select {
+    font-size: 0.85rem;
+    min-height: 2.25rem;
+}
+
+.bookkeeping-main textarea.form-control {
+    min-height: 4rem;
+}
+
+.bookkeeping-page-heading {
+    align-items: center;
+    margin-bottom: 0.65rem;
+}
+
+.bookkeeping-page-heading > .btn {
+    flex: 0 0 auto;
+}
+
+.bookkeeping-dashboard-period-filter {
+    align-items: end;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.65rem;
+    margin-bottom: 0.7rem;
+    max-width: none;
+}
+
+.bookkeeping-dashboard-period-filter .bookkeeping-period-type-switch {
+    margin-bottom: 0;
+}
+
+.bookkeeping-dashboard-period-filter > .form-label {
+    color: #5f6b78;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin: 0 0 0.25rem;
+}
+
+.bookkeeping-dashboard-period-controls {
+    flex: 0 1 20rem;
+    gap: 0.4rem;
+}
+
+.bookkeeping-dashboard-period-controls .form-select {
+    min-width: 10rem;
+}
+
+.bookkeeping-quick-actions {
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+}
+
+.bookkeeping-quick-actions .bi {
+    margin-right: 0.15rem;
+}
+
+.bookkeeping-dashboard-grid-primary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.bookkeeping-import-grid {
+    align-items: stretch;
+}
+
+.bookkeeping-import-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0.8rem 0.9rem;
+}
+
+.bookkeeping-import-card .bookkeeping-import-form {
+    flex: 1 1 auto;
+}
+
+.bookkeeping-import-form,
+.bookkeeping-manual-invoice-upload-form {
+    gap: 0.35rem;
+}
+
+.bookkeeping-manual-invoice-upload {
+    padding: 0.8rem 0.9rem;
+}
+
+.bookkeeping-manual-invoice-upload-form {
+    grid-template-columns: minmax(12rem, 1fr) auto;
+    margin-top: 0.5rem;
+}
+
+.bookkeeping-bank-statement-table .bookkeeping-actions {
+    min-width: 5rem;
+    width: 5rem;
+}
+
+.bookkeeping-rules-table .bookkeeping-actions {
+    min-width: 5rem;
+    width: 5rem;
+}
+
+.bookkeeping-supporting-document-table .bookkeeping-actions {
+    min-width: 8.75rem;
+    width: 8.75rem;
+}
+
+.bookkeeping-manual-invoice-table .bookkeeping-actions,
+.bookkeeping-transaction-table .bookkeeping-actions {
+    min-width: 10.75rem;
+    width: 10.75rem;
+}
+
+.bookkeeping-data-table .bookkeeping-actions {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
+}
+
+.bookkeeping-data-table .bookkeeping-action-buttons {
+    gap: 0.2rem;
+}
+
+.bookkeeping-data-table .bookkeeping-icon-action-group {
+    max-width: 10.75rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-purpose {
+    min-width: 18rem;
+    max-width: 32rem;
+}
+
+.bookkeeping-transaction-table .bookkeeping-amount {
+    min-width: 7.5rem;
+}
+
+.bookkeeping-filter-card {
+    align-items: end;
+    flex: 0 1 27rem;
+    margin-bottom: 0;
+    max-width: 27rem;
+    padding: 0.5rem 0.65rem;
+}
+
+.bookkeeping-filter-card .form-select {
+    min-width: 10rem;
+}
+
+.bookkeeping-ready-control-toolbar {
+    align-items: end;
+    justify-content: flex-start;
+    gap: 0.5rem 0.65rem;
+}
+
+.bookkeeping-ready-control-toolbar .bookkeeping-period-control {
+    min-width: 0;
+}
+
+.bookkeeping-ready-control-toolbar .bookkeeping-export-form .btn,
+.bookkeeping-ready-control-toolbar .bookkeeping-period-control .btn {
+    white-space: nowrap;
+}
+
+.bookkeeping-ready-control-card {
+    padding: 0.8rem 0.9rem;
+}
+
+.bookkeeping-package-summary {
+    gap: 0.3rem 0.65rem;
+    margin-top: 0.65rem;
+}
+
+.bookkeeping-package-summary > div {
+    padding: 0.4rem 0.55rem;
+}
+
+.bookkeeping-ready-control-card .bookkeeping-quarter-control {
+    margin-top: 0.65rem;
+    padding-top: 0.65rem;
+}
+
+.bookkeeping-quarter-control-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-top: 0.7rem;
+}
+
+.bookkeeping-quarter-control-grid > div,
+.bookkeeping-quarter-balance-summary > div {
+    padding: 0.45rem 0.6rem;
+}
+
+.bookkeeping-quarter-control-inconsistencies {
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+}
+
+.bookkeeping-entry-form-actions,
+.bookkeeping-confirmation-actions,
+.bookkeeping-note-form-actions {
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+}
+
+.bookkeeping-entry-form-actions .btn-sm {
+    font-size: 0.78rem;
+}
+
+.bookkeeping-rule-form,
+.bookkeeping-rule-detail-card,
+.bookkeeping-note-form,
+.bookkeeping-confirmation {
+    padding: 0.8rem 0.9rem;
+}
+
+.bookkeeping-rule-form .form-label,
+.bookkeeping-note-form .form-label,
+.bookkeeping-entry-notes .form-label {
+    font-size: 0.78rem;
+}
+
+.bookkeeping-rule-form .row {
+    --bs-gutter-y: 0.45rem;
+}
+
+.bookkeeping-template-section {
+    margin-top: 0.8rem;
+    padding-top: 0.8rem;
+}
+
+.bookkeeping-template-table th,
+.bookkeeping-template-table td {
+    padding: 0.28rem 0.35rem;
+}
+
+.bookkeeping-template-delete {
+    min-width: 5rem;
+}
+
+.bookkeeping-rule-detail-heading {
+    margin-bottom: 0.6rem;
+}
+
+.bookkeeping-rule-detail-list dt,
+.bookkeeping-rule-detail-list dd {
+    margin-bottom: 0.35rem;
+}
+
+.bookkeeping-main a:focus-visible,
+.bookkeeping-brand:focus-visible,
+.bookkeeping-sidebar a:focus-visible,
+.bookkeeping-main button:focus-visible,
+.bookkeeping-main input:focus-visible,
+.bookkeeping-main select:focus-visible,
+.bookkeeping-main textarea:focus-visible,
+.bookkeeping-main summary:focus-visible {
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.22);
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+@media (max-width: 1199.98px) {
+    .bookkeeping-quarter-control-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 767.98px) {
+    .bookkeeping-page-heading {
+        align-items: stretch;
+    }
+
+    .bookkeeping-dashboard-period-filter {
+        align-items: stretch;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .bookkeeping-dashboard-period-filter > .form-label {
+        margin-bottom: -0.15rem;
+    }
+
+    .bookkeeping-dashboard-period-controls {
+        flex-basis: auto;
+    }
+
+    .bookkeeping-quarter-control-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bookkeeping-dashboard-grid-primary,
+    .bookkeeping-dashboard-details {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}

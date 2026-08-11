@@ -36,7 +36,6 @@ class PaperlessClient:
     SUPPORTING_CORRESPONDENT_NAME = "Diverse"
     SUPPORTING_DOCUMENT_TYPE_NAME = "Buchungsbeleg"
     SUPPORTING_MATCHING_STORAGE_PATH_NAME = "IFKG Matching-Nachweise"
-    SUPPORTING_BANK_STORAGE_PATH_NAME = "IFKG Buchungsbelege"
     STORAGE_PATH_TEMPLATE = (
         "Immo-Fuchs KG/Buchhaltung/{{ created_year }}/Kontoauszuege/{{ title }}"
     )
@@ -183,11 +182,31 @@ class PaperlessClient:
         )
 
     @classmethod
+    def _require_unique_tag(cls, name: str) -> int:
+        exact_ids = cls._find_exact_ids("tags/", name)
+        if len(exact_ids) == 1:
+            return exact_ids[0]
+        if len(exact_ids) > 1:
+            raise BookkeepingPaperlessError(
+                f"Der Paperless-Tag '{name}' existiert mehrfach. "
+                "Bitte genau einen Tag mit diesem Namen verwenden."
+            )
+        raise BookkeepingPaperlessError(
+            f"Der Paperless-Tag '{name}' fehlt. "
+            "Bitte zuerst exakt unter diesem Namen anlegen."
+        )
+
+    @classmethod
     def _require_storage_path(cls, name: str | None = None) -> int:
         storage_path_name = name or cls.STORAGE_PATH_NAME
-        existing_id = cls._find_exact_name("storage_paths/", storage_path_name)
-        if existing_id is not None:
-            return existing_id
+        exact_ids = cls._find_exact_ids("storage_paths/", storage_path_name)
+        if len(exact_ids) == 1:
+            return exact_ids[0]
+        if len(exact_ids) > 1:
+            raise BookkeepingPaperlessError(
+                f"Der Paperless-Speicherpfad '{storage_path_name}' existiert mehrfach. "
+                "Bitte genau einen Speicherpfad mit diesem Namen verwenden."
+            )
         raise BookkeepingPaperlessError(
             f"Der Paperless-Speicherpfad '{storage_path_name}' fehlt. "
             "Bitte zuerst exakt unter diesem Namen anlegen."
@@ -199,6 +218,7 @@ class PaperlessClient:
             raise BookkeepingPaperlessError(
                 "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
             )
+        imported_tag_id = cls._require_unique_tag(cls.INVOICE_IMPORTED_TAG_NAME)
         correspondent_id = cls._require_named(
             "correspondents/", cls.CORRESPONDENT_NAME
         )
@@ -223,6 +243,7 @@ class PaperlessClient:
             ("document_type", str(document_type_id)),
             ("storage_path", str(storage_path_id)),
             *[("tags", str(tag_id)) for tag_id in tag_ids],
+            ("tags", str(imported_tag_id)),
             (
                 "custom_fields",
                 json.dumps(
@@ -265,6 +286,7 @@ class PaperlessClient:
             raise BookkeepingPaperlessError(
                 "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
             )
+        imported_tag_id = cls._require_unique_tag(cls.INVOICE_IMPORTED_TAG_NAME)
         correspondent_id = cls._require_named(
             "correspondents/", cls.MANUAL_CORRESPONDENT_NAME
         )
@@ -274,14 +296,7 @@ class PaperlessClient:
         tag_ids = [
             cls._require_named("tags/", tag_name) for tag_name in cls.TAG_NAMES
         ]
-        storage_path_id = cls._find_exact_name(
-            "storage_paths/", cls.MANUAL_STORAGE_PATH_NAME
-        )
-        if storage_path_id is None:
-            raise BookkeepingPaperlessError(
-                f"Der Paperless-Speicherpfad '{cls.MANUAL_STORAGE_PATH_NAME}' fehlt. "
-                "Bitte zuerst exakt unter diesem Namen anlegen."
-            )
+        storage_path_id = cls._require_storage_path(cls.MANUAL_STORAGE_PATH_NAME)
         reference_field_id = cls._require_custom_field(
             "q_bookkeeping_referenz",
             cls.CUSTOM_FIELDS["q_bookkeeping_referenz"],
@@ -297,6 +312,7 @@ class PaperlessClient:
             ("document_type", str(document_type_id)),
             ("storage_path", str(storage_path_id)),
             *[("tags", str(tag_id)) for tag_id in tag_ids],
+            ("tags", str(imported_tag_id)),
             (
                 "custom_fields",
                 json.dumps(
@@ -335,6 +351,7 @@ class PaperlessClient:
             raise BookkeepingPaperlessError(
                 "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
             )
+        imported_tag_id = cls._require_unique_tag(cls.INVOICE_IMPORTED_TAG_NAME)
         correspondent_id = cls._require_named(
             "correspondents/", cls.SUPPORTING_CORRESPONDENT_NAME
         )
@@ -347,7 +364,7 @@ class PaperlessClient:
         storage_path_name = (
             cls.SUPPORTING_MATCHING_STORAGE_PATH_NAME
             if document.matching_rule_id
-            else cls.SUPPORTING_BANK_STORAGE_PATH_NAME
+            else cls.MANUAL_STORAGE_PATH_NAME
         )
         storage_path_id = cls._require_storage_path(storage_path_name)
         reference_field_id = cls._require_custom_field(
@@ -394,6 +411,7 @@ class PaperlessClient:
             ("document_type", str(document_type_id)),
             ("storage_path", str(storage_path_id)),
             *[("tags", str(tag_id)) for tag_id in tag_ids],
+            ("tags", str(imported_tag_id)),
             (
                 "custom_fields",
                 json.dumps(custom_field_values, ensure_ascii=False),

@@ -103,8 +103,8 @@
     <p class="bookkeeping-empty-state bookkeeping-card-empty">Für diesen Zeitraum sind noch keine Buchhaltungsdaten vorhanden.</p>
     {% endif %}
     <div class="bookkeeping-quick-actions">
-        <a href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import" class="btn btn-outline-primary">Zum Bankimport</a>
-        <a href="{% url 'bookkeeping_overview' %}?status=open" class="btn btn-outline-secondary">Offene Buchungen</a>
+        <a href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import" class="btn btn-sm btn-outline-primary"><i class="bi bi-upload" aria-hidden="true"></i> Zum Bankimport</a>
+        <a href="{% url 'bookkeeping_overview' %}?status=open" class="btn btn-sm btn-outline-secondary"><i class="bi bi-list-check" aria-hidden="true"></i> Offene Buchungen</a>
     </div>
 </section>
 
@@ -460,20 +460,20 @@
         <h1 id="transactions-heading" class="bookkeeping-page-title">{% if selected_status == "open" %}Offene Buchungen{% else %}{{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}{% endif %}</h1>
         {% if selected_status == "open" %}<p class="bookkeeping-page-description">Offene Buchungen nach Monat erledigen.</p>{% endif %}
     </div>
+    <form method="get" class="bookkeeping-filter-card">
+        <input type="hidden" name="status" value="{{ selected_status }}">
+        <label for="transaction-month" class="form-label">Monat</label>
+        <div class="bookkeeping-period-control-fields">
+            <select id="transaction-month" name="month" class="form-select">
+                <option value=""{% if not selected_month %} selected{% endif %}>Alle Monate</option>
+                {% for month in available_months %}
+                <option value="{{ month.value }}"{% if month.value == selected_month %} selected{% endif %}>{{ month.label }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
+        </div>
+    </form>
 </div>
-<form method="get" class="bookkeeping-filter-card">
-    <input type="hidden" name="status" value="{{ selected_status }}">
-    <label for="transaction-month" class="form-label">Monat</label>
-    <div class="bookkeeping-period-control-fields">
-        <select id="transaction-month" name="month" class="form-select">
-            <option value=""{% if not selected_month %} selected{% endif %}>Alle Monate</option>
-            {% for month in available_months %}
-            <option value="{{ month.value }}"{% if month.value == selected_month %} selected{% endif %}>{{ month.label }}</option>
-            {% endfor %}
-        </select>
-        <button type="submit" class="btn btn-outline-secondary">Anzeigen</button>
-    </div>
-</form>
 {% endif %}
 
 {% if selected_status != "reviewed" and selected_status != "booked" or available_ready_months or available_ready_quarters %}

@@ -1984,6 +1984,23 @@ class PaperlessInvoiceImportTests(TestCase):
             "original_file_name": f"{document_id}.pdf",
         }
 
+    def test_outgoing_imported_tag_requires_one_exact_match(self):
+        cases = (
+            ([], "fehlt"),
+            ([19, 20], "existiert mehrfach"),
+        )
+        for tag_ids, expected_message in cases:
+            with self.subTest(tag_ids=tag_ids), patch.object(
+                PaperlessClient,
+                "_find_exact_ids",
+                return_value=tag_ids,
+            ):
+                with self.assertRaisesRegex(
+                    BookkeepingPaperlessError,
+                    rf"Quintus-Importiert.*{expected_message}",
+                ):
+                    PaperlessClient._require_unique_tag("Quintus-Importiert")
+
     def test_documents_by_tag_id_uses_exact_filter_and_all_pages(self):
         with patch.object(
             PaperlessClient,
@@ -2140,6 +2157,112 @@ class PaperlessInvoiceImportTests(TestCase):
         self.assertTrue(invoice.reference_uuid)
         update_markers.assert_called_once()
         download.assert_not_called()
+        upload.assert_not_called()
+
+    def test_email_imported_invoice_keeps_dates_until_checked_and_updates_without_reupload(self):
+        document = {
+            **self.document(264, "E-Mail Rechnung"),
+            "tags": [18],
+            "custom_fields": {"99": "beibehalten"},
+        }
+        with patch.object(
+            PaperlessClient,
+            "paperless_invoice_import_master_data",
+            return_value=self.master_data,
+        ), patch.object(
+            PaperlessClient,
+            "documents_by_tag_id",
+            return_value=[document],
+        ), patch.object(
+            PaperlessClient,
+            "document_details",
+            return_value=document,
+        ), patch(
+            "bookkeeping.paperless_invoice_import.run_manual_invoice_analysis",
+            return_value=InvoiceAIOutcome("ocr_unavailable"),
+        ), patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value={},
+        ) as marker_request:
+            summary = import_paperless_invoices()
+
+        invoice = ManualInvoice.objects.get()
+        self.assertEqual(summary.new_count, 1)
+        self.assertEqual(invoice.status, ManualInvoice.Status.DRAFT)
+        self.assertIsNone(invoice.payment_date)
+        marker_payload = marker_request.call_args.kwargs["payload"]
+        self.assertEqual(marker_payload["tags"], [19])
+        self.assertEqual(
+            marker_payload["custom_fields"],
+            {
+                "12": str(invoice.reference_uuid),
+                "99": "beibehalten",
+            },
+        )
+
+        existing_document = {
+            "custom_fields": {
+                "12": str(invoice.reference_uuid),
+                "99": "beibehalten",
+            }
+        }
+        finalize_data = {
+            "action": "finalize",
+            "invoice_number": "RG-EMAIL",
+            "invoice_date": "2026-07-10",
+            "payment_date": "2026-07-15",
+            "partner_name": "Lieferant",
+            "gross_amount": "100,00",
+            "notes": "Geprüft",
+            "entries-TOTAL_FORMS": "1",
+            "entries-INITIAL_FORMS": "0",
+            "entries-MIN_NUM_FORMS": "0",
+            "entries-MAX_NUM_FORMS": "1000",
+            "entries-0-position": "1",
+            "entries-0-receipt_group": "PR",
+            "entries-0-receipt_number": "7",
+            "entries-0-payment_date": "2026-07-15",
+            "entries-0-booking_text": "Büromaterial",
+            "entries-0-invoice_number": "RG-EMAIL",
+            "entries-0-partner_name": "Lieferant",
+            "entries-0-gross_amount": "100,00",
+            "entries-0-vat_symbol": "20",
+            "entries-0-category": "7600",
+        }
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            side_effect=(existing_document, {}),
+        ) as date_request, patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(31, 32, 33),
+        ), patch.object(PaperlessClient, "upload_manual_invoice") as upload:
+            response = self.client.post(
+                reverse(
+                    "manual_invoice_edit",
+                    kwargs={"reference_uuid": invoice.reference_uuid},
+                ),
+                finalize_data,
+            )
+
+        invoice.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(invoice.status, ManualInvoice.Status.READY)
+        self.assertEqual(invoice.payment_date, date(2026, 7, 15))
+        self.assertEqual(invoice.booking_entries.count(), 1)
+        date_payload = date_request.call_args_list[1].kwargs["payload"]
+        self.assertEqual(
+            date_payload["custom_fields"],
+            {
+                "12": str(invoice.reference_uuid),
+                "31": "2026-07-15",
+                "32": "2026-07",
+                "33": "2026-Q3",
+                "99": "beibehalten",
+            },
+        )
         upload.assert_not_called()
 
     @override_settings(BOOKKEEPING_OPENAI_API_KEY="test-key")
@@ -3417,6 +3540,10 @@ class BankStatementFeatureTests(TestCase):
             PAPERLESS_API_TOKEN="test-token",
         ), patch.object(
             PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
             "_require_named",
             side_effect=(1, 2, 3, 4),
         ), patch.object(
@@ -3442,6 +3569,14 @@ class BankStatementFeatureTests(TestCase):
             str(statement.reference_uuid),
         )
         self.assertNotEqual(custom_fields["6"], str(statement.pk))
+        self.assertEqual(
+            [
+                value
+                for name, value in upload.call_args.kwargs["form_fields"]
+                if name == "tags"
+            ],
+            ["3", "4", "22"],
+        )
 
     def reference_document(self, statement, reference, extra_fields=None):
         custom_fields = {
@@ -3597,6 +3732,7 @@ class BankStatementFeatureTests(TestCase):
         self.assertEqual(PaperlessClient.CORRESPONDENT_NAME, "Erste Bank")
         self.assertEqual(PaperlessClient.DOCUMENT_TYPE_NAME, "Kontoauszug")
         self.assertEqual(PaperlessClient.TAG_NAMES, ("Buchhaltung", "Immo-Fuchs KG"))
+        self.assertEqual(PaperlessClient.INVOICE_IMPORTED_TAG_NAME, "Quintus-Importiert")
         self.assertEqual(PaperlessClient.STORAGE_PATH_NAME, "IFKG Kontoauszüge")
         self.assertEqual(
             PaperlessClient.CUSTOM_FIELDS,
@@ -3613,6 +3749,10 @@ class BankStatementFeatureTests(TestCase):
             PaperlessClient,
             "_find_exact_name",
             return_value=None,
+        ), patch.object(
+            PaperlessClient,
+            "_find_exact_ids",
+            return_value=[],
         ), patch.object(PaperlessClient, "_request_json") as request_json:
             with self.assertRaisesMessage(
                 BookkeepingPaperlessError,
@@ -8063,12 +8203,13 @@ class ManualInvoiceTests(TestCase):
         PAPERLESS_BASE_URL="https://paperless.example",
         PAPERLESS_API_TOKEN="test-token",
     )
-    @patch.object(PaperlessClient, "_find_exact_name", return_value=5)
+    @patch.object(PaperlessClient, "_find_exact_ids", return_value=[5])
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=10)
     @patch.object(PaperlessClient, "_require_named", side_effect=(1, 2, 3, 4))
     @patch.object(PaperlessClient, "_require_custom_field", side_effect=(6, 7, 8, 9))
     @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-manual"})
     def test_paperless_metadata_uses_manual_invoice_names_and_uuid(
-        self, multipart, custom_fields, named, find_name
+        self, multipart, custom_fields, named, imported_tag, find_ids
     ):
         invoice = ManualInvoice.objects.create(
             file_hash="a" * 64,
@@ -8092,6 +8233,17 @@ class ManualInvoiceTests(TestCase):
         self.assertEqual(fields["correspondent"], "1")
         self.assertEqual(fields["storage_path"], "5")
         self.assertEqual(fields["created"], "2026-07-10")
+        find_ids.assert_called_once_with(
+            "storage_paths/", "IFKG Eingangsrechnungen"
+        )
+        self.assertEqual(
+            [
+                value
+                for name, value in multipart.call_args.kwargs["form_fields"]
+                if name == "tags"
+            ],
+            ["3", "4", "10"],
+        )
 
     @patch.object(PaperlessClient, "_require_custom_field", side_effect=(7, 8, 9))
     @patch.object(
@@ -8182,9 +8334,10 @@ class ManualInvoiceTests(TestCase):
         PAPERLESS_API_TOKEN="test-token",
     )
     @patch.object(PaperlessClient, "_require_named", side_effect=(1, 2, 3, 4))
-    @patch.object(PaperlessClient, "_find_exact_name", return_value=None)
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=22)
+    @patch.object(PaperlessClient, "_find_exact_ids", return_value=[])
     def test_missing_manual_invoice_storage_path_is_reported_without_creation(
-        self, find_name, named
+        self, find_ids, imported_tag, named
     ):
         invoice = ManualInvoice.objects.create(
             file_hash="m" * 64,
@@ -8195,6 +8348,28 @@ class ManualInvoiceTests(TestCase):
         with self.assertRaisesRegex(
             BookkeepingPaperlessError,
             "IFKG Eingangsrechnungen",
+        ):
+            PaperlessClient.upload_manual_invoice(invoice)
+
+    @override_settings(
+        PAPERLESS_BASE_URL="https://paperless.example",
+        PAPERLESS_API_TOKEN="test-token",
+    )
+    @patch.object(PaperlessClient, "_require_named", side_effect=(1, 2, 3, 4))
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=22)
+    @patch.object(PaperlessClient, "_find_exact_ids", return_value=[5, 6])
+    def test_multiple_manual_invoice_storage_paths_are_reported_without_creation(
+        self, find_ids, imported_tag, named
+    ):
+        invoice = ManualInvoice.objects.create(
+            file_hash="d" * 64,
+            payment_date=date(2026, 7, 15),
+            temporary_pdf=SimpleUploadedFile("rechnung.pdf", b"%PDF- test"),
+        )
+
+        with self.assertRaisesRegex(
+            BookkeepingPaperlessError,
+            "IFKG Eingangsrechnungen.*mehrfach",
         ):
             PaperlessClient.upload_manual_invoice(invoice)
 
@@ -8535,9 +8710,10 @@ class SupportingDocumentTests(TestCase):
         "q_buchungsquartal": 13,
     }[name])
     @patch.object(PaperlessClient, "_require_storage_path", return_value=14)
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=22)
     @patch.object(PaperlessClient, "_require_named", return_value=15)
     def test_bank_metadata_falls_back_to_booking_date(
-        self, require_named, require_storage, require_field, multipart
+        self, require_named, imported_tag, require_storage, require_field, multipart
     ):
         transaction = self.transaction(value_date=None, booking_date=date(2026, 8, 3))
         document = self.create_document(
@@ -8552,6 +8728,10 @@ class SupportingDocumentTests(TestCase):
         self.assertEqual(json.loads(fields["custom_fields"])["11"], "2026-08-03")
         self.assertEqual(json.loads(fields["custom_fields"])["12"], "2026-08")
         self.assertEqual(json.loads(fields["custom_fields"])["13"], "2026-Q3")
+        self.assertIn(
+            ("tags", "22"),
+            multipart.call_args.kwargs["form_fields"],
+        )
 
     def test_pdf_form_rejects_extension_content_type_and_signature(self):
         for uploaded_file in (
@@ -8598,9 +8778,10 @@ class SupportingDocumentTests(TestCase):
     @patch.object(PaperlessClient, "_request_multipart", return_value={"task_id": "task-rule"})
     @patch.object(PaperlessClient, "_require_custom_field", return_value=17)
     @patch.object(PaperlessClient, "_require_storage_path", return_value=18)
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=22)
     @patch.object(PaperlessClient, "_require_named", return_value=19)
     def test_matching_metadata_uses_required_names_and_only_reference_field(
-        self, require_named, require_storage, require_field, multipart
+        self, require_named, imported_tag, require_storage, require_field, multipart
     ):
         document = self.create_document(
             transfer_status=SupportingDocument.TransferStatus.PENDING
@@ -8612,6 +8793,14 @@ class SupportingDocumentTests(TestCase):
         custom_fields = json.loads(fields["custom_fields"])
         self.assertEqual(custom_fields, {"17": str(document.reference_uuid)})
         require_storage.assert_called_once_with("IFKG Matching-Nachweise")
+        self.assertEqual(
+            [
+                value
+                for name, value in multipart.call_args.kwargs["form_fields"]
+                if name == "tags"
+            ],
+            ["19", "19", "22"],
+        )
         names = [call.args[1] for call in require_named.call_args_list]
         self.assertIn("Buchungsbeleg", names)
         self.assertIn("Diverse", names)
@@ -8628,9 +8817,10 @@ class SupportingDocumentTests(TestCase):
         "q_buchungsquartal": 13,
     }[name])
     @patch.object(PaperlessClient, "_require_storage_path", return_value=14)
+    @patch.object(PaperlessClient, "_require_unique_tag", return_value=22)
     @patch.object(PaperlessClient, "_require_named", return_value=15)
     def test_bank_metadata_prefers_value_date_and_sets_period_fields(
-        self, require_named, require_storage, require_field, multipart
+        self, require_named, imported_tag, require_storage, require_field, multipart
     ):
         transaction = self.transaction(value_date=date(2026, 7, 14))
         document = self.create_document(
@@ -8651,7 +8841,15 @@ class SupportingDocumentTests(TestCase):
                 "13": "2026-Q3",
             },
         )
-        require_storage.assert_called_once_with("IFKG Buchungsbelege")
+        require_storage.assert_called_once_with("IFKG Eingangsrechnungen")
+        self.assertEqual(
+            [
+                value
+                for name, value in multipart.call_args.kwargs["form_fields"]
+                if name == "tags"
+            ],
+            ["15", "15", "22"],
+        )
 
     @patch.object(PaperlessClient, "task_status", return_value={"status": "completed", "document_id": 321})
     @patch.object(PaperlessClient, "upload_supporting_document")
