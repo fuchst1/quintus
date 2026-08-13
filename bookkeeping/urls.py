@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     BankTransactionNoteView,
+    BankStatementDeleteView,
     AccountantPackageDownloadView,
     BookingSetResetView,
     BookingEntryView,
@@ -22,6 +23,11 @@ from .views import (
 
 urlpatterns = [
     path('', BookkeepingOverviewView.as_view(), name='bookkeeping_overview'),
+    path(
+        'bank-statements/<int:pk>/delete/',
+        BankStatementDeleteView.as_view(),
+        name='bank_statement_delete',
+    ),
     path(
         'accountant-package/',
         AccountantPackageDownloadView.as_view(),

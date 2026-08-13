@@ -28,7 +28,7 @@
     </div>
     {% endif %}
 
-    <form method="post" class="bookkeeping-entry-form">
+    <form method="post" class="bookkeeping-entry-form bookkeeping-manual-invoice-form">
         {% csrf_token %}
         <div class="bookkeeping-manual-invoice-statuses" aria-live="polite">
             <div class="bookkeeping-manual-invoice-status-item">
@@ -59,6 +59,11 @@
                 <button type="submit" name="action" value="analyze_ai" class="btn btn-sm btn-outline-secondary">{{ ai_action_label }}</button>
                 {% endif %}
                 {% if ai_error %}<div class="bookkeeping-formset-error">{{ ai_error }}</div>{% endif %}
+            </div>
+            <div class="bookkeeping-manual-invoice-status-item bookkeeping-manual-invoice-object-actions" aria-label="Belegaktionen">
+                <a href="{% url 'manual_invoice_reset_booking' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-warning bookkeeping-icon-action" title="Buchungssatz zurücksetzen" aria-label="Buchungssatz zurücksetzen"><i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i><span class="visually-hidden">Buchungssatz zurücksetzen</span></a>
+                {% if paperless_can_delete %}<a href="{{ manual_invoice_paperless_delete_url }}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Nur aus Paperless löschen" aria-label="Nur aus Paperless löschen"><i class="bi bi-file-earmark-x" aria-hidden="true"></i><span class="visually-hidden">Nur aus Paperless löschen</span></a>{% endif %}
+                <a href="{% url 'manual_invoice_delete' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Beleg vollständig löschen" aria-label="Beleg vollständig löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Beleg vollständig löschen</span></a>
             </div>
             {% if ai_suggestion_created %}
             <span class="bookkeeping-ai-note">Die vorausgefüllten Werte sind KI-Vorschläge und müssen geprüft werden.</span>
@@ -111,7 +116,7 @@
                 {% for error in manual_invoice_formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
             </div>
             {% endif %}
-            <div class="bookkeeping-entry-table-wrap">
+            <div class="bookkeeping-entry-table-wrap" role="region" aria-label="Buchungszeilen" tabindex="0">
             <table class="table table-sm bookkeeping-entry-table">
                 <thead>
                     <tr>
@@ -157,35 +162,6 @@
             <button type="submit" name="action" value="save_draft" class="btn btn-outline-primary">Entwurf speichern</button>
             <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
         </div>
-
-        <details class="bookkeeping-manual-invoice-more-actions">
-            <summary>Weitere Aktionen</summary>
-            <div class="bookkeeping-manual-invoice-more-action-list">
-                <div class="bookkeeping-manual-invoice-more-action">
-                    <div>
-                        <strong>Buchungssatz zurücksetzen</strong>
-                        <p>Löscht nur die Buchungszeilen und setzt den Beleg auf Entwurf zurück. Quelldaten und Dokumente bleiben erhalten.</p>
-                    </div>
-                    <a href="{% url 'manual_invoice_reset_booking' manual_invoice.reference_uuid %}" class="btn btn-sm btn-outline-warning">Buchungssatz zurücksetzen</a>
-                </div>
-                {% if paperless_can_delete %}
-                <div class="bookkeeping-manual-invoice-more-action">
-                    <div>
-                        <strong>Nur aus Paperless löschen</strong>
-                        <p>Löscht nur das Dokument in Paperless. Der manuelle Beleg, die Buchungszeilen sowie OCR- und KI-Daten bleiben in Quintus erhalten.</p>
-                    </div>
-                    <a href="{{ manual_invoice_paperless_delete_url }}" class="btn btn-sm btn-outline-danger">Nur aus Paperless löschen</a>
-                </div>
-                {% endif %}
-                <div class="bookkeeping-manual-invoice-more-action">
-                    <div>
-                        <strong>Beleg vollständig löschen</strong>
-                        <p>Löscht den manuellen Beleg und alle Buchungszeilen sowie – sofern vorhanden – das zugehörige Paperless-Dokument dauerhaft. Bereits nach Excel kopierte Daten bleiben unverändert.</p>
-                    </div>
-                    <a href="{% url 'manual_invoice_delete' manual_invoice.reference_uuid %}" class="btn btn-sm btn-danger">Beleg vollständig löschen</a>
-                </div>
-            </div>
-        </details>
     </form>
 </section>
 <script>

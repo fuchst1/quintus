@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
+import re
+from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
@@ -10,6 +13,9 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.utils import timezone
+
+
+logger = logging.getLogger(__name__)
 
 
 class BookkeepingPaperlessError(Exception):
@@ -20,7 +26,33 @@ class BookkeepingPaperlessError(Exception):
         self.status_code = status_code
 
 
+@dataclass(frozen=True)
+class BankStatementPaperlessMetadata:
+    """Resolved Paperless metadata shared by upload and synchronization."""
+
+    title: str
+    created: str
+    correspondent_id: int
+    document_type_id: int
+    storage_path_id: int
+    tag_ids: tuple[int, ...]
+    custom_field_ids: dict[str, int]
+    custom_fields: dict[str, str]
+
+    def multipart_fields(self) -> list[tuple[str, str]]:
+        return [
+            ("title", self.title),
+            ("created", self.created),
+            ("correspondent", str(self.correspondent_id)),
+            ("document_type", str(self.document_type_id)),
+            ("storage_path", str(self.storage_path_id)),
+            *[("tags", str(tag_id)) for tag_id in self.tag_ids],
+            ("custom_fields", json.dumps(self.custom_fields, ensure_ascii=False)),
+        ]
+
+
 class PaperlessClient:
+    MAX_USER_ERROR_LENGTH = 500
     MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
     INVOICE_IMPORT_TAG_NAME = "Quintus-Import"
     INVOICE_IMPORTED_TAG_NAME = "Quintus-Importiert"
@@ -108,18 +140,13 @@ class PaperlessClient:
             with urlopen(request, timeout=cls._timeout()) as response:
                 content = response.read()
         except HTTPError as exc:
-            if exc.code in {401, 403}:
-                raise BookkeepingPaperlessError(
-                    "Paperless hat den Zugriff abgelehnt. Bitte den API-Token prüfen."
-                ) from None
-            raise BookkeepingPaperlessError(
-                f"Paperless antwortet mit HTTP-Status {exc.code}."
-            ) from None
-        except (URLError, TimeoutError):
-            raise BookkeepingPaperlessError(
-                "Paperless ist nicht erreichbar oder die Anfrage hat zu lange gedauert."
-            ) from None
+            logger.warning("Paperless API HTTP %s for %s", exc.code, request.full_url)
+            raise cls._http_error(exc) from None
+        except (URLError, TimeoutError) as exc:
+            logger.warning("Paperless API connection error for %s: %s", request.full_url, exc)
+            raise cls._connection_error(exc) from None
         except Exception:
+            logger.exception("Unexpected Paperless API error for %s", request.full_url)
             raise BookkeepingPaperlessError(
                 "Die Anfrage an Paperless konnte nicht ausgeführt werden."
             ) from None
@@ -131,6 +158,86 @@ class PaperlessClient:
             raise BookkeepingPaperlessError(
                 "Paperless hat eine ungültige Antwort geliefert."
             ) from None
+
+    @classmethod
+    def _http_error(cls, error: HTTPError) -> BookkeepingPaperlessError:
+        status_code = int(getattr(error, "code", 0) or 0)
+        response_text = ""
+        try:
+            response_text = error.read().decode("utf-8", errors="replace")
+        except Exception:
+            logger.exception("Could not read Paperless HTTP error response")
+        detail = cls._safe_error_text(response_text)
+        if status_code in {401, 403}:
+            message = "Paperless hat die Anmeldung oder Berechtigung abgelehnt."
+        elif status_code in {400, 422}:
+            message = detail or f"Paperless hat die Anfrage abgelehnt (HTTP {status_code})."
+        elif status_code == 413:
+            message = "Die Datei ist für Paperless zu groß."
+        elif 500 <= status_code <= 599:
+            message = f"Paperless ist derzeit nicht verfügbar (HTTP {status_code})."
+        else:
+            message = detail or f"Paperless antwortet mit HTTP-Status {status_code}."
+        return BookkeepingPaperlessError(
+            cls._safe_error_text(message),
+            status_code=status_code,
+        )
+
+    @classmethod
+    def _connection_error(cls, error: BaseException) -> BookkeepingPaperlessError:
+        reason = getattr(error, "reason", error)
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            return BookkeepingPaperlessError(
+                "Zeitüberschreitung bei der Verbindung zu Paperless."
+            )
+        return BookkeepingPaperlessError("Paperless ist nicht erreichbar.")
+
+    @classmethod
+    def _safe_error_text(cls, value) -> str:
+        """Extract a short user-safe reason from arbitrary API error data."""
+        value = cls._decode_json_value(value)
+        if isinstance(value, dict):
+            sensitive_keys = {
+                "authorization",
+                "api_token",
+                "password",
+                "secret",
+                "token",
+                "access_token",
+            }
+            for key in (
+                "detail",
+                "error_message",
+                "message",
+                "error",
+                "result_data",
+                "result",
+            ):
+                text = cls._safe_error_text(value.get(key))
+                if text:
+                    return text
+            parts = [
+                f"{key}: {cls._safe_error_text(item)}"
+                for key, item in value.items()
+                if str(key).lower() not in sensitive_keys
+                if cls._safe_error_text(item)
+            ]
+            value = "; ".join(parts)
+        elif isinstance(value, list):
+            value = "; ".join(
+                text for item in value if (text := cls._safe_error_text(item))
+            )
+        if value is None:
+            return ""
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        if not text:
+            return ""
+        text = re.sub(
+            r"(?i)(authorization\s*:\s*|token\s+)[^\s,;]+",
+            r"\1[redigiert]",
+            text,
+        )
+        return text[: cls.MAX_USER_ERROR_LENGTH].rstrip()
 
     @classmethod
     def _find_exact_name(cls, endpoint: str, name: str) -> int | None:
@@ -213,7 +320,8 @@ class PaperlessClient:
         )
 
     @classmethod
-    def upload_bank_statement(cls, statement) -> str:
+    def build_bank_statement_metadata(cls, statement) -> BankStatementPaperlessMetadata:
+        """Resolve the canonical metadata for a bank statement once."""
         if not cls.is_configured():
             raise BookkeepingPaperlessError(
                 "Paperless ist nicht konfiguriert. Bitte die Paperless-Verbindung prüfen."
@@ -233,36 +341,31 @@ class PaperlessClient:
             name: cls._require_custom_field(name, data_type)
             for name, data_type in cls.CUSTOM_FIELDS.items()
         }
-        title = (
-            f"Kontoauszug {statement.booking_month} – {statement.iban}"
+        tag_ids = tuple(dict.fromkeys([*tag_ids, imported_tag_id]))
+        custom_fields = {
+            str(custom_field_ids["q_buchungsdatum"]): statement.statement_date.isoformat(),
+            str(custom_field_ids["q_buchungsmonat"]): statement.booking_month,
+            str(custom_field_ids["q_buchungsquartal"]): statement.booking_quarter,
+            str(custom_field_ids["q_bookkeeping_referenz"]): str(statement.reference_uuid),
+        }
+        return BankStatementPaperlessMetadata(
+            title=f"Kontoauszug {statement.booking_month} – {statement.iban}",
+            created=statement.statement_date.isoformat(),
+            correspondent_id=correspondent_id,
+            document_type_id=document_type_id,
+            storage_path_id=storage_path_id,
+            tag_ids=tag_ids,
+            custom_field_ids=custom_field_ids,
+            custom_fields=custom_fields,
         )
-        form_fields = [
-            ("title", title),
-            ("created", statement.statement_date.isoformat()),
-            ("correspondent", str(correspondent_id)),
-            ("document_type", str(document_type_id)),
-            ("storage_path", str(storage_path_id)),
-            *[("tags", str(tag_id)) for tag_id in tag_ids],
-            ("tags", str(imported_tag_id)),
-            (
-                "custom_fields",
-                json.dumps(
-                    {
-                        str(custom_field_ids["q_buchungsdatum"]): statement.statement_date.isoformat(),
-                        str(custom_field_ids["q_buchungsmonat"]): statement.booking_month,
-                        str(custom_field_ids["q_buchungsquartal"]): statement.booking_quarter,
-                        str(custom_field_ids["q_bookkeeping_referenz"]): str(
-                            statement.reference_uuid
-                        ),
-                    },
-                    ensure_ascii=False,
-                ),
-            ),
-        ]
+
+    @classmethod
+    def upload_bank_statement(cls, statement) -> str:
+        metadata = cls.build_bank_statement_metadata(statement)
         try:
             with statement.temporary_pdf.open("rb") as pdf_file:
                 response = cls._request_multipart(
-                    form_fields=form_fields,
+                    form_fields=metadata.multipart_fields(),
                     file_name=os.path.basename(statement.temporary_pdf.name),
                     file_content=pdf_file.read(),
                 )
@@ -497,26 +600,38 @@ class PaperlessClient:
                 "message": "Der Paperless-Task wurde nicht gefunden.",
                 "found": False,
             }
-        document_id = cls._document_id(task)
-        if document_id is not None:
+        raw_status = cls._normalize_task_status(task)
+        message = cls._task_error_message(task)
+        duplicate_id, duplicate_in_trash = cls._duplicate_info(task, message)
+        if duplicate_id is not None:
             return {
-                "status": "completed",
-                "document_id": document_id,
+                "status": "duplicate",
+                "document_id": duplicate_id,
+                "duplicate_in_trash": duplicate_in_trash,
+                "document_verified": False,
                 "message": "",
                 "found": True,
             }
-        raw_status = cls._normalize_task_status(task)
         if raw_status in {"failure", "failed"}:
             return {
                 "status": "failed",
                 "document_id": None,
-                "message": cls._task_error_message(task),
+                "message": message,
                 "found": True,
             }
         if raw_status in {"pending", "started", "retry", "running"}:
             return {
                 "status": "pending",
                 "document_id": None,
+                "message": "",
+                "found": True,
+            }
+        document_id = cls._document_id(task)
+        if document_id is not None:
+            return {
+                "status": "completed",
+                "document_id": document_id,
+                "document_verified": False,
                 "message": "",
                 "found": True,
             }
@@ -530,6 +645,201 @@ class PaperlessClient:
             "message": message,
             "found": True,
         }
+
+    @classmethod
+    def verify_document_id(cls, document_id: int) -> dict:
+        """Verify that the configured Paperless account can read the document."""
+        try:
+            return cls.document_details(document_id)
+        except BookkeepingPaperlessError:
+            raise
+        except Exception:
+            logger.exception("Unexpected error while verifying Paperless document %s", document_id)
+            raise BookkeepingPaperlessError(
+                "Das Paperless-Dokument konnte nicht verifiziert werden."
+            ) from None
+
+    @classmethod
+    def synchronize_bank_statement_metadata(
+        cls,
+        statement,
+        document_id: int | None = None,
+        *,
+        document: dict | None = None,
+    ) -> dict[str, object]:
+        """Merge canonical bank-statement metadata into an existing document."""
+        normalized_id = cls._coerce_document_id(
+            document_id if document_id is not None else getattr(statement, "paperless_document_id", None)
+        )
+        if normalized_id is None:
+            raise BookkeepingPaperlessError(
+                "Für die Paperless-Metadaten fehlt die Dokument-ID."
+            )
+        if not isinstance(document, dict):
+            document = cls.document_details(normalized_id)
+        metadata = cls.build_bank_statement_metadata(statement)
+
+        current_tags = cls._document_tag_ids(document.get("tags", []))
+        merged_tags = current_tags + [
+            tag_id for tag_id in metadata.tag_ids if tag_id not in current_tags
+        ]
+        merged_custom_fields = document.get("custom_fields")
+        reference_name = "q_bookkeeping_referenz"
+        reference_id = metadata.custom_field_ids[reference_name]
+        found_reference, current_reference = cls._read_custom_field_value(
+            merged_custom_fields,
+            field_id=reference_id,
+            field_name=reference_name,
+        )
+        expected_reference = metadata.custom_fields[str(reference_id)]
+        if found_reference and current_reference and current_reference != expected_reference:
+            raise BookkeepingPaperlessError(
+                "Das Paperless-Dokument ist bereits mit einem anderen "
+                "Bookkeeping-Datensatz verknüpft."
+            )
+        for field_name, field_id in metadata.custom_field_ids.items():
+            merged_custom_fields = cls._replace_custom_field_value(
+                merged_custom_fields,
+                field_id=field_id,
+                field_name=field_name,
+                value=metadata.custom_fields[str(field_id)],
+                append_if_missing=True,
+            )
+
+        payload = {
+            "title": metadata.title,
+            "created": metadata.created,
+            "correspondent": metadata.correspondent_id,
+            "document_type": metadata.document_type_id,
+            "storage_path": metadata.storage_path_id,
+            "tags": merged_tags,
+            "custom_fields": merged_custom_fields,
+        }
+        cls._request_json(
+            endpoint=f"documents/{normalized_id}/",
+            method="PATCH",
+            payload=payload,
+        )
+        return {
+            "status": "synced",
+            "document_id": normalized_id,
+            "metadata": metadata,
+            "document": document,
+        }
+
+    @classmethod
+    def _duplicate_document_id(cls, task: dict, message: str) -> int | None:
+        """Extract a document ID only when the task clearly reports a duplicate."""
+        document_id, _duplicate_in_trash = cls._duplicate_info(task, message)
+        return document_id
+
+    @classmethod
+    def _duplicate_info(
+        cls,
+        task: dict,
+        message: str = "",
+    ) -> tuple[int | None, bool]:
+        """Return the Paperless duplicate ID and whether it is in the trash.
+
+        Paperless has returned both structured task fields and serialized text
+        over time.  Only an explicit ``duplicate_of`` marker or a known
+        duplicate message is accepted; arbitrary numbers in an error are not.
+        """
+        sources = [
+            task.get("result_data"),
+            task.get("result"),
+            task.get("detail"),
+            task.get("error"),
+            task.get("message"),
+            task,
+        ]
+        for source in sources:
+            duplicate = cls._find_structured_duplicate(cls._decode_json_value(source))
+            if duplicate is not None:
+                return duplicate
+
+        text_sources = [message]
+        text_sources.extend(
+            text
+            for source in sources
+            if (text := cls._safe_error_text(source))
+            and text not in text_sources
+        )
+        duplicate_of_pattern = re.compile(
+            r"\bduplicate_of\s*[:=]\s*[\"']?(\d+)",
+            re.IGNORECASE,
+        )
+        trash_pattern = re.compile(
+            r"\bduplicate_in_trash\s*[:=]\s*[\"']?(true|false)\b",
+            re.IGNORECASE,
+        )
+        for text in text_sources:
+            match = duplicate_of_pattern.search(text)
+            if match is not None:
+                document_id = cls._coerce_document_id(match.group(1))
+                if document_id is not None:
+                    trash_match = trash_pattern.search(text)
+                    return document_id, bool(
+                        trash_match and trash_match.group(1).lower() == "true"
+                    )
+
+        duplicate_messages = [
+            text
+            for text in text_sources
+            if re.search(r"\b(?:duplicate|duplikat)\b", text, re.IGNORECASE)
+        ]
+        if not duplicate_messages:
+            return None, False
+        for candidate in (
+            task.get("related_document"),
+            task.get("related_document_id"),
+            task.get("result_data"),
+            cls._decode_json_value(task.get("result")),
+        ):
+            document_id = cls._coerce_document_id(candidate)
+            if document_id is not None:
+                return document_id, False
+        for duplicate_message in duplicate_messages:
+            match = re.search(
+                r"\b(?:duplicate|duplikat)\b.{0,120}\b"
+                r"(?:of|von|document|dokument|test)\b.{0,80}?#\s*(\d+)",
+                duplicate_message,
+                re.IGNORECASE,
+            )
+            if match is not None:
+                document_id = cls._coerce_document_id(match.group(1))
+                if document_id is not None:
+                    return document_id, False
+        return None, False
+
+    @classmethod
+    def _find_structured_duplicate(cls, value) -> tuple[int, bool] | None:
+        value = cls._decode_json_value(value)
+        if isinstance(value, dict):
+            if "duplicate_of" in value:
+                document_id = cls._coerce_document_id(value.get("duplicate_of"))
+                if document_id is not None:
+                    return document_id, cls._coerce_bool(
+                        value.get("duplicate_in_trash"),
+                    )
+            for nested in value.values():
+                duplicate = cls._find_structured_duplicate(nested)
+                if duplicate is not None:
+                    return duplicate
+        elif isinstance(value, list):
+            for nested in value:
+                duplicate = cls._find_structured_duplicate(nested)
+                if duplicate is not None:
+                    return duplicate
+        return None
+
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() == "true"
+        return False
 
     @classmethod
     def find_document_by_reference(cls, reference: str) -> dict[str, object]:
@@ -569,7 +879,12 @@ class PaperlessClient:
             documents = []
 
         if len(documents) == 0:
-            return {"status": "pending", "document_id": None, "message": ""}
+            return {
+                "status": "pending",
+                "document_id": None,
+                "document_verified": False,
+                "message": "",
+            }
         if len(documents) > 1:
             raise BookkeepingPaperlessError(
                 "In Paperless wurden mehrere Dokumente mit derselben "
@@ -586,7 +901,12 @@ class PaperlessClient:
                 "Das Paperless-Dokument zur Bookkeeping-Referenz enthält keine "
                 "verwertbare Dokument-ID."
             )
-        return {"status": "completed", "document_id": document_id, "message": ""}
+        return {
+            "status": "completed",
+            "document_id": document_id,
+            "document_verified": False,
+            "message": "",
+        }
 
     @classmethod
     def paperless_invoice_import_master_data(cls) -> dict[str, object]:
@@ -1030,14 +1350,23 @@ class PaperlessClient:
 
     @classmethod
     def _task_error_message(cls, task: dict) -> str:
-        candidates = [task.get("message"), task.get("error"), task.get("detail")]
+        candidates = [
+            task.get("message"),
+            task.get("error"),
+            task.get("detail"),
+            task.get("result_data"),
+        ]
         result = cls._decode_json_value(task.get("result"))
-        if isinstance(result, dict):
-            candidates.extend(
-                [result.get("message"), result.get("error"), result.get("detail")]
-            )
         for candidate in candidates:
-            message = str(candidate or "").strip()
+            message = cls._safe_error_text(candidate)
+            if message:
+                return message
+        if isinstance(result, dict):
+            message = cls._safe_error_text(result)
+            if message:
+                return message
+        elif result not in (None, ""):
+            message = cls._safe_error_text(result)
             if message:
                 return message
         return "Paperless meldet einen Fehler beim Upload."
@@ -1225,18 +1554,13 @@ class PaperlessClient:
             with urlopen(request, timeout=cls._timeout()) as response:
                 content = response.read()
         except HTTPError as exc:
-            if exc.code in {401, 403}:
-                raise BookkeepingPaperlessError(
-                    "Paperless hat den Zugriff abgelehnt. Bitte den API-Token prüfen."
-                ) from None
-            raise BookkeepingPaperlessError(
-                f"Paperless antwortet mit HTTP-Status {exc.code}."
-            ) from None
-        except (URLError, TimeoutError):
-            raise BookkeepingPaperlessError(
-                "Paperless ist nicht erreichbar oder die Anfrage hat zu lange gedauert."
-            ) from None
+            logger.warning("Paperless multipart HTTP %s for upload", exc.code)
+            raise cls._http_error(exc) from None
+        except (URLError, TimeoutError) as exc:
+            logger.warning("Paperless multipart connection error: %s", exc)
+            raise cls._connection_error(exc) from None
         except Exception:
+            logger.exception("Unexpected Paperless multipart error")
             raise BookkeepingPaperlessError(
                 "Der PDF-Upload an Paperless konnte nicht ausgeführt werden."
             ) from None
@@ -1253,6 +1577,7 @@ class PaperlessClient:
             task.get("related_document_id"),
             task.get("document_id"),
             task.get("document"),
+            task.get("result_data"),
             task.get("result"),
         ]
         for candidate in candidates:

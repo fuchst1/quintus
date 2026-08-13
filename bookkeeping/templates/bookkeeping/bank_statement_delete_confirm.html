@@ -1,0 +1,32 @@
+{% extends "bookkeeping/base.html" %}
+
+{% block content %}
+<section class="bookkeeping-page-heading" aria-labelledby="bank-statement-delete-heading">
+    <div>
+        <h1 id="bank-statement-delete-heading" class="bookkeeping-page-title">Kontoauszug löschen</h1>
+        <p class="bookkeeping-page-description">Bitte bestätigen Sie die lokale Löschung.</p>
+    </div>
+</section>
+
+<section class="bookkeeping-card bookkeeping-confirm-card">
+    <p>Soll der Kontoauszug wirklich gelöscht werden?</p>
+    <dl>
+        <div><dt>Monat</dt><dd>{{ statement_month|escape }}</dd></div>
+        <div><dt>Auszug</dt><dd>{{ statement_number|escape }}</dd></div>
+        <div><dt>Banktransaktionen</dt><dd>{{ delete_summary.transaction_count }}</dd></div>
+        <div><dt>Buchungen</dt><dd>{{ delete_summary.booking_count }}</dd></div>
+    </dl>
+    {% if delete_summary.protected %}
+    <p class="alert alert-danger">Der Kontoauszug kann nicht gelöscht werden, weil bereits abgeschlossene Buchungen damit verbunden sind.</p>
+    {% endif %}
+    <div class="bookkeeping-entry-form-actions">
+        <a href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import" class="btn btn-outline-secondary">Abbrechen</a>
+        {% if not delete_summary.protected %}
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash" aria-hidden="true"></i> Kontoauszug löschen</button>
+        </form>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

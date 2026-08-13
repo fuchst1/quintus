@@ -4,8 +4,13 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from .choices import RECEIPT_GROUP_BANK
-from .models import BookingEntry, BankTransaction, MatchingRule, normalize_iban
+from .choices import CATEGORY_CHOICES, RECEIPT_GROUP_BANK, VAT_SYMBOL_CHOICES
+from .models import (
+    BookingEntry,
+    BankTransaction,
+    MatchingRule,
+    normalize_iban,
+)
 
 
 SNAPSHOT_ERROR = (
@@ -13,6 +18,20 @@ SNAPSHOT_ERROR = (
     "unvollständig oder nicht verwendbar. Bitte erfassen Sie die "
     "Buchungsdaten manuell."
 )
+VAT_CODES = {value for value, _label in VAT_SYMBOL_CHOICES}
+CATEGORY_CODES = {value for value, _label in CATEGORY_CHOICES}
+
+
+class SnapshotTransferError(Exception):
+    """A generated booking row did not retain its rule values."""
+
+
+def _template_error(rule, template, field_label):
+    return (
+        f'Die Matching-Regel „{rule}“ ist unvollständig: '
+        f'In Excel-Ergebniszeile {template.position} fehlt das Feld '
+        f'„{field_label}“. '
+    )
 
 
 class MatchingResult(tuple):
@@ -55,7 +74,11 @@ def build_booking_entry_snapshot(bank_transaction):
         bank_transaction.matched_rule.booking_templates.order_by("position", "id")
     )
     if not templates:
-        return None, None
+        return (
+            None,
+            f'Die Matching-Regel „{bank_transaction.matched_rule}“ '
+            "enthält keine Excel-Ergebniszeilen.",
+        )
 
     transaction_amount = abs(bank_transaction.amount).quantize(Decimal("0.01"))
     fixed_amounts = [
@@ -84,27 +107,48 @@ def build_booking_entry_snapshot(bank_transaction):
         if amount is None:
             amount = remaining_amount
         amount = (amount * sign).quantize(Decimal("0.01"))
+        if template.vat_symbol in (None, ""):
+            return None, _template_error(bank_transaction.matched_rule, template, "USt")
+        if template.vat_symbol not in VAT_CODES:
+            return (
+                None,
+                f'Der in der Matching-Regel gespeicherte USt-Wert '
+                f'„{template.vat_symbol}“ ist nicht mehr gültig.',
+            )
+        if template.category in (None, ""):
+            return None, _template_error(
+                bank_transaction.matched_rule,
+                template,
+                "Kategorie",
+            )
+        if template.category not in CATEGORY_CODES:
+            return (
+                None,
+                f'Die in der Matching-Regel gespeicherte Kategorie '
+                f'„{template.category}“ ist nicht mehr verfügbar. Bitte '
+                "erstellen Sie eine neue Regelversion mit einer gültigen Kategorie.",
+            )
         initial = {
+            "position": template.position,
             "receipt_group": RECEIPT_GROUP_BANK,
             "receipt_number": str(payment_date.month),
             "payment_date": payment_date,
             "booking_text": template.booking_text or bank_transaction.purpose,
             "invoice_number": template.invoice_number or "",
-            "partner_name": template.partner_name or bank_transaction.partner_name,
+            "partner_name": (
+                template.partner_name or bank_transaction.partner_name
+            ),
             "gross_amount": amount,
             "vat_symbol": template.vat_symbol,
             "category": template.category,
+            "matching_rule_template": template,
         }
-        if not all(
-            initial[field_name]
-            for field_name in (
-                "booking_text",
-                "partner_name",
-                "vat_symbol",
-                "category",
+        if initial["booking_text"] in (None, ""):
+            return None, _template_error(
+                bank_transaction.matched_rule,
+                template,
+                "Buchungstext",
             )
-        ):
-            return None, SNAPSHOT_ERROR
         initials.append(initial)
 
     if sum(
@@ -122,8 +166,70 @@ def _save_automatic_booking_snapshot(bank_transaction, initials):
             for initial in initials
         ]
     )
+    saved_entries = list(
+        BookingEntry.objects.filter(bank_transaction=bank_transaction).order_by(
+            "position", "id"
+        )
+    )
+    transfer_fields = (
+        ("Position", "position"),
+        ("Buchungstext", "booking_text"),
+        ("Rechnungsnummer", "invoice_number"),
+        ("Lieferant/Kunde", "partner_name"),
+        ("Bruttobetrag", "gross_amount"),
+        ("USt", "vat_symbol"),
+        ("Kategorie", "category"),
+    )
+    if len(saved_entries) != len(initials):
+        raise SnapshotTransferError(
+            "Die Matching-Regel wurde angewendet, aber die Werte der "
+            "Excel-Ergebniszeilen konnten nicht in die Buchungszeilen "
+            "übernommen werden."
+        )
+    for initial, entry in zip(initials, saved_entries):
+        failed_fields = [
+            label
+            for label, field_name in transfer_fields
+            if getattr(entry, field_name) != initial.get(field_name)
+        ]
+        if failed_fields:
+            raise SnapshotTransferError(
+                "Die Matching-Regel wurde angewendet, aber folgende Werte "
+                "konnten nicht übernommen werden: "
+                f"Excel-Ergebniszeile {initial['position']} – "
+                + " und ".join(failed_fields)
+                + "."
+            )
     bank_transaction.status = BankTransaction.Status.REVIEWED
     bank_transaction.save(update_fields=("status",))
+
+
+def snapshot_matches_booking_entries(initials, entries):
+    """Return whether generated rows are still an untouched rule snapshot."""
+    if len(initials) != len(entries):
+        return False
+    comparable_fields = (
+        "position",
+        "receipt_group",
+        "receipt_number",
+        "payment_date",
+        "booking_text",
+        "invoice_number",
+        "partner_name",
+        "gross_amount",
+        "vat_symbol",
+        "category",
+    )
+    for initial, entry in zip(initials, entries):
+        template = initial.get("matching_rule_template")
+        if template is None or entry.matching_rule_template_id != template.pk:
+            return False
+        if any(
+            getattr(entry, field) != initial.get(field)
+            for field in comparable_fields
+        ):
+            return False
+    return True
 
 
 def _normalized_transaction_text(bank_transaction):
@@ -224,7 +330,12 @@ def match_imported_transactions():
                 incomplete_count += 1
                 continue
 
-            _save_automatic_booking_snapshot(bank_transaction, initials)
+            try:
+                with transaction.atomic():
+                    _save_automatic_booking_snapshot(bank_transaction, initials)
+            except SnapshotTransferError:
+                incomplete_count += 1
+                continue
             auto_ready_count += 1
 
     return MatchingResult(

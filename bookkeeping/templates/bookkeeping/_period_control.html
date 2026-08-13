@@ -1,0 +1,29 @@
+<nav class="bookkeeping-period-control-shell" aria-label="Zeitraumsteuerung" data-bookkeeping-period-control>
+    <div class="bookkeeping-period-type-switch" role="group" aria-label="Zeitraumtyp">
+        {% for item in period_control.type_links %}
+        <a href="{{ item.url }}" class="bookkeeping-period-type-link{% if item.active %} is-active{% endif %}"{% if item.active %} aria-current="true"{% endif %}>{{ item.label }}</a>
+        {% endfor %}
+    </div>
+    <div class="bookkeeping-period-navigation">
+        {% if period_control.has_previous %}
+        <a href="{{ period_control.previous_url }}" class="bookkeeping-period-arrow" aria-label="Vorheriger {{ period_control.period_type_label }}" title="Vorheriger Zeitraum">‹</a>
+        {% else %}
+        <span class="bookkeeping-period-arrow is-disabled" aria-hidden="true">‹</span>
+        {% endif %}
+        <form method="get" class="bookkeeping-period-control" data-bookkeeping-period-form>
+            {% for key, value in request.GET.items %}
+            {% if key != 'period' and key != 'period_type' and key != 'month' %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endif %}
+            {% endfor %}
+            <input type="hidden" name="period_type" value="{{ period_control.period_type }}">
+            <label for="{{ period_control.id }}" class="visually-hidden">{{ period_control.label }}</label>
+            <select id="{{ period_control.id }}" name="period" class="bookkeeping-period-select" aria-label="{{ period_control.label }}">
+                {% for item in period_control.options %}<option value="{{ item.value }}"{% if item.value == period_control.period %} selected{% endif %}>{{ item.label }}</option>{% empty %}<option value="">Keine Zeiträume vorhanden</option>{% endfor %}
+            </select>
+        </form>
+        {% if period_control.has_next %}
+        <a href="{{ period_control.next_url }}" class="bookkeeping-period-arrow" aria-label="Nächster {{ period_control.period_type_label }}" title="Nächster Zeitraum">›</a>
+        {% else %}
+        <span class="bookkeeping-period-arrow is-disabled" aria-hidden="true">›</span>
+        {% endif %}
+    </div>
+</nav>

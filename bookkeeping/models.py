@@ -348,6 +348,7 @@ class BookingEntry(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
+    position = models.PositiveIntegerField("Position", default=1)
     bank_transaction = models.ForeignKey(
         BankTransaction,
         on_delete=models.CASCADE,
@@ -389,6 +390,13 @@ class BookingEntry(models.Model):
         max_length=4,
         choices=CATEGORY_CHOICES,
         blank=True,
+    )
+    matching_rule_template = models.ForeignKey(
+        "MatchingRuleBookingTemplate",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="generated_booking_entries",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -562,6 +570,8 @@ class BankStatement(models.Model):
     class PaperlessStatus(models.TextChoices):
         PENDING = "pending", "Übertragung zu Paperless läuft"
         COMPLETED = "completed", "In Paperless abgelegt"
+        DUPLICATE = "duplicate", "Bereits vorhanden"
+        METADATA_INCOMPLETE = "incomplete", "Verknüpft – Metadaten unvollständig"
         FAILED = "failed", "Übertragung fehlgeschlagen"
 
     iban = models.CharField(max_length=34)
@@ -593,7 +603,7 @@ class BankStatement(models.Model):
     paperless_task_id = models.CharField(max_length=128, blank=True)
     paperless_document_id = models.PositiveIntegerField(null=True, blank=True)
     paperless_status = models.CharField(
-        max_length=9,
+        max_length=10,
         choices=PaperlessStatus.choices,
         default=PaperlessStatus.PENDING,
     )

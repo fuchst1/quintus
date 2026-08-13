@@ -551,6 +551,27 @@ class BookingEntryFormSetBase(BaseInlineFormSet):
             self.new_objects.append(self.save_new(form, commit=commit))
         return self.new_objects
 
+    def save(self, commit=True):
+        objects = super().save(commit=commit)
+        active_instances = [
+            form.instance
+            for form in self._active_forms()
+            if form.instance.pk
+        ]
+        if not active_instances:
+            active_instances = list(objects)
+        if commit:
+            for position, instance in enumerate(active_instances, start=1):
+                if instance.position != position:
+                    type(instance).objects.filter(pk=instance.pk).update(
+                        position=position
+                    )
+                    instance.position = position
+        else:
+            for position, instance in enumerate(active_instances, start=1):
+                instance.position = position
+        return objects
+
 
 BookingEntryFormSet = inlineformset_factory(
     BankTransaction,
@@ -891,15 +912,11 @@ class MatchingRuleBookingTemplateForm(forms.ModelForm):
             self.initial.setdefault("vat_symbol", DEFAULT_VAT_SYMBOL)
 
     def clean_position(self):
-        return self.cleaned_data.get("position") or 1
+        return self.cleaned_data.get("position")
 
 
 class MatchingRuleBookingTemplateBaseFormSet(BaseInlineFormSet):
     def clean(self):
-        super().clean()
-        if any(self.errors):
-            return
-
         active_forms = [
             form
             for form in self.forms
@@ -907,6 +924,33 @@ class MatchingRuleBookingTemplateBaseFormSet(BaseInlineFormSet):
         ]
         if not active_forms:
             return
+
+        missing_position_forms = [
+            form
+            for form in active_forms
+            if "position" in form.cleaned_data
+            and form.cleaned_data["position"] is None
+        ]
+        if missing_position_forms:
+            for form in missing_position_forms:
+                form.add_error(
+                    "position",
+                    "Bitte die fehlenden Angaben im Feld „Position“ ergänzen.",
+                )
+            raise ValidationError(
+                "Bitte die fehlenden Angaben im Feld „Position“ ergänzen."
+            )
+
+        if any(self.errors):
+            return
+
+        positions = [form.cleaned_data["position"] for form in active_forms]
+        if len(positions) != len(set(positions)):
+            raise ValidationError(
+                "Die Angaben im Feld „Position“ müssen eindeutig sein."
+            )
+
+        super().clean()
 
         amounts = [form.cleaned_data.get("gross_amount") for form in active_forms]
         rest_count = sum(amount is None for amount in amounts)

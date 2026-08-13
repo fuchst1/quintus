@@ -27,6 +27,20 @@
     </div>
     {% endif %}
 
+    {% if matching_rule_source %}
+    <p class="bookkeeping-rule-source">Erzeugt aus Matching-Regel <a href="{{ matching_rule_source.url }}">„{{ matching_rule_source.label }}“</a></p>
+    {% endif %}
+    {% if can_reapply_matching_rule %}
+    <div class="bookkeeping-rule-reapply">
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="reapply_matching_rule">
+            {% if reapply_matching_rule_confirmation %}<input type="hidden" name="confirm_reapply" value="1">{% endif %}
+            <button type="submit" class="btn btn-sm btn-outline-warning">Matching-Regel erneut anwenden</button>
+        </form>
+    </div>
+    {% endif %}
+
     <section class="bookkeeping-original-transaction" aria-labelledby="original-transaction-heading">
         <h2 id="original-transaction-heading" class="bookkeeping-subsection-title">Originale Banktransaktion</h2>
         <dl class="bookkeeping-original-transaction-summary">
@@ -85,7 +99,7 @@
             {% for error in supporting_document_form.pdf.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
         </form>
         {% if supporting_documents %}
-        <div class="bookkeeping-table-wrap">
+        <div class="bookkeeping-table-wrap" role="region" aria-label="Belege" tabindex="0">
             <table class="table table-sm align-middle mb-0 bookkeeping-data-table bookkeeping-supporting-document-table">
                 <thead class="table-light">
                     <tr>
@@ -146,7 +160,7 @@
                 {% for error in formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
             </div>
             {% endif %}
-            <div class="bookkeeping-entry-table-wrap">
+            <div class="bookkeeping-entry-table-wrap" role="region" aria-label="Buchungszeilen" tabindex="0">
             <table class="table table-sm bookkeeping-entry-table">
                 <thead>
                     <tr>

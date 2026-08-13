@@ -1,7 +1,7 @@
 <section class="bookkeeping-template-section" aria-labelledby="booking-template-heading">
     <div class="bookkeeping-template-heading">
         <div>
-            <h2 id="booking-template-heading" class="h5 mb-1">Excel-Ergebniszeilen</h2>
+            <h2 id="booking-template-heading" class="bookkeeping-section-title">Excel-Ergebniszeilen</h2>
             <p class="bookkeeping-template-help">Optional: Eine leere Betragsspalte steht für den Restbetrag.</p>
         </div>
         <button type="button" class="btn btn-sm btn-outline-primary" id="add-booking-template">Zeile hinzufügen</button>
@@ -13,18 +13,18 @@
         {% for error in matching_rule_formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
     </div>
     {% endif %}
-    <div class="bookkeeping-template-table-wrap">
+    <div class="bookkeeping-template-table-wrap" role="region" aria-label="Excel-Ergebniszeilen" tabindex="0">
         <table class="table table-sm align-middle mb-0 bookkeeping-template-table">
             <thead class="table-light">
                 <tr>
-                    <th>Position</th>
-                    <th>Buchungstext</th>
-                    <th>Rechnungsnummer</th>
-                    <th>Lieferant/Kunde</th>
-                    <th>Betrag</th>
-                    <th>USt</th>
-                    <th>Kategorie</th>
-                    <th>Löschen</th>
+                    <th scope="col">Position</th>
+                    <th scope="col">Buchungstext</th>
+                    <th scope="col">Rechnungsnummer</th>
+                    <th scope="col">Lieferant/Kunde</th>
+                    <th scope="col">Betrag</th>
+                    <th scope="col">USt</th>
+                    <th scope="col">Kategorie</th>
+                    <th scope="col">Löschen</th>
                 </tr>
             </thead>
             <tbody id="booking-template-rows">

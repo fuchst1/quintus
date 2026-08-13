@@ -7,13 +7,15 @@ import uuid
 import zipfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError, URLError
 from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -39,12 +41,16 @@ from .accountant_package import (
     build_accountant_package,
 )
 from .bank_statements import (
+    BankStatementDeletionError,
     BankStatementImportError,
+    delete_bank_statement,
+    display_bank_statement,
     import_bank_statement,
     json_control_for_statement,
     refresh_pending_paperless_tasks,
     refresh_unsynced_completed_references,
     retry_bank_statement,
+    synchronize_bank_statement_metadata,
 )
 from .booking_resets import reset_bank_transaction_booking, reset_manual_invoice_booking
 from .forms import (
@@ -55,7 +61,7 @@ from .forms import (
     MatchingRuleForm,
     SupportingDocumentUploadForm,
 )
-from .matching import match_imported_transactions
+from .matching import SnapshotTransferError, match_imported_transactions
 from .models import (
     BankStatement,
     BankTransaction,
@@ -88,6 +94,34 @@ from .supporting_documents import (
     retry_supporting_document,
 )
 from .views import BookkeepingOverviewView
+
+
+class BookkeepingDesignSystemTests(SimpleTestCase):
+    def test_final_design_tokens_and_compact_table_rules_are_present(self):
+        css_path = Path(__file__).parent / "static/bookkeeping/css/bookkeeping.css"
+        css = css_path.read_text(encoding="utf-8")
+
+        for rule in (
+            "--bookkeeping-primary: #1a365d;",
+            "--bookkeeping-background: #f8f9ff;",
+            "--bookkeeping-incoming: #047857;",
+            "--bookkeeping-outgoing: #be123c;",
+            "--bookkeeping-radius: 4px;",
+            "--bookkeeping-sidebar-width: 260px;",
+            "border-right: 0;",
+            "background: var(--bookkeeping-surface-hover);",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, css)
+
+        self.assertIn(
+            ".bookkeeping-data-table tbody tr:nth-child(even)",
+            css,
+        )
+        self.assertIn(
+            "background: var(--bookkeeping-surface);",
+            css,
+        )
 
 
 class AustrianFormattingTests(TestCase):
@@ -366,6 +400,34 @@ class BookkeepingOverviewUploadTests(TestCase):
         self.assertEqual(row["direction_code"], "outgoing")
         self.assertEqual(row["direction"], "Ausgang")
 
+    def test_zero_amount_is_skipped_and_success_message_reports_it(self):
+        response = self.upload(
+            [
+                {
+                    "booking": "2026-06-30",
+                    "amount": {"value": 2500, "precision": 2, "currency": "EUR"},
+                },
+                {
+                    "booking": "2026-06-30",
+                    "amount": {"value": 0, "precision": 2, "currency": "EUR"},
+                    "reference": "*** Abschlussbuchung per 30.06.2026 ****",
+                },
+            ]
+        )
+
+        self.assertEqual(BankTransaction.objects.count(), 1)
+        self.assertContains(response, "1 Transaktion importiert, 0 bereits vorhanden.")
+        self.assertContains(response, "1 Nullbuchung wurde übersprungen.")
+
+    def test_negative_two_with_precision_two_is_imported(self):
+        self.upload(
+            [{"amount": {"value": -2, "precision": 2, "currency": "EUR"}}]
+        )
+
+        transaction = BankTransaction.objects.get()
+        self.assertEqual(transaction.amount, Decimal("-0.02"))
+        self.assertEqual(transaction.direction, BankTransaction.Direction.OUTGOING)
+
     def test_preview_status_is_eingelesen(self):
         response = self.upload(
             [{"amount": {"value": 100, "precision": 2, "currency": "EUR"}}]
@@ -424,6 +486,26 @@ class BookkeepingOverviewUploadTests(TestCase):
         self.assertContains(response, "Eine Transaktion enthält keinen gültigen Betrag.")
         self.assertEqual(BankTransaction.objects.count(), 0)
 
+    def test_missing_or_non_numeric_amount_is_invalid(self):
+        invalid_transactions = (
+            {"booking": "2026-05-02"},
+            {"booking": "2026-05-02", "amount": {}},
+            {
+                "booking": "2026-05-02",
+                "amount": {"value": "ungültig", "precision": 2},
+            },
+        )
+
+        for transaction in invalid_transactions:
+            with self.subTest(transaction=transaction):
+                response = self.upload([transaction])
+
+                self.assertContains(
+                    response,
+                    "Eine Transaktion enthält keinen gültigen Betrag.",
+                )
+                self.assertEqual(BankTransaction.objects.count(), 0)
+
     def test_missing_purpose_fields_display_dash(self):
         response = self.upload(
             [{"amount": {"value": 100, "precision": 2, "currency": "EUR"}}]
@@ -469,6 +551,16 @@ class BookkeepingOverviewFilteringTests(TestCase):
     def get_overview(self, **query):
         return self.client.get(reverse("bookkeeping_overview"), query)
 
+    def test_page_has_one_semantic_heading_and_a_non_heading_app_label(self):
+        response = self.get_overview()
+        content = response.content.decode()
+
+        self.assertEqual(content.count("<h1"), 1)
+        self.assertContains(
+            response,
+            '<div class="bookkeeping-header-title">QUINTUS BUCHHALTUNG</div>',
+        )
+
     def test_default_overview_is_dashboard_for_newest_month(self):
         self.create_transaction(
             date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
@@ -486,9 +578,8 @@ class BookkeepingOverviewFilteringTests(TestCase):
         self.assertEqual(response.context["dashboard_period_type"], "month")
         self.assertEqual(response.context["dashboard_period"], "2026-07")
         self.assertContains(response, "Übersicht – Juli 2026")
-        self.assertContains(response, "Transaktionen gesamt")
-        self.assertNotContains(response, "Offen Juli")
-        self.assertNotContains(response, "Zugeordnet Juli")
+        self.assertContains(response, "Saldo im Zeitraum")
+        self.assertContains(response, "Nächste Schritte")
 
     def test_each_valid_status_filter_shows_only_that_status(self):
         transactions = {
@@ -592,11 +683,11 @@ class BookkeepingOverviewFilteringTests(TestCase):
         self.assertContains(response, "Regelerklärung")
         self.assertContains(
             response,
-            f'href="/bookkeeping/transactions/{no_match.pk}/booking/?status=open&amp;month=2026-07"',
+            f'href="/bookkeeping/transactions/{no_match.pk}/booking/?status=open"',
         )
         self.assertContains(
             response,
-            f'href="/bookkeeping/transactions/{incomplete.pk}/booking/?status=open&amp;month=2026-07"',
+            f'href="/bookkeeping/transactions/{incomplete.pk}/booking/?status=open"',
         )
 
         no_match.refresh_from_db()
@@ -666,6 +757,31 @@ class BookkeepingOverviewFilteringTests(TestCase):
         self.assertEqual(len(response.context["transactions"]), 2)
         self.assertContains(response, "Alle Monate")
         self.assertNotContains(response, "Offene Transaktionen –")
+
+    def test_open_bookings_are_always_unscoped_and_have_no_month_selector(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Juni offen"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.MATCHED, "Juli offen"
+        )
+
+        response = self.get_overview(status="open", month="2026-06")
+
+        self.assertEqual(response.context["selected_month"], "")
+        self.assertEqual(
+            {row["name"] for row in response.context["transactions"]},
+            {"Juni offen", "Juli offen"},
+        )
+        self.assertNotContains(response, 'id="transaction-month"')
+        self.assertContains(response, "Alle offenen Buchungen.")
+
+    def test_empty_month_parameter_for_open_queue_is_not_rendered_in_links(self):
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Offen"
+        )
+        response = self.get_overview(status="open", month="")
+        self.assertNotContains(response, "status=open&amp;month=")
 
     def test_invalid_month_falls_back_to_newest_available_month(self):
         self.create_transaction(
@@ -1030,11 +1146,11 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertContains(
             response,
-            'href="/bookkeeping/?status=open&amp;month=2026-06"',
+            'href="/bookkeeping/?status=open"',
         )
         self.assertContains(
             response,
-            'href="/bookkeeping/?status=open&amp;month=2026-06" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+            'href="/bookkeeping/?status=open" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
         )
         self.assertNotContains(response, ">Zugeordnet<")
 
@@ -1073,7 +1189,7 @@ class BookkeepingOverviewFilteringTests(TestCase):
 
         self.assertEqual(
             response["Location"],
-            "/bookkeeping/?status=open&month=2026-07",
+            "/bookkeeping/?status=open",
         )
 
     def test_dashboard_supports_quarter_selection(self):
@@ -1181,6 +1297,364 @@ class BookkeepingOverviewFilteringTests(TestCase):
         labels = ("Dashboard", "Bankimport", "Offen", "Buchungsfertig", "Matching-Regeln")
         positions = [body.index(label) for label in labels]
         self.assertEqual(positions, sorted(positions))
+
+    def test_sidebar_counts_are_global_and_identical_across_bookkeeping_pages(self):
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Offen Juni"
+        )
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.MATCHED, "Offen Juli"
+        )
+        ready = self.create_transaction(
+            date(2026, 8, 15), BankTransaction.Status.REVIEWED, "Fertig August"
+        )
+        BookingEntry.objects.create(
+            bank_transaction=ready,
+            receipt_group="BK",
+            receipt_number="8",
+            payment_date=ready.booking_date,
+            booking_text="Fertig August",
+            partner_name="Fertig August",
+            gross_amount=ready.amount,
+            vat_symbol="20",
+            category="7600",
+        )
+        ManualInvoice.objects.create(
+            file_hash="sidebar-draft",
+            status=ManualInvoice.Status.DRAFT,
+            payment_date=date(2026, 7, 20),
+        )
+        ManualInvoice.objects.create(
+            file_hash="sidebar-ready",
+            status=ManualInvoice.Status.READY,
+            payment_date=date(2026, 8, 20),
+            gross_amount=Decimal("12.00"),
+        )
+
+        responses = [
+            self.get_overview(),
+            self.get_overview(status="bank_import"),
+            self.client.get(reverse("manual_invoice_list")),
+            self.get_overview(status="open", month="2026-06"),
+            self.get_overview(status="reviewed", period_type="month", period="2026-08"),
+            self.get_overview(status="reviewed", period_type="quarter", period="2026-Q3"),
+        ]
+
+        self.assertEqual(
+            {(response.context["sidebar_open_count"], response.context["sidebar_ready_count"])
+             for response in responses},
+            {(4, 2)},
+        )
+        for response in responses:
+            self.assertContains(response, 'title="Alle offenen Vorgänge"')
+            self.assertContains(response, 'title="Alle buchungsfertigen Vorgänge"')
+
+    def test_sidebar_counts_do_not_duplicate_booking_rows_or_include_period_filters(self):
+        ready = self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.REVIEWED, "Mehrere Zeilen"
+        )
+        for position, amount in enumerate((Decimal("4.00"), Decimal("6.00")), start=1):
+            BookingEntry.objects.create(
+                bank_transaction=ready,
+                position=position,
+                receipt_group="BK",
+                receipt_number=str(position),
+                payment_date=ready.booking_date,
+                booking_text=f"Zeile {position}",
+                partner_name="Mehrere Zeilen",
+                gross_amount=amount,
+                vat_symbol="20",
+                category="7600",
+            )
+        self.create_transaction(
+            date(2026, 6, 15), BankTransaction.Status.IMPORTED, "Global offen"
+        )
+
+        june = self.get_overview(status="reviewed", period_type="month", period="2026-06")
+        july = self.get_overview(status="reviewed", period_type="quarter", period="2026-Q3")
+        self.assertEqual((june.context["sidebar_open_count"], june.context["sidebar_ready_count"]), (1, 1))
+        self.assertEqual((july.context["sidebar_open_count"], july.context["sidebar_ready_count"]), (1, 1))
+
+    def test_period_control_switches_logically_and_has_navigation_urls(self):
+        self.create_transaction(
+            date(2026, 7, 15), BankTransaction.Status.IMPORTED, "Juli"
+        )
+        self.create_transaction(
+            date(2026, 10, 15), BankTransaction.Status.IMPORTED, "Oktober"
+        )
+        response = self.get_overview(period_type="month", period="2026-07")
+        control = response.context["dashboard_period_control"]
+        quarter_link = next(item for item in control["type_links"] if item["value"] == "quarter")
+        self.assertIn("period_type=quarter", quarter_link["url"])
+        self.assertIn("period=2026-Q3", quarter_link["url"])
+        self.assertTrue(control["has_next"])
+        self.assertIn("period=2026-10", control["next_url"])
+        self.assertNotContains(response, ">Anzeigen<")
+        self.assertIn("period_month=2026-07", quarter_link["url"])
+
+        year_response = self.get_overview(
+            period_type="year",
+            period="2026",
+            period_month="2026-07",
+        )
+        year_control = year_response.context["dashboard_period_control"]
+        month_link = next(
+            item for item in year_control["type_links"] if item["value"] == "month"
+        )
+        self.assertIn("period=2026-07", month_link["url"])
+        self.assertContains(response, 'aria-label="Nächster Monat"')
+
+    def test_ready_period_control_supports_year_and_uses_global_sidebar_counts(self):
+        transaction = self.create_transaction(
+            date(2026, 8, 15), BankTransaction.Status.REVIEWED, "August"
+        )
+        BookingEntry.objects.create(
+            bank_transaction=transaction,
+            receipt_group="BK",
+            receipt_number="8",
+            payment_date=transaction.booking_date,
+            booking_text="August",
+            partner_name="August",
+            gross_amount=transaction.amount,
+            vat_symbol="20",
+            category="7600",
+        )
+        response = self.get_overview(
+            status="reviewed", period_type="month", period="2026-08"
+        )
+        control = response.context["ready_period_control"]
+        self.assertEqual(control["period"], "2026-08")
+        self.assertTrue(any(item["value"] == "year" for item in control["type_links"]))
+        year_link = next(item for item in control["type_links"] if item["value"] == "year")
+        self.assertIn("period_type=year", year_link["url"])
+        self.assertIn("period=2026", year_link["url"])
+        self.assertEqual(response.context["sidebar_ready_count"], 1)
+
+
+class BookkeepingDashboardTests(TestCase):
+    def transaction(self, *, day=date(2026, 7, 15), amount="10.00", status=None, name="Vorgang", value_date=None):
+        return BankTransaction.objects.create(
+            booking_date=day,
+            value_date=value_date,
+            partner_name=name,
+            amount=Decimal(amount),
+            direction=(
+                BankTransaction.Direction.INCOMING
+                if Decimal(amount) >= 0
+                else BankTransaction.Direction.OUTGOING
+            ),
+            status=status or BankTransaction.Status.IMPORTED,
+        )
+
+    def entry(self, transaction, *, amount=None, category="7600", receipt=True):
+        return BookingEntry.objects.create(
+            bank_transaction=transaction,
+            receipt_group="BK" if receipt else "",
+            receipt_number="7" if receipt else "",
+            payment_date=transaction.booking_date,
+            booking_text=transaction.partner_name,
+            partner_name=transaction.partner_name,
+            gross_amount=Decimal(amount if amount is not None else transaction.amount),
+            vat_symbol="20",
+            category=category,
+        )
+
+    def overview(self, **params):
+        return self.client.get(reverse("bookkeeping_overview"), params)
+
+    def test_period_selector_supports_year_and_invalid_values_fall_back(self):
+        self.transaction(day=date(2025, 3, 1))
+        self.transaction(day=date(2026, 7, 1))
+
+        response = self.overview(period_type="year", period="2025")
+        self.assertEqual(response.context["dashboard_period"], "2025")
+        self.assertContains(response, "name=\"period_type\" value=\"year\"")
+
+        fallback = self.overview(period_type="year", period="not-a-year")
+        self.assertEqual(fallback.context["dashboard_period"], "2026")
+
+    def test_dashboard_defaults_to_latest_available_period(self):
+        self.transaction(day=date(2026, 6, 30))
+        self.transaction(day=date(2026, 8, 1))
+        response = self.overview()
+        self.assertEqual(response.context["dashboard_period"], "2026-08")
+
+    def test_dashboard_year_chart_contains_all_ready_years_and_safe_json(self):
+        first = self.transaction(day=date(2025, 3, 1), status=BankTransaction.Status.REVIEWED, amount="12.00")
+        second = self.transaction(day=date(2026, 7, 1), status=BankTransaction.Status.BOOKED, amount="8.00")
+        self.entry(first)
+        self.entry(second)
+        response = self.overview(period_type="year", period="2026")
+        years = [item["year"] for item in response.context["dashboard_year_chart"]]
+        self.assertEqual(years, [2025, 2026])
+        self.assertContains(response, 'id="dashboard-year-chart-data"')
+
+    def test_dashboard_quarter_chart_always_has_last_eight_periods_and_axis_labels(self):
+        first = self.transaction(
+            day=date(2026, 2, 1),
+            status=BankTransaction.Status.REVIEWED,
+            amount="12.00",
+        )
+        second = self.transaction(
+            day=date(2026, 8, 1),
+            status=BankTransaction.Status.BOOKED,
+            amount="-8.00",
+        )
+        self.entry(first)
+        self.entry(second, amount="-8.00")
+
+        response = self.overview(period_type="year", period="2026")
+        chart = response.context["dashboard_quarter_chart"]
+        self.assertEqual(
+            [item["quarter"] for item in chart],
+            [
+                "2024-Q4", "2025-Q1", "2025-Q2", "2025-Q3",
+                "2025-Q4", "2026-Q1", "2026-Q2", "2026-Q3",
+            ],
+        )
+        values = {item["quarter"]: item for item in chart}
+        self.assertEqual(values["2026-Q1"]["income_amount"], "12,00 EUR")
+        self.assertEqual(values["2026-Q3"]["expenses_amount"], "8,00 EUR")
+        self.assertContains(response, "Einnahmen und Ausgaben – letzte 8 Quartale")
+        self.assertContains(response, "Betrag (EUR)")
+        self.assertContains(response, ">Quartal<")
+        self.assertContains(response, 'id="dashboard-quarter-chart-data"')
+
+        quarter_response = self.overview(
+            period_type="quarter",
+            period="2026-Q1",
+        )
+        month_response = self.overview(
+            period_type="month",
+            period="2026-02",
+        )
+        self.assertEqual(
+            quarter_response.context["dashboard_quarter_chart"],
+            chart,
+        )
+        self.assertEqual(
+            month_response.context["dashboard_quarter_chart"],
+            chart,
+        )
+
+    def test_source_amount_is_counted_once_even_with_multiple_booking_rows(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED, amount="100.00")
+        self.entry(transaction, amount="40.00")
+        self.entry(transaction, amount="60.00", category="4851")
+        response = self.overview(period="2026-07")
+        self.assertEqual(response.context["dashboard_incoming"], "100,00 EUR")
+        self.assertEqual(response.context["dashboard_balance"], "100,00 EUR")
+
+    def test_signed_expense_is_negative_balance_and_positive_expense_total(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED, amount="-0.02")
+        self.entry(transaction, amount="-0.02", category="4851")
+        response = self.overview(period="2026-07")
+        self.assertEqual(response.context["dashboard_outgoing"], "0,02 EUR")
+        self.assertEqual(response.context["dashboard_balance"], "-0,02 EUR")
+        self.assertContains(response, "bookkeeping-dashboard-balance-negative")
+
+    def test_ready_manual_invoice_is_included_once_and_draft_is_excluded(self):
+        ManualInvoice.objects.create(
+            file_hash="dashboard-ready-manual",
+            status=ManualInvoice.Status.READY,
+            payment_date=date(2026, 8, 3),
+            partner_name="Spusu",
+            gross_amount=Decimal("-19.32"),
+        )
+        ManualInvoice.objects.create(
+            file_hash="dashboard-draft-manual",
+            status=ManualInvoice.Status.DRAFT,
+            payment_date=date(2026, 8, 4),
+            partner_name="Entwurf",
+            gross_amount=Decimal("-99.99"),
+        )
+        response = self.overview(period="2026-08")
+        self.assertEqual(response.context["dashboard_outgoing"], "19,32 EUR")
+        self.assertEqual(response.context["dashboard_balance"], "-19,32 EUR")
+        self.assertEqual(response.context["dashboard_workload_total"], 2)
+
+    def test_expense_categories_are_positive_and_sorted(self):
+        first = self.transaction(status=BankTransaction.Status.REVIEWED, amount="-50.00")
+        second = self.transaction(status=BankTransaction.Status.REVIEWED, amount="-20.00")
+        self.entry(first, amount="-50.00", category="4851")
+        self.entry(second, amount="-20.00", category="7600")
+        response = self.overview(period="2026-07")
+        categories = response.context["dashboard_categories_expenses"]
+        self.assertEqual([item["amount"] for item in categories], ["50,00 EUR", "20,00 EUR"])
+
+    def test_manual_invoices_do_not_change_bank_reconciliation(self):
+        ManualInvoice.objects.create(
+            file_hash="dashboard-manual-not-bank",
+            status=ManualInvoice.Status.READY,
+            payment_date=date(2026, 7, 20),
+            gross_amount=Decimal("-500.00"),
+        )
+        response = self.overview(period="2026-07")
+        self.assertEqual(response.context["dashboard_reconciliation_data"]["status"], "neutral")
+
+    def test_categories_use_booking_rows_and_are_sorted_by_amount(self):
+        first = self.transaction(status=BankTransaction.Status.REVIEWED, amount="50.00")
+        second = self.transaction(status=BankTransaction.Status.REVIEWED, amount="20.00")
+        self.entry(first, amount="50.00", category="7600")
+        self.entry(second, amount="20.00", category="4851")
+        response = self.overview(period="2026-07")
+        categories = response.context["dashboard_categories_income"]
+        self.assertEqual([item["amount"] for item in categories], ["50,00 EUR", "20,00 EUR"])
+
+    def test_workload_status_mapping_is_explicit(self):
+        ready = self.transaction(status=BankTransaction.Status.REVIEWED)
+        matched = self.transaction(status=BankTransaction.Status.MATCHED)
+        imported = self.transaction(status=BankTransaction.Status.IMPORTED)
+        self.entry(ready)
+        response = self.overview(period="2026-07")
+        counts = {item["key"]: item["count"] for item in response.context["dashboard_workload"]}
+        self.assertEqual(counts, {"completed": 1, "in_progress": 1, "open": 1})
+        self.assertEqual(response.context["dashboard_processed_percent_value"], "33,33 %")
+        self.assertIsNotNone(matched.pk)
+        self.assertIsNotNone(imported.pk)
+
+    def test_next_steps_are_prioritized_and_limited_to_five(self):
+        for number in range(6):
+            self.transaction(name=f"Offen {number}")
+        response = self.overview(period="2026-07")
+        steps = response.context["dashboard_next_steps"]
+        self.assertEqual(len(steps), 5)
+        self.assertGreaterEqual(response.context["dashboard_open_tasks"], 6)
+        self.assertEqual(steps[0]["problem"], "Kontoauszug fehlt")
+        self.assertTrue(any(step["url"].startswith("/bookkeeping/transactions/") for step in steps))
+
+    def test_missing_receipts_counts_empty_receipt_fields(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED)
+        self.entry(transaction, receipt=False)
+        response = self.overview(period="2026-07")
+        self.assertEqual(response.context["dashboard_missing_receipts"], 1)
+        self.assertContains(response, "Belege fehlen")
+
+    def test_empty_dashboard_has_explicit_empty_messages_and_actions(self):
+        response = self.overview()
+        self.assertContains(response, "Für den Quartalsvergleich sind noch keine abgeschlossenen Buchungen vorhanden.")
+        self.assertContains(response, "Offene Buchungen bearbeiten")
+        self.assertContains(response, "Im gewählten Zeitraum sind keine kategorisierten Einnahmen vorhanden.")
+        self.assertNotContains(response, ">Anzeigen<")
+
+    def test_reconciliation_is_bank_only(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED, amount="10.00", value_date=date(2026, 7, 15))
+        self.entry(transaction)
+        BankStatement.objects.create(
+            iban="AT822011184722039000",
+            statement_number=1,
+            statement_year=2026,
+            statement_date=date(2026, 7, 31),
+            booking_month="2026-07",
+            booking_quarter="2026-Q3",
+            opening_balance=Decimal("100.00"),
+            total_credits=Decimal("10.00"),
+            total_debits=Decimal("0.00"),
+            closing_balance=Decimal("110.00"),
+            file_hash="dashboard-reconciliation",
+        )
+        response = self.overview(period="2026-07")
+        self.assertEqual(response.context["dashboard_reconciliation_data"]["status"], "success")
 
 
 class BookkeepingCsvExportTests(TestCase):
@@ -2653,6 +3127,18 @@ class QuarterControlTests(TestCase):
         self.assertEqual(control["difference_value"], Decimal("0.00"))
         self.assertContains(response, "Quartal vollständig und buchhalterisch konsistent")
 
+    def test_warnings_and_bank_reconciliation_are_always_visible(self):
+        transaction = self.create_transaction(amount=Decimal("100.00"))
+        self.create_entry(transaction, gross_amount=Decimal("100.00"))
+
+        response = self.overview()
+        content = response.content.decode()
+
+        self.assertIn('class="bookkeeping-package-warnings bookkeeping-ready-notice"', content)
+        self.assertNotIn('<details class="bookkeeping-package-warnings"', content)
+        self.assertIn('class="bookkeeping-bank-reconciliation"', content)
+        self.assertNotIn('<details class="bookkeeping-bank-reconciliation"', content)
+
     def test_month_with_only_ready_manual_expense_has_meaningful_totals(self):
         self.create_manual_invoice(
             Decimal("-19.32"),
@@ -3512,6 +3998,328 @@ class BankStatementFeatureTests(TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["document_id"], 105)
 
+    def test_task_status_reads_related_document_from_successful_task(self):
+        payload = {
+            "task_id": "task-1",
+            "status": "SUCCESS",
+            "related_document": {"id": 222},
+        }
+
+        with patch.object(PaperlessClient, "_request_json", return_value=payload):
+            result = PaperlessClient.task_status("task-1")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["document_id"], 222)
+        self.assertFalse(result["document_verified"])
+
+    def test_german_duplicate_task_is_classified_without_blind_hash_detection(self):
+        payload = {
+            "task_id": "task-1",
+            "status": "FAILURE",
+            "message": "Task failed",
+            "result": "Duplikat von Dokument #222",
+        }
+
+        with patch.object(PaperlessClient, "_request_json", return_value=payload):
+            result = PaperlessClient.task_status("task-1")
+
+        self.assertEqual(result["status"], "duplicate")
+        self.assertEqual(result["document_id"], 222)
+
+        non_duplicate = {
+            "task_id": "task-1",
+            "status": "FAILURE",
+            "result": "Validierung fehlgeschlagen, Referenz #123 ist ungültig.",
+        }
+        with patch.object(PaperlessClient, "_request_json", return_value=non_duplicate):
+            result = PaperlessClient.task_status("task-1")
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["document_id"])
+
+    def test_english_duplicate_with_parenthesized_id_is_classified(self):
+        payload = {
+            "task_id": "task-1",
+            "status": "FAILURE",
+            "result": "It is a duplicate of test (#1884).",
+        }
+
+        with patch.object(PaperlessClient, "_request_json", return_value=payload):
+            result = PaperlessClient.task_status("task-1")
+
+        self.assertEqual(result["status"], "duplicate")
+        self.assertEqual(result["document_id"], 1884)
+
+    def test_structured_duplicate_of_payloads_are_classified(self):
+        for duplicate_id in (222, "222"):
+            payload = {
+                "task_id": "task-1",
+                "status": "FAILURE",
+                "result_data": {
+                    "duplicate_of": duplicate_id,
+                    "duplicate_in_trash": False,
+                },
+            }
+            with self.subTest(duplicate_id=duplicate_id), patch.object(
+                PaperlessClient,
+                "_request_json",
+                return_value=payload,
+            ):
+                result = PaperlessClient.task_status("task-1")
+
+            self.assertEqual(result["status"], "duplicate")
+            self.assertEqual(result["document_id"], 222)
+            self.assertFalse(result["duplicate_in_trash"])
+
+        payload = {
+            "task_id": "task-1",
+            "status": "FAILURE",
+            "detail": {"duplicate_of": 222, "duplicate_in_trash": True},
+        }
+        with patch.object(PaperlessClient, "_request_json", return_value=payload):
+            result = PaperlessClient.task_status("task-1")
+        self.assertEqual(result["document_id"], 222)
+        self.assertTrue(result["duplicate_in_trash"])
+
+    def test_serialized_duplicate_payloads_are_classified(self):
+        payloads = (
+            "duplicate_of: 222; duplicate_in_trash: False",
+            "duplicate_of=222",
+            '{"duplicate_of": 222, "duplicate_in_trash": false}',
+        )
+        for result_value in payloads:
+            payload = {
+                "task_id": "task-1",
+                "status": "FAILURE",
+                "result": result_value,
+            }
+            with self.subTest(result=result_value), patch.object(
+                PaperlessClient,
+                "_request_json",
+                return_value=payload,
+            ):
+                result = PaperlessClient.task_status("task-1")
+
+            self.assertEqual(result["status"], "duplicate")
+            self.assertEqual(result["document_id"], 222)
+            self.assertFalse(result["duplicate_in_trash"])
+
+    def test_general_error_numbers_are_not_treated_as_duplicate_ids(self):
+        for message in (
+            "Upload fehlgeschlagen, Fehlernummer 222.",
+            "Duplicate-Prüfung fehlgeschlagen, Fehlercode #222.",
+        ):
+            payload = {
+                "task_id": "task-1",
+                "status": "FAILURE",
+                "result": message,
+            }
+            with self.subTest(message=message), patch.object(
+                PaperlessClient,
+                "_request_json",
+                return_value=payload,
+            ):
+                result = PaperlessClient.task_status("task-1")
+
+            self.assertEqual(result["status"], "failed")
+            self.assertIsNone(result["document_id"])
+
+    def test_duplicate_document_id_is_verified_with_document_get(self):
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value={"id": 222},
+        ) as request:
+            PaperlessClient.verify_document_id(222)
+
+        request.assert_called_once_with(endpoint="documents/222/")
+
+    def test_duplicate_in_trash_is_not_linked_and_keeps_trash_message(self):
+        statement = self.pending_statement()
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={
+                "status": "duplicate",
+                "document_id": 222,
+                "duplicate_in_trash": True,
+                "document_verified": False,
+            },
+        ), patch.object(PaperlessClient, "verify_document_id") as verify:
+            with patch.object(
+                PaperlessClient,
+                "synchronize_bank_statement_metadata",
+            ) as synchronize:
+                refresh_pending_paperless_tasks()
+
+        verify.assert_not_called()
+        synchronize.assert_not_called()
+        statement.refresh_from_db()
+        self.assertEqual(
+            statement.paperless_status,
+            BankStatement.PaperlessStatus.FAILED,
+        )
+        self.assertEqual(statement.paperless_document_id, 222)
+        self.assertFalse(statement.paperless_reference_synced)
+        self.assertEqual(
+            statement.paperless_error,
+            "Das vorhandene Paperless-Dokument #222 befindet sich im Papierkorb.",
+        )
+        with override_settings(PAPERLESS_BASE_URL="https://paperless.example"):
+            display = display_bank_statement(statement)
+        self.assertIn("Papierkorb", display["paperless_document_text"])
+        self.assertTrue(display["paperless_document_url"].endswith("/documents/222/"))
+
+    def test_duplicate_document_id_is_verified_before_local_link(self):
+        statement = self.pending_statement()
+        statement.paperless_error = "Alte Paperless-Fehlermeldung"
+        statement.save(update_fields=("paperless_error",))
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={
+                "status": "duplicate",
+                "document_id": 222,
+                "document_verified": False,
+            },
+        ), patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value={"id": 222},
+        ) as request, patch.object(
+            PaperlessClient,
+            "synchronize_bank_statement_metadata",
+        ) as synchronize:
+            refresh_pending_paperless_tasks()
+
+        self.assertEqual(request.call_args_list[0].kwargs, {"endpoint": "documents/222/"})
+        synchronize.assert_called_once()
+        statement.refresh_from_db()
+        self.assertEqual(
+            statement.paperless_status,
+            BankStatement.PaperlessStatus.DUPLICATE,
+        )
+        self.assertEqual(statement.paperless_document_id, 222)
+        self.assertTrue(statement.paperless_reference_synced)
+        self.assertEqual(statement.paperless_error, "")
+
+    def test_duplicate_refresh_patches_metadata_before_marking_success(self):
+        statement = self.pending_statement()
+        existing_document = {
+            "id": 222,
+            "tags": [99],
+            "custom_fields": {"6": str(statement.reference_uuid)},
+        }
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={
+                "status": "duplicate",
+                "document_id": 222,
+                "duplicate_in_trash": False,
+            },
+        ), patch.object(
+            PaperlessClient,
+            "verify_document_id",
+            return_value=existing_document,
+        ), patch.object(
+            PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
+            "_require_named",
+            side_effect=(1, 2, 3, 4),
+        ), patch.object(
+            PaperlessClient,
+            "_require_storage_path",
+            return_value=5,
+        ), patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(6, 7, 8, 9),
+        ), patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value={},
+        ) as request:
+            refresh_pending_paperless_tasks()
+
+        statement.refresh_from_db()
+        self.assertEqual(statement.paperless_status, BankStatement.PaperlessStatus.DUPLICATE)
+        self.assertTrue(statement.paperless_reference_synced)
+        self.assertEqual(request.call_args.kwargs["method"], "PATCH")
+        self.assertEqual(request.call_args.kwargs["endpoint"], "documents/222/")
+
+    def test_unreachable_duplicate_document_remains_failed(self):
+        statement = self.pending_statement()
+        with patch.object(
+            PaperlessClient,
+            "task_status",
+            return_value={
+                "status": "duplicate",
+                "document_id": 222,
+                "document_verified": False,
+            },
+        ), patch.object(
+            PaperlessClient,
+            "verify_document_id",
+            side_effect=BookkeepingPaperlessError("Das Paperless-Dokument wurde nicht gefunden."),
+        ):
+            refresh_pending_paperless_tasks()
+
+        statement.refresh_from_db()
+        self.assertEqual(statement.paperless_status, BankStatement.PaperlessStatus.FAILED)
+        self.assertIn("nicht gefunden", statement.paperless_error)
+
+    def test_paperless_http_errors_are_classified_without_credentials(self):
+        with override_settings(
+            PAPERLESS_BASE_URL="https://paperless.example",
+            PAPERLESS_API_TOKEN="secret-token",
+        ):
+            cases = (
+                (401, b'{"detail":"Unauthorized"}', "Anmeldung oder Berechtigung abgelehnt"),
+                (403, b'{"detail":"Forbidden"}', "Anmeldung oder Berechtigung abgelehnt"),
+                (413, b"", "Datei ist für Paperless zu groß"),
+                (500, b"", "derzeit nicht verfügbar (HTTP 500)"),
+                (400, '{"detail":"<b>Feld ist ungültig</b>"}'.encode(), "<b>Feld ist ungültig</b>"),
+            )
+            for status_code, body, expected in cases:
+                with self.subTest(status_code=status_code):
+                    error = HTTPError(
+                        "https://paperless.example/api/tasks/",
+                        status_code,
+                        "error",
+                        {},
+                        io.BytesIO(body),
+                    )
+                    with patch("bookkeeping.paperless.urlopen", side_effect=error):
+                        with self.assertRaises(BookkeepingPaperlessError) as raised:
+                            PaperlessClient._request_json(endpoint="tasks/")
+                    self.assertIn(expected, str(raised.exception))
+                    self.assertNotIn("secret-token", str(raised.exception))
+
+    def test_paperless_connection_and_timeout_errors_are_distinct(self):
+        with override_settings(
+            PAPERLESS_BASE_URL="https://paperless.example",
+            PAPERLESS_API_TOKEN="secret-token",
+        ):
+            with patch(
+                "bookkeeping.paperless.urlopen",
+                side_effect=URLError("connection refused"),
+            ), self.assertRaisesRegex(
+                BookkeepingPaperlessError,
+                "Paperless ist nicht erreichbar",
+            ):
+                PaperlessClient._request_json(endpoint="tasks/")
+            with patch(
+                "bookkeeping.paperless.urlopen",
+                side_effect=TimeoutError(),
+            ), self.assertRaisesRegex(
+                BookkeepingPaperlessError,
+                "Zeitüberschreitung",
+            ):
+                PaperlessClient._request_json(endpoint="tasks/")
+
     def test_successful_task_without_document_id_requests_fallback(self):
         payload = {"task_id": "task-1", "status": "SUCCESS", "result": "done"}
 
@@ -3643,6 +4451,84 @@ class BankStatementFeatureTests(TestCase):
         self.assertNotIn('class="bookkeeping-dashboard"', content)
         self.assertNotContains(response, "Transaktionen angezeigt")
 
+    def test_statement_delete_confirmation_shows_counts_and_get_does_not_delete(self):
+        statement = self.create_statement()
+        transaction = self.create_transaction(Decimal("10.00"))
+        response = self.client.get(
+            reverse("bank_statement_delete", kwargs={"pk": statement.pk})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Januar 2026")
+        self.assertContains(response, "007/2026")
+        self.assertContains(response, "<dd>1</dd>", count=1)
+        self.assertEqual(BankStatement.objects.count(), 1)
+        self.assertEqual(BankTransaction.objects.count(), 1)
+        self.assertTrue(transaction.pk)
+
+    def test_failed_statement_without_transactions_can_be_deleted_without_paperless_delete(self):
+        statement = self.create_statement(
+            paperless_status=BankStatement.PaperlessStatus.FAILED,
+        )
+        with patch.object(PaperlessClient, "delete_document") as delete_document:
+            response = self.client.post(
+                reverse("bank_statement_delete", kwargs={"pk": statement.pk})
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(BankStatement.objects.filter(pk=statement.pk).exists())
+        delete_document.assert_not_called()
+
+    def test_statement_with_unfinished_import_data_deletes_transactions_and_bookings(self):
+        statement = self.create_statement()
+        transaction = self.create_transaction(Decimal("10.00"))
+        entry = BookingEntry.objects.create(
+            bank_transaction=transaction,
+            payment_date=date(2026, 1, 15),
+            booking_text="Testbuchung",
+            partner_name="Partner",
+            gross_amount=Decimal("10.00"),
+        )
+
+        self.client.post(
+            reverse("bank_statement_delete", kwargs={"pk": statement.pk})
+        )
+
+        self.assertFalse(BankStatement.objects.filter(pk=statement.pk).exists())
+        self.assertFalse(BankTransaction.objects.filter(pk=transaction.pk).exists())
+        self.assertFalse(BookingEntry.objects.filter(pk=entry.pk).exists())
+
+    def test_statement_with_ready_or_booked_transaction_cannot_be_deleted(self):
+        for status in (
+            BankTransaction.Status.REVIEWED,
+            BankTransaction.Status.BOOKED,
+        ):
+            with self.subTest(status=status):
+                statement = self.create_statement(
+                    statement_number=8 if status == BankTransaction.Status.REVIEWED else 9,
+                    file_hash=uuid.uuid4().hex * 2,
+                )
+                transaction = self.create_transaction(Decimal("10.00"), value_date=date(2026, 1, 15))
+                transaction.status = status
+                transaction.save(update_fields=("status",))
+                response = self.client.post(
+                    reverse("bank_statement_delete", kwargs={"pk": statement.pk})
+                )
+
+                self.assertEqual(response.status_code, 302)
+                self.assertTrue(BankStatement.objects.filter(pk=statement.pk).exists())
+                self.assertTrue(BankTransaction.objects.filter(pk=transaction.pk).exists())
+
+    def test_statement_delete_post_requires_csrf_token(self):
+        statement = self.create_statement()
+        csrf_client = Client(enforce_csrf_checks=True)
+        response = csrf_client.post(
+            reverse("bank_statement_delete", kwargs={"pk": statement.pk})
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(BankStatement.objects.filter(pk=statement.pk).exists())
+
     def test_imported_statement_table_keeps_paperless_link_and_compact_columns(self):
         statement = self.create_statement(
             paperless_document_id=256,
@@ -3667,6 +4553,8 @@ class BankStatementFeatureTests(TestCase):
         self.assertIn('rel="noopener noreferrer"', content)
         self.assertEqual(content.count('title="In Paperless öffnen"'), 1)
         self.assertEqual(content.count('aria-label="In Paperless öffnen"'), 1)
+        self.assertNotIn("Mit Paperless-Dokument #256 verknüpft.", content)
+        self.assertNotIn('<span class="bookkeeping-muted">–</span>', content)
         self.assertNotIn("bookkeeping-paperless-link", content)
         self.assertLess(
             content.index('href="https://paperless.example/documents/256/"'),
@@ -3693,6 +4581,20 @@ class BankStatementFeatureTests(TestCase):
         self.assertContains(response, "Erneut übertragen")
         self.assertNotContains(response, "In Paperless öffnen")
         self.assertNotContains(response, "/documents/")
+
+    def test_paperless_error_detail_is_escaped_in_bank_import_overview(self):
+        self.create_statement(
+            paperless_status=BankStatement.PaperlessStatus.FAILED,
+            paperless_error='<script>alert("token")</script>',
+        )
+
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "bank_import"},
+        )
+
+        self.assertContains(response, "&lt;script&gt;alert(&quot;token&quot;)&lt;/script&gt;")
+        self.assertNotContains(response, "<script>alert")
 
     def test_new_upload_uses_reference_uuid_in_paperless_custom_field(self):
         statement = self.pending_statement()
@@ -3807,6 +4709,188 @@ class BankStatementFeatureTests(TestCase):
         statement.refresh_from_db()
         self.assertTrue(statement.paperless_reference_synced)
         self.assertEqual(request_json.call_count, 2)
+
+    def test_duplicate_metadata_is_patched_with_canonical_values_and_merged_data(self):
+        statement = self.pending_statement()
+        existing_document = {
+            "id": 222,
+            "title": "Alter Titel",
+            "created": "2020-01-01",
+            "correspondent": 77,
+            "document_type": 78,
+            "storage_path": 79,
+            "tags": [{"id": 99}, {"id": 3}, {"id": 3}],
+            "custom_fields": {
+                "6": str(statement.reference_uuid),
+                "7": "alt",
+                "99": "fremdes Feld",
+            },
+        }
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            side_effect=(existing_document, {}),
+        ) as request, patch.object(
+            PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
+            "_require_named",
+            side_effect=(1, 2, 3, 4),
+        ), patch.object(
+            PaperlessClient,
+            "_require_storage_path",
+            return_value=5,
+        ), patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(6, 7, 8, 9),
+        ):
+            result = PaperlessClient.synchronize_bank_statement_metadata(
+                statement,
+                222,
+            )
+
+        self.assertEqual(result["status"], "synced")
+        patch_payload = request.call_args_list[1].kwargs["payload"]
+        self.assertEqual(patch_payload["title"], "Kontoauszug 2026-01 – AT611904300234573201")
+        self.assertEqual(patch_payload["created"], "2026-01-31")
+        self.assertEqual(patch_payload["correspondent"], 1)
+        self.assertEqual(patch_payload["document_type"], 2)
+        self.assertEqual(patch_payload["storage_path"], 5)
+        self.assertEqual(patch_payload["tags"], [99, 3, 4, 22])
+        self.assertEqual(patch_payload["custom_fields"]["6"], str(statement.reference_uuid))
+        self.assertEqual(patch_payload["custom_fields"]["7"], "2026-01-31")
+        self.assertEqual(patch_payload["custom_fields"]["8"], "2026-01")
+        self.assertEqual(patch_payload["custom_fields"]["9"], "2026-Q1")
+        self.assertEqual(patch_payload["custom_fields"]["99"], "fremdes Feld")
+
+    def test_duplicate_metadata_reference_conflict_is_not_overwritten(self):
+        statement = self.pending_statement()
+        existing_document = {
+            "id": 222,
+            "tags": [],
+            "custom_fields": {"6": "anderer-datensatz"},
+        }
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            return_value=existing_document,
+        ), patch.object(
+            PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
+            "_require_named",
+            side_effect=(1, 2, 3, 4),
+        ), patch.object(
+            PaperlessClient,
+            "_require_storage_path",
+            return_value=5,
+        ), patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(6, 7, 8, 9),
+        ), self.assertRaisesMessage(
+            BookkeepingPaperlessError,
+            "bereits mit einem anderen Bookkeeping-Datensatz verknüpft",
+        ):
+            PaperlessClient.synchronize_bank_statement_metadata(statement, 222)
+
+    def test_duplicate_metadata_sync_is_idempotent(self):
+        statement = self.pending_statement()
+        document = {
+            "id": 222,
+            "tags": [99, 3, 4, 22],
+            "custom_fields": {
+                "6": str(statement.reference_uuid),
+                "7": "2026-01-31",
+                "8": "2026-01",
+                "9": "2026-Q1",
+            },
+        }
+        with patch.object(
+            PaperlessClient,
+            "_request_json",
+            side_effect=(document, {}, document, {}),
+        ) as request, patch.object(
+            PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
+            "_require_named",
+            side_effect=(1, 2, 3, 4, 1, 2, 3, 4),
+        ), patch.object(
+            PaperlessClient,
+            "_require_storage_path",
+            side_effect=(5, 5),
+        ), patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(6, 7, 8, 9, 6, 7, 8, 9),
+        ):
+            PaperlessClient.synchronize_bank_statement_metadata(statement, 222)
+            PaperlessClient.synchronize_bank_statement_metadata(statement, 222)
+
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(request.call_args_list[1].kwargs["payload"]["tags"], [99, 3, 4, 22])
+        self.assertEqual(request.call_args_list[3].kwargs["payload"]["tags"], [99, 3, 4, 22])
+
+    def test_duplicate_metadata_failure_keeps_link_and_offers_resync_action(self):
+        statement = self.pending_statement()
+        statement.paperless_status = BankStatement.PaperlessStatus.DUPLICATE
+        statement.paperless_document_id = 222
+        statement.paperless_reference_synced = True
+        statement.save(update_fields=("paperless_status", "paperless_document_id", "paperless_reference_synced"))
+        with patch.object(
+            PaperlessClient,
+            "verify_document_id",
+            return_value={"id": 222, "tags": [], "custom_fields": {}},
+        ), patch.object(
+            PaperlessClient,
+            "_require_unique_tag",
+            return_value=22,
+        ), patch.object(
+            PaperlessClient,
+            "_require_named",
+            side_effect=(1, 2, 3, 4),
+        ), patch.object(
+            PaperlessClient,
+            "_require_storage_path",
+            return_value=5,
+        ), patch.object(
+            PaperlessClient,
+            "_require_custom_field",
+            side_effect=(6, 7, 8, 9),
+        ), patch.object(
+            PaperlessClient,
+            "_request_json",
+            side_effect=BookkeepingPaperlessError("Paperless-PATCH abgelehnt"),
+        ), patch.object(
+            PaperlessClient,
+            "upload_bank_statement",
+        ) as upload, patch.object(PaperlessClient, "delete_document") as delete:
+            with self.assertRaises(BankStatementImportError):
+                synchronize_bank_statement_metadata(statement)
+
+        statement.refresh_from_db()
+        self.assertEqual(
+            statement.paperless_status,
+            BankStatement.PaperlessStatus.METADATA_INCOMPLETE,
+        )
+        self.assertEqual(statement.paperless_document_id, 222)
+        self.assertFalse(statement.paperless_reference_synced)
+        upload.assert_not_called()
+        delete.assert_not_called()
+        response = self.client.get(
+            reverse("bookkeeping_overview"),
+            {"status": "bank_import"},
+        )
+        self.assertContains(response, "Verknüpft – Metadaten unvollständig")
+        self.assertContains(response, "Metadaten erneut synchronisieren")
 
     def test_unexpected_existing_reference_is_not_overwritten(self):
         statement = self.create_statement(
@@ -3956,6 +5040,14 @@ class BookkeepingNoteTests(TestCase):
 
     def note_href(self, bank_transaction, status="matched", month="2026-07"):
         return self.note_url(bank_transaction, status, month).replace("&", "&amp;")
+
+    def test_note_form_offers_one_cancel_action(self):
+        bank_transaction = self.create_transaction()
+
+        response = self.client.get(self.note_url(bank_transaction))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().count(">Abbrechen</a>"), 1)
 
     def test_transaction_note_can_be_created_edited_and_removed(self):
         bank_transaction = self.create_transaction()
@@ -4746,7 +5838,7 @@ class BookingEntryTests(TestCase):
 
         self.assertEqual(
             response["Location"],
-            "/bookkeeping/?status=open&month=2026-07",
+            "/bookkeeping/?status=open",
         )
         followed_response = self.client.get(response["Location"])
         self.assertContains(followed_response, "Buchung geprüft und abgeschlossen.")
@@ -4756,7 +5848,7 @@ class BookingEntryTests(TestCase):
         self.assertIsNone(bank_transaction.matched_rule_id)
         self.assertEqual(BookingEntry.objects.filter(bank_transaction=bank_transaction).count(), 1)
 
-    def test_final_review_redirects_to_open_month_and_keeps_other_open_transactions(self):
+    def test_final_review_redirects_to_unscoped_open_queue(self):
         completed_transaction = self.create_transaction(
             booking_date=date(2026, 6, 15),
             purpose="Abgeschlossene Transaktion",
@@ -4777,17 +5869,14 @@ class BookingEntryTests(TestCase):
 
         self.assertEqual(
             response["Location"],
-            "/bookkeeping/?status=open&month=2026-06",
+            "/bookkeeping/?status=open",
         )
         followed_response = self.client.get(response["Location"])
         self.assertContains(followed_response, "Buchung geprüft und abgeschlossen.")
         self.assertContains(followed_response, "Weitere offene Transaktion")
         self.assertNotContains(followed_response, "Abgeschlossene Transaktion")
-        self.assertNotContains(followed_response, "Andere offene Transaktion")
-        self.assertEqual(
-            followed_response.context["selected_month"],
-            "2026-06",
-        )
+        self.assertContains(followed_response, "Andere offene Transaktion")
+        self.assertEqual(followed_response.context["selected_month"], "")
         different_month_transaction.refresh_from_db()
         self.assertEqual(
             different_month_transaction.status,
@@ -5593,6 +6682,13 @@ class BankTransactionModelTests(TestCase):
 class TransactionMatchingTests(TestCase):
     iban = "AT611904300234573201"
 
+    def booking_url(self, bank_transaction, status=None):
+        return (
+            reverse("bank_transaction_booking", kwargs={"pk": bank_transaction.pk})
+            + "?status="
+            + (status or bank_transaction.status)
+        )
+
     def create_transaction(self, **overrides):
         values = {
             "booking_date": date(2026, 1, 1),
@@ -5697,6 +6793,264 @@ class TransactionMatchingTests(TestCase):
         self.assertEqual(result.auto_ready_count, 1)
         self.assertEqual(bank_transaction.status, BankTransaction.Status.REVIEWED)
         self.assertEqual(entry.gross_amount, Decimal("12.34"))
+
+    def test_habenzinsen_regex_transfers_zero_vat_category_and_source_template(self):
+        rule = self.create_rule(
+            name="Habenzinsen",
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern=r"^Habenzinsen$",
+            iban="",
+            direction=MatchingRule.Direction.INCOMING,
+        )
+        template = self.add_template(
+            rule,
+            position=1,
+            booking_text="Habenzinsen",
+            invoice_number="",
+            partner_name="",
+            gross_amount=None,
+            vat_symbol="0",
+            category="8100",
+        )
+        transaction = self.create_transaction(
+            amount=Decimal("0.09"),
+            purpose="Habenzinsen",
+            partner_name="",
+        )
+
+        result = match_imported_transactions()
+
+        self.assertEqual(result.auto_ready_count, 1)
+        entry = BookingEntry.objects.get(bank_transaction=transaction)
+        self.assertEqual(entry.position, 1)
+        self.assertEqual(entry.booking_text, "Habenzinsen")
+        self.assertEqual(entry.gross_amount, Decimal("0.09"))
+        self.assertEqual(entry.vat_symbol, "0")
+        self.assertEqual(entry.category, "8100")
+        self.assertEqual(entry.matching_rule_template_id, template.pk)
+
+        response = self.client.get(self.booking_url(transaction, status="reviewed"))
+        self.assertContains(response, "Erzeugt aus Matching-Regel")
+        self.assertContains(response, "Habenzinsen – Version 1")
+
+    def test_snapshot_transfers_all_template_fields_and_positions(self):
+        rule = self.create_rule(
+            expected_amount=Decimal("100.00"),
+            direction=MatchingRule.Direction.INCOMING,
+        )
+        self.add_template(
+            rule,
+            position=1,
+            booking_text="Erste Zeile",
+            invoice_number="RG-1",
+            partner_name="Kunde 1",
+            gross_amount=Decimal("40.00"),
+            vat_symbol="13",
+            category="7600",
+        )
+        self.add_template(
+            rule,
+            position=2,
+            booking_text="Restzeile",
+            invoice_number="RG-2",
+            partner_name="Kunde 2",
+            gross_amount=None,
+            vat_symbol="IG",
+            category="8100",
+        )
+        transaction = self.create_transaction()
+
+        match_imported_transactions()
+
+        entries = list(
+            BookingEntry.objects.filter(bank_transaction=transaction).order_by("position")
+        )
+        self.assertEqual([entry.position for entry in entries], [1, 2])
+        self.assertEqual(
+            [(entry.invoice_number, entry.partner_name, entry.vat_symbol, entry.category) for entry in entries],
+            [("RG-1", "Kunde 1", "13", "7600"), ("RG-2", "Kunde 2", "IG", "8100")],
+        )
+
+    def test_missing_or_invalid_template_values_have_specific_errors(self):
+        missing_category_rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="Habenzinsen",
+            iban="",
+        )
+        missing_template = self.add_template(missing_category_rule, gross_amount=None)
+        MatchingRuleBookingTemplate.objects.filter(pk=missing_template.pk).update(category="")
+        transaction = self.create_transaction(purpose="Habenzinsen")
+        result = match_imported_transactions()
+        self.assertEqual(result.incomplete_count, 1)
+        response = self.client.get(self.booking_url(transaction, status="matched"))
+        self.assertContains(response, "Kategorie")
+        self.assertTrue(response.context["formset"].forms[0].errors["category"])
+
+        invalid_vat_rule = self.create_rule(
+            name="Ungültige USt",
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="USt",
+            iban="",
+        )
+        template = self.add_template(invalid_vat_rule, gross_amount=None, vat_symbol="20")
+        MatchingRuleBookingTemplate.objects.filter(pk=template.pk).update(vat_symbol="99")
+        invalid_transaction = self.create_transaction(purpose="USt")
+        result = match_imported_transactions()
+        invalid_transaction.refresh_from_db()
+        self.assertEqual(result.incomplete_count, 1)
+        response = self.client.get(self.booking_url(invalid_transaction, status="matched"))
+        self.assertContains(response, "USt-Wert")
+        self.assertTrue(response.context["formset"].forms[0].errors["vat_symbol"])
+
+    def test_reapply_matching_rule_repairs_open_entries_after_confirmation(self):
+        rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="Habenzinsen",
+            iban="",
+        )
+        self.add_template(rule, gross_amount=None, vat_symbol="0", category="8100")
+        transaction = self.create_transaction(purpose="Habenzinsen", status=BankTransaction.Status.MATCHED, matched_rule=rule)
+        BookingEntry.objects.create(
+            bank_transaction=transaction,
+            payment_date=transaction.booking_date,
+            booking_text="Alt",
+            partner_name="Alt",
+            gross_amount=transaction.amount,
+            vat_symbol="20",
+            category="",
+        )
+
+        response = self.client.post(
+            self.booking_url(transaction, status="matched"),
+            {"action": "reapply_matching_rule"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bitte bestätigen")
+
+        response = self.client.post(
+            self.booking_url(transaction, status="matched"),
+            {"action": "reapply_matching_rule", "confirm_reapply": "1"},
+        )
+        self.assertEqual(response.status_code, 302)
+        entry = BookingEntry.objects.get(bank_transaction=transaction)
+        self.assertEqual(entry.vat_symbol, "0")
+        self.assertEqual(entry.category, "8100")
+        self.assertEqual(entry.matching_rule_template_id, rule.booking_templates.get().pk)
+
+    @patch(
+        "bookkeeping.views._save_automatic_booking_snapshot",
+        side_effect=SnapshotTransferError(
+            "Die Matching-Regel wurde angewendet, aber folgende Werte "
+            "konnten nicht übernommen werden: Excel-Ergebniszeile 1 – USt "
+            "und Kategorie."
+        ),
+    )
+    def test_reapply_shows_distinct_transfer_error(self, save_snapshot):
+        rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="Habenzinsen",
+            iban="",
+        )
+        self.add_template(rule, gross_amount=None, vat_symbol="0", category="8100")
+        transaction = self.create_transaction(
+            purpose="Habenzinsen",
+            status=BankTransaction.Status.MATCHED,
+            matched_rule=rule,
+        )
+
+        response = self.client.post(
+            self.booking_url(transaction, status="matched"),
+            {"action": "reapply_matching_rule", "confirm_reapply": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "folgende Werte konnten nicht übernommen werden")
+
+    def test_reapply_untouched_automatic_snapshot_without_confirmation(self):
+        rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="Habenzinsen",
+            iban="",
+        )
+        template = self.add_template(
+            rule,
+            booking_text="Habenzinsen",
+            invoice_number="",
+            partner_name="",
+            gross_amount=None,
+            vat_symbol="0",
+            category="8100",
+        )
+        transaction = self.create_transaction(
+            purpose="Habenzinsen",
+            partner_name="",
+            status=BankTransaction.Status.REVIEWED,
+            matched_rule=rule,
+        )
+        BookingEntry.objects.create(
+            bank_transaction=transaction,
+            position=1,
+            receipt_group="BK",
+            receipt_number="1",
+            payment_date=transaction.booking_date,
+            booking_text="Habenzinsen",
+            invoice_number="",
+            partner_name="",
+            gross_amount=transaction.amount,
+            vat_symbol="0",
+            category="8100",
+            matching_rule_template=template,
+        )
+
+        response = self.client.post(
+            self.booking_url(transaction, status="reviewed"),
+            {"action": "reapply_matching_rule"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            BookingEntry.objects.get(bank_transaction=transaction).category,
+            "8100",
+        )
+
+    def test_reapply_matching_rule_does_not_change_booked_transactions(self):
+        rule = self.create_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            expected_amount=None,
+            text_pattern="Habenzinsen",
+            iban="",
+        )
+        self.add_template(rule, gross_amount=None, category="8100")
+        transaction = self.create_transaction(
+            purpose="Habenzinsen",
+            status=BankTransaction.Status.BOOKED,
+            matched_rule=rule,
+        )
+        entry = BookingEntry.objects.create(
+            bank_transaction=transaction,
+            payment_date=transaction.booking_date,
+            booking_text="Manuell geschützt",
+            partner_name="",
+            gross_amount=transaction.amount,
+            vat_symbol="20",
+            category="7600",
+        )
+
+        response = self.client.post(
+            self.booking_url(transaction, status="booked"),
+            {"action": "reapply_matching_rule"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        entry.refresh_from_db()
+        self.assertEqual(entry.booking_text, "Manuell geschützt")
+        self.assertEqual(entry.category, "7600")
 
     def test_automatic_snapshot_calculates_signed_fixed_and_rest_rows(self):
         rule = self.create_rule(
@@ -6356,6 +7710,10 @@ class MatchingRuleTests(TestCase):
             self.assertContains(response, 'href="/bookkeeping/matching-rules/"')
         self.assertContains(
             overview_response,
+            'href="/bookkeeping/" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
+        )
+        self.assertNotContains(
+            overview_response,
             'href="/bookkeeping/?status=open" class="bookkeeping-nav-link bookkeeping-nav-link-active"',
         )
         self.assertContains(
@@ -6710,6 +8068,175 @@ class MatchingRuleBookingTemplateTests(TestCase):
             MatchingRuleBookingTemplate.objects.get().vat_symbol,
             "0",
         )
+
+    def test_missing_template_position_has_specific_error_and_invalid_field(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "",
+                            "booking_text": "Betriebskosten",
+                            "invoice_number": "RG-1",
+                            "partner_name": "Lieferant",
+                            "gross_amount": "100,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Bitte die fehlenden Angaben im Feld „Position“ ergänzen.",
+        )
+        self.assertContains(
+            response,
+            'name="templates-0-position"',
+        )
+        self.assertContains(
+            response,
+            'class="form-control is-invalid"',
+        )
+        self.assertContains(response, 'value="Betriebskosten"')
+        self.assertContains(response, 'value="100,00"')
+        self.assertNotContains(response, "doppelten Daten")
+
+    def test_multiple_missing_template_positions_have_missing_position_error(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "",
+                            "booking_text": "Erste Zeile",
+                            "gross_amount": "40,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                        {
+                            "position": "",
+                            "booking_text": "Zweite Zeile",
+                            "gross_amount": "60,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Bitte die fehlenden Angaben im Feld „Position“ ergänzen.",
+        )
+        self.assertNotContains(response, "müssen eindeutig sein")
+        self.assertContains(response, 'name="templates-0-position"')
+        self.assertContains(response, 'name="templates-1-position"')
+
+    def test_duplicate_template_positions_have_distinct_error(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "1",
+                            "booking_text": "Erste Zeile",
+                            "gross_amount": "40,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                        {
+                            "position": "1",
+                            "booking_text": "Zweite Zeile",
+                            "gross_amount": "60,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Die Angaben im Feld „Position“ müssen eindeutig sein.",
+        )
+        self.assertNotContains(
+            response,
+            "Bitte die fehlenden Angaben im Feld „Position“ ergänzen.",
+        )
+
+    def test_unique_template_positions_are_accepted(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "1",
+                            "booking_text": "Erste Zeile",
+                            "gross_amount": "40,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                        {
+                            "position": "2",
+                            "booking_text": "Zweite Zeile",
+                            "gross_amount": "60,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                        },
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            list(
+                MatchingRuleBookingTemplate.objects.values_list(
+                    "position", flat=True
+                ).order_by("position")
+            ),
+            [1, 2],
+        )
+
+    def test_deleted_template_without_position_is_ignored(self):
+        response = self.client.post(
+            reverse("matching_rule_list"),
+            {
+                **self.parent_data(),
+                **self.template_data(
+                    [
+                        {
+                            "position": "",
+                            "booking_text": "Gelöschte Zeile",
+                            "gross_amount": "100,00",
+                            "vat_symbol": "20",
+                            "category": "300",
+                            "DELETE": "on",
+                        }
+                    ]
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(MatchingRule.objects.count(), 1)
+        self.assertEqual(MatchingRuleBookingTemplate.objects.count(), 0)
 
     def test_matching_rule_detail_displays_category_description(self):
         rule = MatchingRule.objects.create(
@@ -9503,7 +11030,7 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         transaction.refresh_from_db()
         self.assertEqual(post_response.status_code, 302)
         self.assertIn("status=open", post_response["Location"])
-        self.assertIn("month=2026-07", post_response["Location"])
+        self.assertNotIn("month=", post_response["Location"])
         self.assertTrue(BankTransaction.objects.filter(pk=transaction.pk).exists())
         self.assertEqual(transaction.status, BankTransaction.Status.MATCHED)
         self.assertEqual(transaction.purpose, "Buchungstext original")
@@ -9864,7 +11391,7 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         self.assertContains(ready_response, "Buchungssatz zurücksetzen")
         self.assertContains(ready_response, "Beleg vollständig löschen")
 
-    def test_manual_invoice_list_prioritizes_daily_actions_and_groups_deletions(self):
+    def test_manual_invoice_list_shows_delete_actions_as_icons(self):
         draft = self.invoice(status=ManualInvoice.Status.DRAFT)
 
         response = self.client.get(reverse("manual_invoice_list"))
@@ -9875,36 +11402,32 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         self.assertIn('class="bookkeeping-date"', content)
         self.assertIn('class="bookkeeping-paperless-cell"', content)
 
-        action_cell = content.split('<td class="bookkeeping-actions">', 1)[1]
-        primary_actions = action_cell.split(
-            '<details class="bookkeeping-table-more-actions">', 1
+        action_cell = content.split('<td class="bookkeeping-actions">', 1)[1].split(
+            "</td>", 1
         )[0]
-        more_actions = action_cell.split(
-            '<details class="bookkeeping-table-more-actions">', 1
-        )[1].split("</details>", 1)[0]
 
-        self.assertIn("Bearbeiten", primary_actions)
-        self.assertNotIn("Nur aus Paperless löschen", primary_actions)
-        self.assertNotIn("Beleg vollständig löschen", primary_actions)
-        self.assertIn("Weitere Aktionen", more_actions)
-        self.assertIn("Nur aus Paperless löschen", more_actions)
-        self.assertIn("Beleg vollständig löschen", more_actions)
+        self.assertIn("Bearbeiten", action_cell)
+        self.assertNotIn("Weitere Aktionen", action_cell)
+        self.assertIn('class="bi bi-file-earmark-x"', action_cell)
+        self.assertIn('class="bi bi-trash"', action_cell)
+        self.assertIn('aria-label="Nur aus Paperless löschen"', action_cell)
+        self.assertIn('aria-label="Beleg vollständig löschen"', action_cell)
         self.assertIn(
             reverse(
                 "manual_invoice_paperless_delete",
                 kwargs={"reference_uuid": draft.reference_uuid},
             ),
-            more_actions,
+            action_cell,
         )
         self.assertIn(
             reverse(
                 "manual_invoice_delete",
                 kwargs={"reference_uuid": draft.reference_uuid},
             ),
-            more_actions,
+            action_cell,
         )
 
-    def test_manual_invoice_edit_groups_primary_and_rare_actions(self):
+    def test_manual_invoice_edit_shows_all_actions_without_more_menu(self):
         invoice = self.invoice(status=ManualInvoice.Status.DRAFT)
         response = self.client.get(
             reverse(
@@ -9922,9 +11445,13 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         status_row = content.split(
             '<div class="bookkeeping-manual-invoice-statuses"', 1
         )[1].split("<section", 1)[0]
-        self.assertNotIn("Buchungssatz zurücksetzen", status_row)
-        self.assertNotIn("Nur aus Paperless löschen", status_row)
-        self.assertNotIn("Beleg vollständig löschen", status_row)
+        self.assertIn('aria-label="Belegaktionen"', status_row)
+        self.assertIn("Buchungssatz zurücksetzen", status_row)
+        self.assertIn("Nur aus Paperless löschen", status_row)
+        self.assertIn("Beleg vollständig löschen", status_row)
+        self.assertIn('class="bi bi-arrow-counterclockwise"', status_row)
+        self.assertIn('class="bi bi-file-earmark-x"', status_row)
+        self.assertIn('class="bi bi-trash"', status_row)
 
         primary_actions = content.split(
             '<div class="bookkeeping-entry-form-actions bookkeeping-manual-invoice-actions">',
@@ -9935,27 +11462,10 @@ class BookingSetResetAndManualDeletionTests(TestCase):
         self.assertIn("Entwurf speichern", primary_actions)
         self.assertIn("Abbrechen", primary_actions)
         self.assertNotIn("Buchungssatz zurücksetzen", primary_actions)
+        self.assertNotIn("Nur aus Paperless löschen", primary_actions)
         self.assertNotIn("Beleg vollständig löschen", primary_actions)
-
-        more_actions = content.split(
-            '<details class="bookkeeping-manual-invoice-more-actions">', 1
-        )[1]
-        self.assertNotIn(
-            '<details class="bookkeeping-manual-invoice-more-actions" open',
-            content,
-        )
-        self.assertIn("Weitere Aktionen", more_actions)
-        self.assertIn("Löscht nur die Buchungszeilen", more_actions)
-        self.assertIn("OCR- und KI-Daten bleiben in Quintus erhalten", more_actions)
-        self.assertIn("Beleg vollständig löschen", more_actions)
-        self.assertLess(
-            more_actions.index("Buchungssatz zurücksetzen"),
-            more_actions.index("Nur aus Paperless löschen"),
-        )
-        self.assertLess(
-            more_actions.index("Nur aus Paperless löschen"),
-            more_actions.index("Beleg vollständig löschen"),
-        )
+        self.assertNotIn("Weitere Aktionen", content)
+        self.assertNotIn("bookkeeping-manual-invoice-more-actions", content)
         for url in (
             reverse(
                 "manual_invoice_reset_booking",

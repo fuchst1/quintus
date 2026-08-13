@@ -12,7 +12,6 @@
                 {{ bank_transaction.booking_date|date:"d.m.Y" }} · {{ bank_transaction.partner_name|default:"–" }} · {{ bank_transaction.amount|austrian_money:bank_transaction.currency }}
             </p>
         </div>
-        <a href="{{ return_url }}" class="btn btn-outline-secondary">Abbrechen</a>
     </div>
 
     {% if form.errors %}

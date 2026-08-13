@@ -31,7 +31,7 @@
 
     <div class="bookkeeping-rule-detail-card">
         <div class="bookkeeping-rule-detail-heading">
-            <h2 class="h5 mb-0">Regeldetails</h2>
+            <h2 class="bookkeeping-section-title">Regeldetails</h2>
             {% if object.active %}
             <span class="badge bookkeeping-badge bookkeeping-badge-active">Aktiv</span>
             {% else %}
@@ -51,7 +51,7 @@
     </div>
 
     <div class="bookkeeping-rule-detail-card">
-        <h2 class="h5">Versionsverlauf</h2>
+        <h2 class="bookkeeping-section-title">Versionsverlauf</h2>
         <div class="bookkeeping-version-links">
             {% if previous_version %}
             <a href="{% url 'matching_rule_detail' previous_version.pk %}" class="btn btn-sm btn-outline-secondary">Vorgängerversion: Version {{ previous_version.version_number }}</a>
@@ -67,19 +67,19 @@
     </div>
 
     <div class="bookkeeping-rule-detail-card">
-        <h2 class="h5">Excel-Ergebniszeilen</h2>
+        <h2 class="bookkeeping-section-title">Excel-Ergebniszeilen</h2>
         {% if booking_templates %}
-        <div class="bookkeeping-template-table-wrap">
-            <table class="table table-sm align-middle mb-0 bookkeeping-template-table">
+        <div class="bookkeeping-template-table-wrap" role="region" aria-label="Excel-Ergebniszeilen" tabindex="0">
+            <table class="table table-sm align-middle mb-0 bookkeeping-data-table bookkeeping-template-table">
                 <thead class="table-light">
                     <tr>
-                        <th>Position</th>
-                        <th>Buchungstext</th>
-                        <th>Rechnungsnummer</th>
-                        <th>Lieferant/Kunde</th>
-                        <th>Betrag</th>
-                        <th>USt</th>
-                        <th>Kategorie</th>
+                        <th scope="col">Position</th>
+                        <th scope="col">Buchungstext</th>
+                        <th scope="col">Rechnungsnummer</th>
+                        <th scope="col">Lieferant/Kunde</th>
+                        <th scope="col">Betrag</th>
+                        <th scope="col">USt</th>
+                        <th scope="col">Kategorie</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -105,7 +105,7 @@
     <div class="bookkeeping-rule-detail-card bookkeeping-supporting-documents-card">
         <div class="bookkeeping-card-heading">
             <div>
-                <h2 class="h5 mb-0">Nachweise</h2>
+                <h2 class="bookkeeping-section-title">Nachweise</h2>
                 <p class="bookkeeping-card-help">Dokumente dieser konkreten Regelversion</p>
             </div>
         </div>
@@ -120,8 +120,8 @@
             {% for error in supporting_document_form.pdf.errors %}<div class="bookkeeping-formset-error">{{ error }}</div>{% endfor %}
         </form>
         {% if supporting_documents %}
-        <div class="bookkeeping-table-wrap">
-            <table class="table table-sm align-middle mb-0 bookkeeping-supporting-document-table">
+        <div class="bookkeeping-table-wrap" role="region" aria-label="Matching-Nachweise" tabindex="0">
+            <table class="table table-sm align-middle mb-0 bookkeeping-data-table bookkeeping-supporting-document-table">
                 <thead class="table-light">
                     <tr>
                         <th class="bookkeeping-actions" scope="col">Aktionen</th>

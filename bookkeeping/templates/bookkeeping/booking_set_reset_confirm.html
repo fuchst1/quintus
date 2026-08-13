@@ -21,7 +21,7 @@
             <dt>Summe</dt><dd>{{ entry_total }}</dd>
         </dl>
 
-        <h2 class="h6">Buchungstexte</h2>
+        <h2 class="bookkeeping-subsection-title">Buchungstexte</h2>
         {% if booking_texts %}
         <ul>
             {% for entry in booking_texts %}<li>{{ entry.text }}{% if entry.amount != "–" %} · {{ entry.amount }}{% endif %}</li>{% endfor %}

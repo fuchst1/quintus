@@ -77,14 +77,9 @@
                                     <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Übertragung wiederholen" aria-label="Übertragung wiederholen"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Übertragung wiederholen</span></button>
                                 </form>
                                 {% endif %}
+                                {% if invoice.paperless_can_delete %}<a href="{% url 'manual_invoice_paperless_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Nur aus Paperless löschen" aria-label="Nur aus Paperless löschen"><i class="bi bi-file-earmark-x" aria-hidden="true"></i><span class="visually-hidden">Nur aus Paperless löschen</span></a>{% endif %}
+                                <a href="{% url 'manual_invoice_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Beleg vollständig löschen" aria-label="Beleg vollständig löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Beleg vollständig löschen</span></a>
                             </div>
-                            <details class="bookkeeping-table-more-actions">
-                                <summary>Weitere Aktionen</summary>
-                                <div class="bookkeeping-table-more-action-list">
-                                    {% if invoice.paperless_can_delete %}<a href="{% url 'manual_invoice_paperless_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger">Nur aus Paperless löschen</a>{% endif %}
-                                    <a href="{% url 'manual_invoice_delete' invoice.reference_uuid %}" class="btn btn-sm btn-outline-danger">Beleg vollständig löschen</a>
-                                </div>
-                            </details>
                         </td>
                         <td class="bookkeeping-date">{{ invoice.payment_date }}</td>
                         <td class="bookkeeping-manual-invoice-number">{{ invoice.invoice_number }}</td>

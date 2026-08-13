@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from django.db import IntegrityError
+from django.db import transaction as db_transaction
 from django.db.models import Count, Q, Sum
 
 from .formatting import format_austrian_money
-from .models import BankStatement, BankTransaction
+from .models import BankStatement, BankTransaction, BookingEntry
 from .paperless import BookkeepingPaperlessError, PaperlessClient
 from .bank_statement_parser import (
     BankStatementParseError,
@@ -19,14 +21,99 @@ from .bank_statement_parser import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class BankStatementImportError(ValueError):
     """Expected, user-facing import error."""
+
+
+class BankStatementDeletionError(ValueError):
+    """Expected, user-facing account statement deletion error."""
 
 
 @dataclass(frozen=True)
 class BankStatementImportResult:
     statement: BankStatement
     paperless_error: str = ""
+
+
+def _paperless_user_message(value: object) -> str:
+    message = PaperlessClient._safe_error_text(value)
+    return message[: PaperlessClient.MAX_USER_ERROR_LENGTH]
+
+
+def _mark_paperless_failed(statement: BankStatement, message: object) -> None:
+    statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+    statement.paperless_document_id = None
+    statement.paperless_error = _paperless_user_message(message)
+    statement.save(
+        update_fields=(
+            "paperless_status",
+            "paperless_document_id",
+            "paperless_error",
+            "updated_at",
+        )
+    )
+
+
+def _mark_metadata_incomplete(statement: BankStatement, message: object) -> None:
+    statement.paperless_status = BankStatement.PaperlessStatus.METADATA_INCOMPLETE
+    statement.paperless_reference_synced = False
+    statement.paperless_error = _paperless_user_message(message)
+    statement.save(
+        update_fields=(
+            "paperless_status",
+            "paperless_reference_synced",
+            "paperless_error",
+            "updated_at",
+        )
+    )
+
+
+def synchronize_bank_statement_metadata(statement: BankStatement) -> None:
+    """Synchronize metadata for an already-linked Paperless document."""
+    if statement.paperless_status not in {
+        BankStatement.PaperlessStatus.DUPLICATE,
+        BankStatement.PaperlessStatus.METADATA_INCOMPLETE,
+    }:
+        raise BankStatementImportError(
+            "Dieser Kontoauszug ist für eine Metadatensynchronisierung nicht verknüpft."
+        )
+    document_id = statement.paperless_document_id
+    if not document_id:
+        raise BankStatementImportError(
+            "Für die Paperless-Metadatensynchronisierung fehlt die Dokument-ID."
+        )
+    try:
+        document = PaperlessClient.verify_document_id(int(document_id))
+        PaperlessClient.synchronize_bank_statement_metadata(
+            statement,
+            int(document_id),
+            document=document,
+        )
+    except BookkeepingPaperlessError as exc:
+        _mark_metadata_incomplete(statement, exc)
+        raise BankStatementImportError(_paperless_user_message(exc)) from None
+    except Exception:
+        logger.exception(
+            "Unexpected error while synchronizing Paperless metadata for statement %s",
+            statement.pk,
+        )
+        message = "Die Paperless-Metadaten konnten nicht synchronisiert werden."
+        _mark_metadata_incomplete(statement, message)
+        raise BankStatementImportError(message) from None
+    statement.paperless_status = BankStatement.PaperlessStatus.DUPLICATE
+    statement.paperless_reference_synced = True
+    statement.paperless_error = ""
+    statement.save(
+        update_fields=(
+            "paperless_status",
+            "paperless_reference_synced",
+            "paperless_error",
+            "updated_at",
+        )
+    )
 
 
 def file_sha256(uploaded_file) -> str:
@@ -50,6 +137,70 @@ def _month_bounds(month: str) -> tuple[date, date]:
         month_number,
         monthrange(year, month_number)[1],
     )
+
+
+def statement_transactions(statement: BankStatement):
+    """Return imported bank transactions belonging to the statement month.
+
+    The existing schema has no direct statement foreign key. JSON imports and
+    statement reconciliation both use value_date/month as their stable link.
+    """
+    start_date, end_date = _month_bounds(statement.booking_month)
+    return BankTransaction.objects.filter(
+        source=BankTransaction.Source.BANK_IMPORT,
+        value_date__gte=start_date,
+        value_date__lte=end_date,
+    )
+
+
+def bank_statement_delete_summary(statement: BankStatement) -> dict[str, int | bool]:
+    transactions = statement_transactions(statement)
+    transaction_count = transactions.count()
+    booking_count = BookingEntry.objects.filter(
+        bank_transaction__in=transactions,
+    ).count()
+    protected_count = transactions.filter(
+        status__in=(
+            BankTransaction.Status.REVIEWED,
+            BankTransaction.Status.BOOKED,
+        ),
+    ).count()
+    return {
+        "transaction_count": transaction_count,
+        "booking_count": booking_count,
+        "protected": protected_count > 0,
+        "protected_count": protected_count,
+    }
+
+
+def delete_bank_statement(statement: BankStatement) -> dict[str, int]:
+    """Delete a local statement and its unprotected imported data atomically."""
+    with db_transaction.atomic():
+        locked_statement = BankStatement.objects.select_for_update().get(pk=statement.pk)
+        transactions = statement_transactions(locked_statement).select_for_update()
+        protected_count = transactions.filter(
+            status__in=(
+                BankTransaction.Status.REVIEWED,
+                BankTransaction.Status.BOOKED,
+            ),
+        ).count()
+        if protected_count:
+            raise BankStatementDeletionError(
+                "Der Kontoauszug kann nicht gelöscht werden, weil bereits "
+                "abgeschlossene Buchungen damit verbunden sind."
+            )
+        transaction_count = transactions.count()
+        booking_count = BookingEntry.objects.filter(
+            bank_transaction__in=transactions,
+        ).count()
+        if locked_statement.temporary_pdf:
+            locked_statement.temporary_pdf.delete(save=False)
+        transactions.delete()
+        locked_statement.delete()
+    return {
+        "transaction_count": transaction_count,
+        "booking_count": booking_count,
+    }
 
 
 def _zero() -> Decimal:
@@ -144,6 +295,23 @@ def display_bank_statement(statement: BankStatement) -> dict:
             statement.paperless_status,
         ),
         "paperless_error": statement.paperless_error,
+        "paperless_document_label": (
+            "Bereits vorhanden"
+            if statement.paperless_status == BankStatement.PaperlessStatus.DUPLICATE
+            else "Abgelegt"
+        ),
+        "paperless_document_text": (
+            f"Mit Paperless-Dokument #{statement.paperless_document_id} verknüpft."
+            if statement.paperless_status == BankStatement.PaperlessStatus.DUPLICATE
+            and statement.paperless_document_id
+            else (
+                f"Vorhandenes Paperless-Dokument #{statement.paperless_document_id} "
+                "im Papierkorb anzeigen."
+                if statement.paperless_document_id
+                and "Papierkorb" in (statement.paperless_error or "")
+                else ""
+            )
+        ),
         "paperless_document_url": PaperlessClient.document_url(
             statement.paperless_document_id
         ),
@@ -151,6 +319,15 @@ def display_bank_statement(statement: BankStatement) -> dict:
             statement.paperless_status == BankStatement.PaperlessStatus.FAILED
             and _has_temporary_pdf(statement)
         ),
+        "can_sync_metadata": (
+            statement.paperless_status
+            in {
+                BankStatement.PaperlessStatus.DUPLICATE,
+                BankStatement.PaperlessStatus.METADATA_INCOMPLETE,
+            }
+            and bool(statement.paperless_document_id)
+        ),
+        "delete_summary": bank_statement_delete_summary(statement),
     }
 
 
@@ -167,22 +344,10 @@ def refresh_pending_paperless_tasks() -> None:
         try:
             result = PaperlessClient.task_status(statement.paperless_task_id)
         except BookkeepingPaperlessError as exc:
-            result = {
-                "status": "needs_fallback",
-                "document_id": None,
-                "message": str(exc),
-            }
-        if result["status"] == "pending":
-            continue
-        if result["status"] == "needs_fallback":
-            try:
-                result = PaperlessClient.find_document_by_reference(
-                    str(statement.reference_uuid)
-                )
-            except BookkeepingPaperlessError as exc:
+            if exc.status_code is not None:
                 statement.paperless_status = BankStatement.PaperlessStatus.FAILED
                 statement.paperless_document_id = None
-                statement.paperless_error = str(exc)
+                statement.paperless_error = _paperless_user_message(exc)
                 statement.save(
                     update_fields=(
                         "paperless_status",
@@ -192,10 +357,155 @@ def refresh_pending_paperless_tasks() -> None:
                     )
                 )
                 continue
+            result = {
+                "status": "needs_fallback",
+                "document_id": None,
+                "message": str(exc),
+            }
+        except Exception:
+            logger.exception(
+                "Unexpected error while checking Paperless task %s",
+                statement.paperless_task_id,
+            )
+            _mark_paperless_failed(
+                statement,
+                "Die Paperless-Verarbeitung konnte nicht geprüft werden.",
+            )
+            continue
+        if result["status"] == "pending":
+            continue
+        if result.get("found") is False:
+            statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+            statement.paperless_document_id = None
+            statement.paperless_error = _paperless_user_message(
+                result.get("message") or "Der Paperless-Task wurde nicht gefunden."
+            )
+            statement.save(
+                update_fields=(
+                    "paperless_status",
+                    "paperless_document_id",
+                    "paperless_error",
+                    "updated_at",
+                )
+            )
+            continue
+        if result["status"] == "needs_fallback":
+            try:
+                result = PaperlessClient.find_document_by_reference(
+                    str(statement.reference_uuid)
+                )
+            except BookkeepingPaperlessError as exc:
+                statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+                statement.paperless_document_id = None
+                statement.paperless_error = _paperless_user_message(exc)
+                statement.save(
+                    update_fields=(
+                        "paperless_status",
+                        "paperless_document_id",
+                        "paperless_error",
+                        "updated_at",
+                    )
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "Unexpected error while resolving Paperless reference for statement %s",
+                    statement.pk,
+                )
+                _mark_paperless_failed(
+                    statement,
+                    "Die Paperless-Verarbeitung konnte nicht abgeschlossen werden.",
+                )
+                continue
             if result["status"] == "pending":
                 continue
-        if result["status"] == "completed":
-            statement.paperless_status = BankStatement.PaperlessStatus.COMPLETED
+        if result["status"] == "duplicate" and PaperlessClient._coerce_bool(
+            result.get("duplicate_in_trash")
+        ):
+            document_id = result.get("document_id")
+            statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+            # Keep the ID only for an informational Paperless/trash link; the
+            # failed status and unsynced reference deliberately avoid linking it.
+            statement.paperless_document_id = document_id
+            statement.paperless_reference_synced = False
+            statement.paperless_error = (
+                f"Das vorhandene Paperless-Dokument #{document_id} befindet sich "
+                "im Papierkorb."
+                if document_id
+                else "Das vorhandene Paperless-Dokument befindet sich im Papierkorb."
+            )
+            statement.save(
+                update_fields=(
+                    "paperless_status",
+                    "paperless_document_id",
+                    "paperless_reference_synced",
+                    "paperless_error",
+                    "updated_at",
+                )
+            )
+            continue
+        if result["status"] in {"completed", "duplicate"}:
+            document_id = result.get("document_id")
+            if document_id and (
+                result["status"] == "duplicate"
+                or not result.get("document_verified", True)
+            ):
+                try:
+                    document = PaperlessClient.verify_document_id(int(document_id))
+                except BookkeepingPaperlessError as exc:
+                    statement.paperless_status = BankStatement.PaperlessStatus.FAILED
+                    statement.paperless_document_id = None
+                    statement.paperless_error = _paperless_user_message(exc)
+                    statement.save(
+                        update_fields=(
+                            "paperless_status",
+                            "paperless_document_id",
+                            "paperless_error",
+                            "updated_at",
+                        )
+                    )
+                    continue
+                except Exception:
+                    logger.exception(
+                        "Unexpected error while verifying Paperless document %s",
+                        document_id,
+                    )
+                    _mark_paperless_failed(
+                        statement,
+                        "Das Paperless-Dokument konnte nicht verifiziert werden.",
+                    )
+                    continue
+            else:
+                document = None
+            if result["status"] == "duplicate":
+                try:
+                    PaperlessClient.synchronize_bank_statement_metadata(
+                        statement,
+                        int(document_id),
+                        document=document,
+                    )
+                except BookkeepingPaperlessError as exc:
+                    _mark_metadata_incomplete(statement, exc)
+                    _remove_temporary_pdf(statement)
+                    statement.save(update_fields=("temporary_pdf", "updated_at"))
+                    continue
+                except Exception:
+                    logger.exception(
+                        "Unexpected error while synchronizing Paperless metadata for statement %s",
+                        statement.pk,
+                    )
+                    _mark_metadata_incomplete(
+                        statement,
+                        "Die Paperless-Metadaten konnten nicht synchronisiert werden.",
+                    )
+                    _remove_temporary_pdf(statement)
+                    statement.save(update_fields=("temporary_pdf", "updated_at"))
+                    continue
+            statement.paperless_status = (
+                BankStatement.PaperlessStatus.DUPLICATE
+                if result["status"] == "duplicate"
+                else BankStatement.PaperlessStatus.COMPLETED
+            )
             statement.paperless_document_id = result["document_id"]
             statement.paperless_reference_synced = True
             statement.paperless_error = ""
@@ -213,7 +523,7 @@ def refresh_pending_paperless_tasks() -> None:
             continue
         statement.paperless_status = BankStatement.PaperlessStatus.FAILED
         statement.paperless_document_id = None
-        statement.paperless_error = str(
+        statement.paperless_error = _paperless_user_message(
             result.get("message") or "Paperless meldet einen Fehler beim Upload."
         )
         statement.save(
@@ -237,7 +547,7 @@ def refresh_unsynced_completed_references() -> dict[int, str]:
         try:
             result = PaperlessClient.synchronize_statement_reference(statement)
         except BookkeepingPaperlessError as exc:
-            synchronization_errors[statement.pk] = str(exc)
+            synchronization_errors[statement.pk] = _paperless_user_message(exc)
             continue
         if result["status"] != "synced":
             continue

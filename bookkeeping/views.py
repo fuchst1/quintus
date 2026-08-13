@@ -23,13 +23,17 @@ from .booking_resets import (
     reset_manual_invoice_booking,
 )
 from .bank_statements import (
+    BankStatementDeletionError,
     BankStatementImportError,
+    bank_statement_delete_summary,
+    delete_bank_statement,
     display_bank_statement,
     import_bank_statement,
     json_control_for_statement,
     refresh_pending_paperless_tasks,
     refresh_unsynced_completed_references,
     retry_bank_statement,
+    synchronize_bank_statement_metadata,
 )
 from .accountant_package import (
     AccountantPackageError,
@@ -43,7 +47,13 @@ from .csv_export import (
     export_reviewed_transactions_csv,
     quarter_bounds,
 )
-from .matching import build_booking_entry_snapshot, match_imported_transactions
+from .matching import (
+    SnapshotTransferError,
+    _save_automatic_booking_snapshot,
+    build_booking_entry_snapshot,
+    match_imported_transactions,
+    snapshot_matches_booking_entries,
+)
 from .forms import (
     BankTransactionNoteForm,
     BankStatementUploadForm,
@@ -80,6 +90,7 @@ from .manual_invoices import (
     retry_manual_invoice,
     start_manual_invoice_upload,
 )
+from .sidebar import sidebar_context
 from .paperless_invoice_import import (
     PaperlessInvoiceImportError,
     import_paperless_invoices,
@@ -99,6 +110,13 @@ from .supporting_documents import (
     refresh_pending_supporting_documents,
     remove_supporting_document,
     retry_supporting_document,
+)
+from .dashboard import (
+    DASHBOARD_PERIOD_TYPES,
+    build_dashboard_data,
+    dashboard_period_label,
+    parse_dashboard_period,
+    available_dashboard_periods,
 )
 
 
@@ -191,7 +209,12 @@ GERMAN_MONTH_NAMES = (
 )
 MONTH_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<month>0[1-9]|1[0-2])$")
 EXPORT_PERIOD_PATTERN = re.compile(r"^(?P<year>[0-9]{4})-(?P<quarter>Q[1-4])$")
-PERIOD_TYPES = ("month", "quarter")
+PERIOD_TYPES = ("month", "quarter", "year")
+PERIOD_TYPE_LABELS = {
+    "month": "Monat",
+    "quarter": "Quartal",
+    "year": "Jahr",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -295,12 +318,23 @@ def _period_bounds(period_type, period):
         return _month_bounds(period)
     if period_type == "quarter":
         return _export_period_bounds(period)
+    if period_type == "year":
+        try:
+            year = int(period)
+            if len(str(period)) != 4 or year < 1:
+                return None
+        except (TypeError, ValueError):
+            return None
+        return date(year, 1, 1), date(year, 12, 31)
     return None
 
 
 def _period_label(period_type, period):
     if period_type == "month":
         return _month_label(period)
+    if period_type == "year":
+        value = str(period or "")
+        return value if re.fullmatch(r"[0-9]{4}", value) else ""
     parsed_period = _parse_export_period(period)
     if parsed_period is None:
         return ""
@@ -314,6 +348,9 @@ def _period_value(period_type, value):
         return value if parsed is not None else ""
     if period_type == "quarter":
         return _parse_export_period(value) or ""
+    if period_type == "year":
+        value = str(value or "")
+        return value if re.fullmatch(r"[0-9]{4}", value) else ""
     return ""
 
 
@@ -405,7 +442,7 @@ def _available_dashboard_quarters():
 def _dashboard_period_selection(params, available_months, available_quarters):
     requested_type = params.get("period_type")
     requested_period = params.get("period")
-    if requested_type not in PERIOD_TYPES:
+    if requested_type not in {"month", "quarter"}:
         if params.get("dashboard_period"):
             requested_type = "quarter"
             requested_period = params.get("dashboard_period")
@@ -425,6 +462,8 @@ def _dashboard_period_selection(params, available_months, available_quarters):
 def _dashboard_statement_queryset(period_type, period):
     if period_type == "month":
         return BankStatement.objects.filter(booking_month=period)
+    if period_type == "year":
+        return BankStatement.objects.filter(statement_year=int(period))
     return BankStatement.objects.filter(booking_quarter=period)
 
 
@@ -481,7 +520,7 @@ def _booking_ready_amount_summary(bank_transactions, manual_invoices):
     }
 
 
-def _dashboard_context(params):
+def _legacy_dashboard_context(params):
     available_months = _available_dashboard_months()
     available_quarters = _available_dashboard_quarters()
     dashboard_period_type, dashboard_period = _dashboard_period_selection(
@@ -532,7 +571,7 @@ def _dashboard_context(params):
         booking_date__lte=period_range[1],
     ).aggregate(
         total=Count("id"),
-        open_count=Count(
+        page_open_count=Count(
             "id",
             filter=Q(
                 status__in=(
@@ -541,7 +580,7 @@ def _dashboard_context(params):
                 )
             ),
         ),
-        ready_count=Count("id", filter=Q(status__in=BOOKING_READY_STATUSES)),
+        page_ready_count=Count("id", filter=Q(status__in=BOOKING_READY_STATUSES)),
         auto_matched=Count("id", filter=Q(matched_rule__isnull=False)),
         without_matching=Count("id", filter=Q(matched_rule__isnull=True)),
     )
@@ -576,9 +615,11 @@ def _dashboard_context(params):
     )
     ready_manual_invoice_count = len(ready_manual_invoices)
     total = (aggregate["total"] or 0) + ready_manual_invoice_count
-    ready_count = (aggregate["ready_count"] or 0) + ready_manual_invoice_count
+    page_ready_count = (
+        aggregate["page_ready_count"] or 0
+    ) + ready_manual_invoice_count
     processed_percentage = (
-        (Decimal(ready_count) * Decimal("100") / Decimal(total)).quantize(
+        (Decimal(page_ready_count) * Decimal("100") / Decimal(total)).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         if total
@@ -597,8 +638,8 @@ def _dashboard_context(params):
         {
             "dashboard_has_data": bool(total or booking_entry_count or statements),
             "dashboard_total": total,
-            "dashboard_open": aggregate["open_count"] or 0,
-            "dashboard_ready": ready_count,
+            "dashboard_open": aggregate["page_open_count"] or 0,
+            "dashboard_ready": page_ready_count,
             "dashboard_booking_entries": booking_entry_count,
             "dashboard_processed_percentage": str(processed_percentage),
             "dashboard_processed_percent": f"{format_austrian_decimal(processed_percentage)} %",
@@ -613,6 +654,169 @@ def _dashboard_context(params):
         }
     )
     return context
+
+
+def _dashboard_context(params):
+    """Build the decision-oriented dashboard context.
+
+    The legacy dashboard context above is intentionally kept as a reference
+    for the status/list views.  The later definition is the one used by the
+    overview dashboard and maps the service data to the template's stable
+    context names.
+    """
+    available = available_dashboard_periods()
+    requested_type = params.get("period_type")
+    requested_period = params.get("period")
+    if requested_type not in DASHBOARD_PERIOD_TYPES:
+        # Keep links created by the older quarter selector working.
+        if parse_dashboard_period("quarter", params.get("dashboard_period")):
+            requested_type = "quarter"
+            requested_period = params.get("dashboard_period")
+        else:
+            requested_type = "month"
+
+    options = available.get(requested_type, [])
+    selected = parse_dashboard_period(requested_type, requested_period)
+    if selected not in options:
+        selected = options[0] if options else ""
+    dashboard_period_control = _period_navigation_context(
+        params=params,
+        period_type=requested_type,
+        period=selected,
+        periods_by_type=available,
+        control_id="dashboard-period",
+    )
+    data = (
+        build_dashboard_data(requested_type, selected)
+        if selected
+        else {"empty": True, "totals": {}, "workload": {}}
+    )
+    totals = data.get("totals", {})
+    workload = data.get("workload", {})
+    reconciliation = data.get(
+        "reconciliation",
+        {"status": "neutral", "label": "Noch keine Abstimmung möglich"},
+    )
+
+    period_query = urlencode(
+        {
+            "period_type": requested_type,
+            "period": selected,
+        }
+    ) if selected else ""
+    overview_url = reverse("bookkeeping_overview")
+    period_url = f"{overview_url}?{period_query}" if period_query else overview_url
+    open_url = f"{overview_url}?status=open"
+    bank_import_url = f"{overview_url}?status=bank_import#bank-import"
+
+    status_urls = {
+        "completed": f"{overview_url}?status=reviewed",
+        "in_progress": open_url,
+        "open": open_url,
+    }
+    workload_rows = [
+        {
+            "key": key,
+            "label": label,
+            "count": workload.get(key, 0),
+            "url": status_urls[key],
+        }
+        for key, label in (
+            ("completed", "Erledigt"),
+            ("in_progress", "In Bearbeitung"),
+            ("open", "Offen"),
+        )
+    ]
+
+    all_next_steps = data.get("next_steps", [])
+    next_steps = []
+    for step in all_next_steps[:5]:
+        next_steps.append(
+            {
+                **step,
+                "date_label": (
+                    step["date"].strftime("%d.%m.%Y")
+                    if step.get("date")
+                    else ""
+                ),
+            }
+        )
+    total = workload.get("total", 0)
+    processed_value = workload.get("processed_value", "0.00")
+    balance_value = totals.get("balance_value", 0)
+    balance_tone = (
+        "positive" if balance_value > 0 else "negative" if balance_value < 0 else "neutral"
+    )
+    return {
+        "available_dashboard_months": [
+            {"value": value, "label": dashboard_period_label("month", value)}
+            for value in available.get("month", [])
+        ],
+        "available_dashboard_quarters": [
+            {"value": value, "label": dashboard_period_label("quarter", value)}
+            for value in available.get("quarter", [])
+        ],
+        "available_dashboard_years": [
+            {"value": value, "label": value}
+            for value in available.get("year", [])
+        ],
+        "dashboard_period_types": [
+            {"value": "month", "label": "Monat"},
+            {"value": "quarter", "label": "Quartal"},
+            {"value": "year", "label": "Jahr"},
+        ],
+        "dashboard_period_options": [
+            {
+                "value": value,
+                "label": dashboard_period_label(requested_type, value),
+            }
+            for value in options
+        ],
+        "dashboard_period_type": requested_type,
+        "dashboard_period": selected,
+        "dashboard_period_label": dashboard_period_label(requested_type, selected),
+        "dashboard_period_control": dashboard_period_control,
+        "dashboard_has_data": not data.get("empty", True),
+        # Compatibility aliases used by the status navigation and older tests.
+        "dashboard_total": total,
+        "dashboard_open": workload.get("open", 0) + workload.get("in_progress", 0),
+        "dashboard_ready": workload.get("completed", 0),
+        "dashboard_booking_entries": 0,
+        "dashboard_processed_percentage": processed_value,
+        "dashboard_processed_percent": workload.get("processed", "0,00 %"),
+        "dashboard_processed_width": processed_value,
+        "dashboard_incoming": totals.get("income", "0,00 EUR"),
+        "dashboard_outgoing": totals.get("expenses", "0,00 EUR"),
+        "dashboard_balance": totals.get("balance", "0,00 EUR"),
+        "dashboard_balance_tone": balance_tone,
+        "dashboard_auto_matched": 0,
+        "dashboard_without_matching": 0,
+        "dashboard_active_matching_rules": 0,
+        "dashboard_statement_count": 0,
+        "dashboard_reconciliation": reconciliation.get("label", "–"),
+        "dashboard_reconciliation_data": reconciliation,
+        "dashboard_reconciliation_url": bank_import_url,
+        "dashboard_open_tasks": len(all_next_steps),
+        "dashboard_next_steps_total": len(all_next_steps),
+        "dashboard_open_tasks_url": open_url,
+        "dashboard_missing_receipts": data.get("missing_receipts", 0),
+        "dashboard_missing_receipts_url": open_url,
+        "dashboard_workload": workload_rows,
+        "dashboard_workload_total": total,
+        "dashboard_processed_value": processed_value,
+        "dashboard_processed_percent_value": workload.get("processed", "0,00 %"),
+        "dashboard_next_steps": next_steps,
+        "dashboard_year_chart": data.get("year_chart", []),
+        "dashboard_year_chart_json": data.get("year_chart", []),
+        "dashboard_quarter_chart": data.get("quarter_chart", []),
+        "dashboard_quarter_chart_json": data.get("quarter_chart", []),
+        "dashboard_quarter_chart_max": data.get("quarter_chart_max", "0,00 EUR"),
+        "dashboard_categories_income": data.get("categories", {}).get("income", []),
+        "dashboard_categories_expenses": data.get("categories", {}).get("expenses", []),
+        "dashboard_period_url": period_url,
+        "dashboard_open_url": open_url,
+        "dashboard_bank_import_url": bank_import_url,
+    }
 
 
 def _bank_import_context(params):
@@ -735,7 +939,7 @@ def _period_control_context(period_type, period):
             Prefetch(
                 "booking_entries",
                 queryset=BookingEntry.objects.order_by(
-                    "payment_date", "created_at", "id"
+                    "payment_date", "position", "created_at", "id"
                 ),
                 to_attr="quarter_control_booking_entries",
             )
@@ -853,19 +1057,21 @@ def _period_control_context(period_type, period):
         status = "danger"
         status_label = "Buchungsdaten sind nicht konsistent"
     elif open_transactions:
+        period_word = {
+            "month": "Monat",
+            "quarter": "Quartal",
+            "year": "Jahr",
+        }.get(period_type, "Zeitraum")
         status = "warning"
-        status_label = (
-            "Monat noch nicht vollständig"
-            if period_type == "month"
-            else "Quartal noch nicht vollständig"
-        )
+        status_label = f"{period_word} noch nicht vollständig"
     else:
         status = "success"
-        status_label = (
-            "Monat vollständig und buchhalterisch konsistent"
-            if period_type == "month"
-            else "Quartal vollständig und buchhalterisch konsistent"
-        )
+        period_word = {
+            "month": "Monat",
+            "quarter": "Quartal",
+            "year": "Jahr",
+        }.get(period_type, "Zeitraum")
+        status_label = f"{period_word} vollständig und buchhalterisch konsistent"
 
     statement = None
     statement_display = None
@@ -879,7 +1085,7 @@ def _period_control_context(period_type, period):
             statement_display = display_bank_statement(statement)
         opening_balance = statement.opening_balance if statement else None
         closing_balance = statement.closing_balance if statement else None
-    else:
+    elif period_type == "quarter":
         parsed_period = _parse_export_period(period)
         year, quarter = parsed_period.split("-", 1)
         balance = QuarterBalance.objects.filter(
@@ -888,6 +1094,9 @@ def _period_control_context(period_type, period):
         ).first()
         opening_balance = balance.opening_balance if balance else None
         closing_balance = balance.closing_balance if balance else None
+    else:
+        opening_balance = None
+        closing_balance = None
     bank_movement = _quantize_money(bank_movement)
     calculated_balance = (
         _quantize_money(opening_balance + bank_movement)
@@ -1012,6 +1221,12 @@ def _export_selection(params, available_quarters):
 
 
 def _overview_url(status, month=None, period=None, period_type=None):
+    if status == OPEN_FILTER:
+        # Open work is intentionally not period-scoped.  Links to the queue
+        # must always show every actionable booking.
+        month = None
+        period = None
+        period_type = None
     query = {"status": status}
     if month is not None:
         query["month"] = month
@@ -1020,6 +1235,114 @@ def _overview_url(status, month=None, period=None, period_type=None):
     if period_type is not None:
         query["period_type"] = period_type
     return f"{reverse('bookkeeping_overview')}?{urlencode(query)}"
+
+
+def _period_navigation_context(
+    *,
+    params,
+    period_type,
+    period,
+    periods_by_type,
+    control_id,
+):
+    """Build one compact, GET-based period control for a page header."""
+    period_type = period_type if period_type in PERIOD_TYPES else "month"
+    options = list(periods_by_type.get(period_type, ()))
+    selected = _period_value(period_type, period)
+    if selected not in options:
+        selected = options[0] if options else ""
+    period_anchor_month = _period_value("month", params.get("period_month"))
+    if period_type == "month" and selected:
+        period_anchor_month = selected
+
+    def url_for(target_type, target_period):
+        query = {
+            key: value
+            for key, value in params.items()
+            if key not in {"period_type", "period", "month"}
+        }
+        query.update(
+            {
+                "period_type": target_type,
+                "period": target_period,
+            }
+        )
+        if period_anchor_month:
+            query["period_month"] = period_anchor_month
+        return f"{reverse('bookkeeping_overview')}?{urlencode(query)}"
+
+    def equivalent_period(target_type):
+        if not selected:
+            return options[0] if options else ""
+        if target_type == period_type:
+            return selected
+        if target_type == "year":
+            return selected[:4]
+        if target_type == "quarter":
+            if period_type == "month":
+                parsed = _parse_month(selected)
+                return (
+                    f"{parsed.year}-Q{((parsed.month - 1) // 3) + 1}"
+                    if parsed
+                    else ""
+                )
+            if period_type == "year":
+                matching = [
+                    value
+                    for value in periods_by_type.get("quarter", ())
+                    if value.startswith(selected)
+                ]
+                return matching[0] if matching else ""
+            return selected
+        if target_type == "month":
+            if period_type == "quarter":
+                year, quarter = selected.split("-")
+                month = (int(quarter[1]) - 1) * 3 + 1
+                return f"{year}-{month:02d}"
+            if period_type == "year":
+                if period_anchor_month and period_anchor_month.startswith(selected):
+                    return period_anchor_month
+                matching = [value for value in periods_by_type.get("month", ()) if value.startswith(selected)]
+                return matching[0] if matching else ""
+        return ""
+
+    type_links = []
+    for target_type in PERIOD_TYPES:
+        target_options = list(periods_by_type.get(target_type, ()))
+        target_period = equivalent_period(target_type)
+        if target_period not in target_options:
+            target_period = target_options[0] if target_options else ""
+        type_links.append(
+            {
+                "value": target_type,
+                "label": PERIOD_TYPE_LABELS[target_type],
+                "url": url_for(target_type, target_period),
+                "active": target_type == period_type,
+            }
+        )
+
+    current_index = options.index(selected) if selected in options else -1
+    previous_period = options[current_index + 1] if current_index + 1 < len(options) else ""
+    next_period = options[current_index - 1] if current_index > 0 else ""
+    return {
+        "id": control_id,
+        "period_type": period_type,
+        "period_type_label": PERIOD_TYPE_LABELS[period_type],
+        "period": selected,
+        "label": selected if period_type == "quarter" else _period_label(period_type, selected),
+        "options": [
+            {
+                "value": value,
+                "label": value if period_type == "quarter" else _period_label(period_type, value),
+            }
+            for value in options
+        ],
+        "type_links": type_links,
+        "previous_url": url_for(period_type, previous_period) if previous_period else "",
+        "next_url": url_for(period_type, next_period) if next_period else "",
+        "has_previous": bool(previous_period),
+        "has_next": bool(next_period),
+    }
 
 
 def _note_preview(note, max_length=90):
@@ -1031,6 +1354,7 @@ def _note_preview(note, max_length=90):
 
 def _bookkeeping_navigation_context(request, filter_params=None):
     params = filter_params if filter_params is not None else request.GET
+    sidebar_counts = sidebar_context(request)
     requested_status = params.get("status")
     show_dashboard = (
         request.resolver_match.url_name == "bookkeeping_overview"
@@ -1049,7 +1373,9 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         },
         reverse=True,
     )
-    if "month" in params and params.get("month") == "":
+    if selected_status == OPEN_FILTER:
+        selected_month = ""
+    elif "month" in params and params.get("month") == "":
         selected_month = ""
     else:
         requested_month = params.get("month")
@@ -1065,7 +1391,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         row["status"]: row["count"]
         for row in count_query.values("status").annotate(count=Count("id"))
     }
-    ready_count = sum(
+    page_ready_count = sum(
         counts_by_status.get(status, 0) for status in BOOKING_READY_STATUSES
     )
     manual_ready_query = ManualInvoice.objects.filter(
@@ -1077,15 +1403,19 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             payment_date__gte=month_bounds[0],
             payment_date__lte=month_bounds[1],
         )
-    ready_count += manual_ready_query.count()
+    page_ready_count += manual_ready_query.count()
     navigation_month = (
-        selected_month
-        if selected_month
-        or (
-            selected_status not in BOOKING_READY_STATUSES
-            and available_month_keys
+        None
+        if selected_status == OPEN_FILTER
+        else (
+            selected_month
+            if selected_month
+            or (
+                selected_status not in BOOKING_READY_STATUSES
+                and available_month_keys
+            )
+            else None
         )
-        else None
     )
     status_navigation = [
         {
@@ -1094,11 +1424,11 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                 counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
                 + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
                 if item["value"] == OPEN_FILTER
-                else ready_count
+                else page_ready_count
             ),
             "url": _overview_url(
                 item["value"],
-                navigation_month,
+                None if item["value"] == OPEN_FILTER else navigation_month,
             ),
                 "active": (
                     request.resolver_match.url_name
@@ -1107,6 +1437,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                     "bank_transaction_note",
                     "bank_transaction_booking",
                 }
+                and not show_dashboard
                 and (
                     selected_status == item["value"]
                     or (
@@ -1141,6 +1472,14 @@ def _bookkeeping_navigation_context(request, filter_params=None):
     ready_quarters = [
         f"{year}-{quarter}" for year, quarter in available_export_quarters
     ]
+    ready_years = sorted(
+        {
+            value[:4]
+            for value in (*ready_months, *ready_quarters)
+            if value
+        },
+        reverse=True,
+    )
     ready_period_type = params.get("period_type")
     ready_period = params.get("period")
     if ready_period_type not in PERIOD_TYPES:
@@ -1153,9 +1492,12 @@ def _bookkeeping_navigation_context(request, filter_params=None):
             ready_period = params.get("month")
         else:
             ready_period_type = "month"
-    ready_available_periods = (
-        ready_months if ready_period_type == "month" else ready_quarters
-    )
+    ready_periods_by_type = {
+        "month": ready_months,
+        "quarter": ready_quarters,
+        "year": ready_years,
+    }
+    ready_available_periods = ready_periods_by_type.get(ready_period_type, [])
     ready_period = _period_value(ready_period_type, ready_period)
     if ready_period not in ready_available_periods:
         ready_period = (
@@ -1163,6 +1505,13 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         )
     selected_status_details = STATUS_DETAILS[selected_status]
     month_suffix = f" für {_month_label(selected_month)}" if selected_month else ""
+    ready_period_control = _period_navigation_context(
+        params=params,
+        period_type=ready_period_type,
+        period=ready_period,
+        periods_by_type=ready_periods_by_type,
+        control_id="ready-period",
+    )
     return {
         "show_dashboard": show_dashboard,
         "selected_status": selected_status,
@@ -1179,7 +1528,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
                 counts_by_status.get(BankTransaction.Status.IMPORTED, 0)
                 + counts_by_status.get(BankTransaction.Status.MATCHED, 0)
             ),
-            BankTransaction.Status.REVIEWED: ready_count,
+            BankTransaction.Status.REVIEWED: page_ready_count,
             BankTransaction.Status.BOOKED: counts_by_status.get(
                 BankTransaction.Status.BOOKED,
                 0,
@@ -1187,6 +1536,7 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         },
         "status_counts_by_code": counts_by_status,
         "status_navigation": status_navigation,
+        **sidebar_counts,
         "available_export_periods": available_export_periods,
         "export_period": export_period,
         "available_ready_months": [
@@ -1200,6 +1550,11 @@ def _bookkeeping_navigation_context(request, filter_params=None):
         "ready_period_type": ready_period_type,
         "ready_period": ready_period,
         "ready_period_label": _period_label(ready_period_type, ready_period),
+        "ready_period_control": ready_period_control,
+        "available_ready_years": [
+            {"value": value, "label": _period_label("year", value)}
+            for value in ready_years
+        ],
         "empty_state_message": (
             (
                 f"Keine offenen Transaktionen für {_month_label(selected_month)}."
@@ -1406,7 +1761,7 @@ class BookkeepingOverviewView(TemplateView):
             except AccountantPackageError:
                 context["accountant_package"] = None
         booking_entries_queryset = BookingEntry.objects.order_by(
-            "created_at", "id"
+            "position", "created_at", "id"
         )
         if ready_period_bounds is not None:
             booking_entries_queryset = booking_entries_queryset.filter(
@@ -1523,6 +1878,9 @@ class BookkeepingOverviewView(TemplateView):
         if request.POST.get("action") == "retry_bank_statement":
             return self._retry_bank_statement(request)
 
+        if request.POST.get("action") == "sync_bank_statement_metadata":
+            return self._sync_bank_statement_metadata(request)
+
         if request.POST.get("action") == "run_matching":
             matching_result = match_imported_transactions()
             messages.success(
@@ -1567,8 +1925,15 @@ class BookkeepingOverviewView(TemplateView):
                 )
             )
 
+        skipped_zero_count = 0
+        import_payloads = []
         try:
-            import_payloads = [self._build_import_payload(item) for item in payload]
+            for item in payload:
+                import_payload = self._build_import_payload(item)
+                if import_payload is None:
+                    skipped_zero_count += 1
+                    continue
+                import_payloads.append(import_payload)
         except ValueError as exc:
             return self.render_to_response(
                 self.get_context_data(
@@ -1581,8 +1946,16 @@ class BookkeepingOverviewView(TemplateView):
         matching_result = match_imported_transactions()
         messages.success(
             request,
-            f"{imported_count} Transaktionen importiert, "
-            f"{existing_count} bereits vorhanden.",
+            f"{imported_count} "
+            f"{'Transaktion' if imported_count == 1 else 'Transaktionen'} importiert, "
+            f"{existing_count} bereits vorhanden."
+            + (
+                f" {skipped_zero_count} "
+                f"{'Nullbuchung wurde' if skipped_zero_count == 1 else 'Nullbuchungen wurden'} "
+                "übersprungen."
+                if skipped_zero_count
+                else ""
+            ),
         )
         messages.info(
             request,
@@ -1671,6 +2044,19 @@ class BookkeepingOverviewView(TemplateView):
             messages.error(request, str(exc))
         else:
             messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
+        return redirect(_overview_url(BANK_IMPORT_FILTER))
+
+    def _sync_bank_statement_metadata(self, request):
+        statement = get_object_or_404(
+            BankStatement,
+            pk=request.POST.get("statement_id"),
+        )
+        try:
+            synchronize_bank_statement_metadata(statement)
+        except BankStatementImportError as exc:
+            messages.error(request, str(exc))
+        else:
+            messages.success(request, "Paperless-Metadaten wurden synchronisiert.")
         return redirect(_overview_url(BANK_IMPORT_FILTER))
 
     def _save_quarter_balance(self, request):
@@ -1799,6 +2185,8 @@ class BookkeepingOverviewView(TemplateView):
         if not isinstance(amount, dict):
             raise ValueError("Eine Transaktion enthält keinen gültigen Betrag.")
         converted_amount, direction = cls._parse_amount(amount)
+        if converted_amount == 0:
+            return None
 
         partner_account = transaction.get("partnerAccount")
         if not isinstance(partner_account, dict):
@@ -1890,13 +2278,19 @@ class BookkeepingOverviewView(TemplateView):
     @classmethod
     def _parse_amount(cls, amount):
         value = amount.get("value")
-        if value is None:
+        if value is None or isinstance(value, bool) or not isinstance(
+            value, (int, float, Decimal)
+        ):
             raise ValueError("Eine Transaktion enthält keinen gültigen Betrag.")
         try:
             precision = int(amount.get("precision") or 0)
             if precision < 0:
                 raise ValueError
             converted = Decimal(str(value)) / (Decimal("10") ** precision)
+            if not converted.is_finite():
+                raise ValueError
+            if converted == 0:
+                return Decimal("0"), None
             converted = converted.quantize(
                 Decimal("0.01"),
                 rounding=ROUND_HALF_UP,
@@ -1908,7 +2302,7 @@ class BookkeepingOverviewView(TemplateView):
             return converted, BankTransaction.Direction.INCOMING
         if converted < 0:
             return converted, BankTransaction.Direction.OUTGOING
-        raise ValueError("Eine Transaktion enthält keinen gültigen Betrag.")
+        return converted, None
 
     @classmethod
     def _display_saved_transaction(cls, transaction):
@@ -2103,6 +2497,7 @@ class BookkeepingOverviewView(TemplateView):
         vat_symbol = booking_entry.get_vat_symbol_display()
         category = category_description(booking_entry.category)
         return {
+            "position": booking_entry.position,
             "receipt": " / ".join(
                 part for part in (receipt_group, booking_entry.receipt_number)
                 if part
@@ -2131,6 +2526,42 @@ class BookkeepingOverviewView(TemplateView):
     @classmethod
     def _text_or_dash(cls, value):
         return cls._text_or_empty(value) or "–"
+
+
+class BankStatementDeleteView(TemplateView):
+    template_name = "bookkeeping/bank_statement_delete_confirm.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.object = get_object_or_404(BankStatement, pk=kwargs["pk"])
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
+        context["statement"] = self.object
+        context["statement_month"] = _month_label(self.object.booking_month)
+        context["statement_number"] = (
+            f"{self.object.statement_number:03d}/{self.object.statement_year}"
+        )
+        context["delete_summary"] = bank_statement_delete_summary(self.object)
+        return context
+
+    def post(self, request, *args, **kwargs):
+        try:
+            result = delete_bank_statement(self.object)
+        except BankStatementDeletionError as exc:
+            messages.error(request, str(exc))
+            return redirect(_overview_url(BANK_IMPORT_FILTER))
+        except BankStatement.DoesNotExist:
+            messages.error(request, "Der Kontoauszug wurde bereits gelöscht.")
+            return redirect(_overview_url(BANK_IMPORT_FILTER))
+        messages.success(
+            request,
+            "Kontoauszug gelöscht. "
+            f"{result['transaction_count']} Banktransaktionen und "
+            f"{result['booking_count']} Buchungen wurden entfernt.",
+        )
+        return redirect(_overview_url(BANK_IMPORT_FILTER))
 
 
 class ManualInvoiceListView(TemplateView):
@@ -2495,7 +2926,7 @@ class BookingSetResetView(TemplateView):
             return list(
                 BookingEntry.objects.filter(
                     bank_transaction=self.owner
-                ).order_by("created_at", "id")
+                ).order_by("position", "created_at", "id")
             )
         return list(
             ManualInvoiceEntry.objects.filter(
@@ -2505,6 +2936,7 @@ class BookingSetResetView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
         entries = self._entries()
         if self.owner_kind == "bank_transaction":
             source_type = "Banktransaktion"
@@ -2584,6 +3016,7 @@ class ManualInvoiceDeleteView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
         entries = list(
             ManualInvoiceEntry.objects.filter(
                 manual_invoice=self.invoice
@@ -2654,6 +3087,7 @@ class ManualInvoicePaperlessDeleteView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
         context.update(
             {
                 "manual_invoice": self.invoice,
@@ -2786,14 +3220,20 @@ class BookingEntryView(TemplateView):
     @staticmethod
     def _existing_entries(bank_transaction):
         return list(
-            bank_transaction.booking_entries.order_by("created_at", "id")
+            bank_transaction.booking_entries.order_by(
+                "position", "created_at", "id"
+            )
         )
 
     def _initial_rows(self, bank_transaction, existing_entries):
         if existing_entries:
             return None, None
         if (
-            bank_transaction.status == BankTransaction.Status.MATCHED
+            bank_transaction.status
+            in {
+                BankTransaction.Status.MATCHED,
+                BankTransaction.Status.REVIEWED,
+            }
             and bank_transaction.matched_rule_id
         ):
             snapshot, error = build_booking_entry_snapshot(bank_transaction)
@@ -2859,6 +3299,34 @@ class BookingEntryView(TemplateView):
         else:
             page_heading = "Buchung erfassen"
         first_form = formset.forms[0] if formset.forms else None
+        error_form = first_form
+        if snapshot_error and formset.forms:
+            row_match = re.search(
+                r"Excel-Ergebniszeile\s+(\d+)",
+                snapshot_error,
+            )
+            if row_match:
+                row_index = int(row_match.group(1)) - 1
+                if 0 <= row_index < len(formset.forms):
+                    error_form = formset.forms[row_index]
+        if snapshot_error and error_form is not None:
+            field_name = None
+            if "Kategorie" in snapshot_error:
+                field_name = "category"
+            elif "USt" in snapshot_error:
+                field_name = "vat_symbol"
+            elif "Buchungstext" in snapshot_error:
+                field_name = "booking_text"
+            if field_name:
+                error_form.full_clean()
+                if not hasattr(error_form, "cleaned_data"):
+                    error_form.cleaned_data = {}
+            if field_name and not error_form.errors.get(field_name):
+                error_form.add_error(field_name, snapshot_error)
+        generated_from_rule = bool(
+            bank_transaction.matched_rule_id
+            and bank_transaction.booking_entries.exists()
+        )
         return {
             **navigation_context,
             "bank_transaction": bank_transaction,
@@ -2873,6 +3341,28 @@ class BookingEntryView(TemplateView):
             "notes_form": notes_form,
             "page_heading": page_heading,
             "booking_snapshot_error": snapshot_error,
+            "matching_rule_source": (
+                {
+                    "label": str(bank_transaction.matched_rule),
+                    "url": reverse(
+                        "matching_rule_detail",
+                        kwargs={"pk": bank_transaction.matched_rule_id},
+                    ),
+                }
+                if generated_from_rule
+                else None
+            ),
+            "can_reapply_matching_rule": (
+                bank_transaction.matched_rule_id is not None
+                and bank_transaction.status
+                in {
+                    BankTransaction.Status.MATCHED,
+                    BankTransaction.Status.REVIEWED,
+                }
+            ),
+            "reapply_matching_rule_confirmation": (
+                getattr(self, "reapply_matching_rule_confirmation", False)
+            ),
             "supporting_documents": [
                 display_supporting_document(document)
                 for document in SupportingDocument.objects.filter(
@@ -2926,6 +3416,10 @@ class BookingEntryView(TemplateView):
         bank_transaction = get_object_or_404(BankTransaction, pk=kwargs["pk"])
         navigation_context = self._navigation_context()
         action = request.POST.get("action", "save_draft")
+        if action == "reapply_matching_rule":
+            return self._reapply_matching_rule(
+                request, bank_transaction, navigation_context
+            )
         if action == "retry_supporting_document":
             document = get_object_or_404(
                 SupportingDocument,
@@ -3077,6 +3571,110 @@ class BookingEntryView(TemplateView):
                 notes_form,
                 navigation_context,
                 snapshot_error,
+            )
+        )
+
+    def _reapply_matching_rule(self, request, bank_transaction, navigation_context):
+        if (
+            bank_transaction.status
+            not in {
+                BankTransaction.Status.MATCHED,
+                BankTransaction.Status.REVIEWED,
+            }
+            or not bank_transaction.matched_rule_id
+        ):
+            messages.error(
+                request,
+                "Eine Matching-Regel kann nur bei einer offenen Zuordnung "
+                "erneut angewendet werden.",
+            )
+            if navigation_context["selected_status"]:
+                return redirect(
+                    _overview_url(
+                        navigation_context["selected_status"],
+                        navigation_context["selected_month"],
+                    )
+                )
+            return redirect("bookkeeping_overview")
+        initials, snapshot_error = build_booking_entry_snapshot(bank_transaction)
+        if snapshot_error:
+            self.reapply_matching_rule_confirmation = False
+            formset = self._formset(
+                None,
+                bank_transaction,
+                final=False,
+                initial=initials or [{}],
+            )
+            return self.render_to_response(
+                self._context_for_transaction(
+                    bank_transaction,
+                    formset,
+                    BankTransactionNoteForm(instance=bank_transaction),
+                    navigation_context,
+                    snapshot_error,
+                )
+            )
+        existing_entries = self._existing_entries(bank_transaction)
+        snapshot_is_untouched = snapshot_matches_booking_entries(
+            initials,
+            existing_entries,
+        )
+        if (
+            existing_entries
+            and not snapshot_is_untouched
+            and request.POST.get("confirm_reapply") != "1"
+        ):
+            self.reapply_matching_rule_confirmation = True
+            formset = self._formset(
+                None,
+                bank_transaction,
+                final=False,
+                initial=initials,
+            )
+            return self.render_to_response(
+                self._context_for_transaction(
+                    bank_transaction,
+                    formset,
+                    BankTransactionNoteForm(instance=bank_transaction),
+                    navigation_context,
+                    "Die vorhandenen Buchungszeilen werden durch die Werte "
+                    "der verknüpften Matching-Regel ersetzt. Bitte bestätigen "
+                    "Sie den Vergleich.",
+                )
+            )
+        with db_transaction.atomic():
+            locked_transaction = BankTransaction.objects.select_for_update().get(
+                pk=bank_transaction.pk
+            )
+            BookingEntry.objects.filter(bank_transaction=locked_transaction).delete()
+            try:
+                _save_automatic_booking_snapshot(locked_transaction, initials)
+            except SnapshotTransferError as exc:
+                self.reapply_matching_rule_confirmation = False
+                formset = self._formset(
+                    None,
+                    bank_transaction,
+                    final=False,
+                    initial=initials,
+                )
+                return self.render_to_response(
+                    self._context_for_transaction(
+                        bank_transaction,
+                        formset,
+                        BankTransactionNoteForm(instance=bank_transaction),
+                        navigation_context,
+                        str(exc),
+                    )
+                )
+        messages.success(request, "Matching-Regel erneut angewendet.")
+        return redirect(
+            reverse("bank_transaction_booking", kwargs={"pk": bank_transaction.pk})
+            + "?"
+            + urlencode(
+                {
+                    "status": BankTransaction.Status.REVIEWED,
+                    "month": navigation_context["selected_month"],
+                }
             )
         )
 
@@ -3294,6 +3892,7 @@ class SupportingDocumentActionView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context.update(_bookkeeping_navigation_context(self.request))
         context["document"] = display_supporting_document(self.document)
         context["document_object"] = self.document
         context["action"] = self.action

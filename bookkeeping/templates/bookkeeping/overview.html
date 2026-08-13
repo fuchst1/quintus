@@ -1,13 +1,7 @@
 {% extends "bookkeeping/base.html" %}
 
 {% block content %}
-{% if show_dashboard %}
-<section class="bookkeeping-page-heading" aria-labelledby="dashboard-heading">
-    <div>
-        <h1 id="dashboard-heading" class="bookkeeping-page-title">Übersicht{% if dashboard_period_label %} – {{ dashboard_period_label }}{% endif %}</h1>
-    </div>
-</section>
-{% elif show_bank_import %}
+{% if show_bank_import %}
 <section id="bank-import" class="bookkeeping-page-heading bookkeeping-bank-import-heading" aria-labelledby="bank-import-heading">
     <div>
         <h1 id="bank-import-heading" class="bookkeeping-page-title">Bankimport</h1>
@@ -28,82 +22,98 @@
 {% endif %}
 
 {% if show_dashboard %}
-<section class="bookkeeping-dashboard" aria-labelledby="dashboard-period-heading">
-    <form method="get" class="bookkeeping-dashboard-period-filter" data-bookkeeping-period-form>
-        <input type="hidden" name="period_type" value="{{ dashboard_period_type }}">
-        <div class="bookkeeping-period-type-switch" role="group" aria-label="Ansicht">
-            <button type="submit" name="period_type" value="month" class="btn btn-sm {% if dashboard_period_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Monat</button>
-            <button type="submit" name="period_type" value="quarter" class="btn btn-sm {% if dashboard_period_type == 'quarter' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Quartal</button>
+<section class="bookkeeping-dashboard bookkeeping-dashboard-v2" aria-labelledby="dashboard-period-heading">
+    <header class="bookkeeping-dashboard-toolbar">
+        <div>
+            <h1 id="dashboard-period-heading" class="bookkeeping-dashboard-title">Übersicht{% if dashboard_period_label %} – {{ dashboard_period_label }}{% endif %}</h1>
         </div>
-        <label for="dashboard-period" id="dashboard-period-heading" class="form-label">Zeitraum</label>
-        <div class="bookkeeping-dashboard-period-controls">
-            <select id="dashboard-period" name="period" class="form-select">
-                {% if dashboard_period_type == 'month' %}
-                {% for period in available_dashboard_months %}
-                <option value="{{ period.value }}"{% if period.value == dashboard_period %} selected{% endif %}>{{ period.label }}</option>
-                {% endfor %}
-                {% else %}
-                {% for period in available_dashboard_quarters %}
-                <option value="{{ period.value }}"{% if period.value == dashboard_period %} selected{% endif %}>{{ period.label }}</option>
-                {% endfor %}
-                {% endif %}
-            </select>
-        </div>
-    </form>
-    {% if dashboard_has_data %}
-    <div class="bookkeeping-dashboard-grid bookkeeping-dashboard-grid-primary">
-        <article class="bookkeeping-dashboard-card">
-            <span class="bookkeeping-dashboard-card-label">Transaktionen gesamt</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_total }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card">
-            <span class="bookkeeping-dashboard-card-label">Offen</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_open }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card">
-            <span class="bookkeeping-dashboard-card-label">Buchungsfertig</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_ready }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-positive">
-            <span class="bookkeeping-dashboard-card-label">Einnahmen</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_incoming }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-negative">
-            <span class="bookkeeping-dashboard-card-label">Ausgaben</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_outgoing }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card bookkeeping-dashboard-card-balance">
-            <span class="bookkeeping-dashboard-card-label">Saldo</span>
+        {% include "bookkeeping/_period_control.html" with period_control=dashboard_period_control %}
+    </header>
+
+    {% if not dashboard_has_data %}
+    <div class="bookkeeping-dashboard-empty-panel"><p class="bookkeeping-empty-state">Für diesen Zeitraum sind noch keine Buchhaltungsdaten vorhanden.</p><div class="bookkeeping-dashboard-empty-actions"><a href="{{ dashboard_bank_import_url }}" class="btn btn-outline-primary">Zum Bankimport</a><a href="{{ dashboard_open_tasks_url }}" class="btn btn-outline-secondary">Offene Buchungen bearbeiten</a></div></div>
+    {% endif %}
+    <div class="bookkeeping-dashboard-status-grid">
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-balance-card bookkeeping-dashboard-balance-{{ dashboard_balance_tone }}">
+            <span class="bookkeeping-dashboard-card-label">Saldo im Zeitraum</span>
             <strong class="bookkeeping-dashboard-card-value">{{ dashboard_balance }}</strong>
+            <span class="bookkeeping-dashboard-card-meta">Einnahmen {{ dashboard_incoming }} · Ausgaben {{ dashboard_outgoing }}</span>
         </article>
-        <article class="bookkeeping-dashboard-card">
-            <span class="bookkeeping-dashboard-card-label">Buchungszeilen</span>
-            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_booking_entries }}</strong>
-        </article>
-        <article class="bookkeeping-dashboard-card">
+        <a class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-link-card" href="{{ dashboard_open_tasks_url }}">
+            <span class="bookkeeping-dashboard-card-label">Offene Aufgaben</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_open_tasks }}</strong>
+            <span class="bookkeeping-dashboard-card-meta">Direkt bearbeiten</span>
+        </a>
+        <a class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-link-card bookkeeping-dashboard-warning-card" href="{{ dashboard_missing_receipts_url }}">
+            <span class="bookkeeping-dashboard-card-label">Belege fehlen</span>
+            <strong class="bookkeeping-dashboard-card-value">{{ dashboard_missing_receipts }}</strong>
+            <span class="bookkeeping-dashboard-card-meta">Erforderliche Nachweise</span>
+        </a>
+        <a class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-link-card" href="{{ dashboard_reconciliation_url }}">
+            <span class="bookkeeping-dashboard-card-label">Bankabstimmung</span>
+            <strong class="bookkeeping-dashboard-card-value bookkeeping-dashboard-reconciliation-{{ dashboard_reconciliation_data.status }}">{{ dashboard_reconciliation_data.label }}</strong>
+            <span class="bookkeeping-dashboard-card-meta">Nur Bankbewegungen</span>
+        </a>
+    </div>
+
+    <div class="bookkeeping-dashboard-middle-grid">
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-chart-card" aria-labelledby="quarter-chart-heading">
             <div class="bookkeeping-dashboard-card-heading">
-                <span class="bookkeeping-dashboard-card-label">Bearbeitet</span>
-                <strong class="bookkeeping-dashboard-card-value">{{ dashboard_processed_percent }}</strong>
+                <div><h2 id="quarter-chart-heading">Einnahmen und Ausgaben – letzte 8 Quartale</h2><p class="bookkeeping-dashboard-card-help">Die Darstellung bleibt unabhängig vom ausgewählten Zeitraum.</p></div>
+                <div class="bookkeeping-chart-legend" aria-label="Legende"><span class="bookkeeping-legend-income">Einnahmen</span><span class="bookkeeping-legend-expenses">Ausgaben</span></div>
             </div>
-            <div class="bookkeeping-dashboard-progress" role="progressbar" aria-label="Bearbeitungsfortschritt" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ dashboard_processed_percentage }}">
-                <span style="width: {{ dashboard_processed_width }}%;"></span>
+            {% if dashboard_quarter_chart %}
+            <div class="bookkeeping-chart-with-axes">
+                <div class="bookkeeping-chart-axis-y" aria-label="Y-Achse: Betrag in EUR">
+                    <span class="bookkeeping-chart-axis-title-y">Betrag (EUR)</span>
+                    <span class="bookkeeping-chart-axis-scale"><span>{{ dashboard_quarter_chart_max }}</span><span>0,00 EUR</span></span>
+                </div>
+                <div class="bookkeeping-chart-plot">
+                    <div class="bookkeeping-quarter-chart" role="img" aria-label="Quartalsvergleich von Einnahmen und Ausgaben in EUR">
+                        {% for item in dashboard_quarter_chart %}
+                        <div class="bookkeeping-quarter-group" title="{{ item.period_label }} – Einnahmen {{ item.income_amount }}, Ausgaben {{ item.expenses_amount }}, Saldo {{ item.balance_amount }}">
+                            <div class="bookkeeping-quarter-bars" aria-hidden="true"><span class="bookkeeping-quarter-bar bookkeeping-quarter-bar-income" style="height: {{ item.income_height }}%;" title="{{ item.period_label }} – Einnahmen {{ item.income_amount }}"></span><span class="bookkeeping-quarter-bar bookkeeping-quarter-bar-expenses" style="height: {{ item.expenses_height }}%;" title="{{ item.period_label }} – Ausgaben {{ item.expenses_amount }}"></span></div>
+                            <strong>{{ item.quarter_label }}</strong>
+                            <span class="visually-hidden">{{ item.period_label }}: Einnahmen {{ item.income_amount }}, Ausgaben {{ item.expenses_amount }}, Saldo {{ item.balance_amount }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="bookkeeping-chart-axis-title-x">Quartal</div>
+                </div>
             </div>
+            {% else %}<p class="bookkeeping-empty-state">Für den Quartalsvergleich sind noch keine abgeschlossenen Buchungen vorhanden.</p>{% endif %}
+            {{ dashboard_quarter_chart_json|json_script:"dashboard-quarter-chart-data" }}
+            {{ dashboard_year_chart_json|json_script:"dashboard-year-chart-data" }}
+        </article>
+
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-dashboard-workload-card" aria-labelledby="workload-heading">
+            <div class="bookkeeping-dashboard-card-heading"><div><h2 id="workload-heading">Arbeitsstand</h2><p class="bookkeeping-dashboard-card-help">Status der Vorgänge im Zeitraum</p></div><strong class="bookkeeping-workload-percent">{{ dashboard_processed_percent_value }}</strong></div>
+            <div class="bookkeeping-workload-ring" style="--workload-progress: {{ dashboard_processed_value }}%;" role="img" aria-label="{{ dashboard_processed_percent_value }} erledigt"><span>{{ dashboard_processed_percent_value }}</span></div>
+            <div class="bookkeeping-workload-list">
+                {% for item in dashboard_workload %}<a href="{{ item.url }}"><span><i class="bookkeeping-workload-dot bookkeeping-workload-dot-{{ item.key }}" aria-hidden="true"></i>{{ item.label }}</span><strong>{{ item.count }}</strong></a>{% endfor %}
+            </div>
+            <a href="{{ dashboard_open_tasks_url }}" class="btn btn-primary bookkeeping-dashboard-action">Offene Buchungen bearbeiten</a>
         </article>
     </div>
 
-    <div class="bookkeeping-dashboard-details">
-        <div><span>Automatisch zugeordnet</span><strong>{{ dashboard_auto_matched }}</strong></div>
-        <div><span>Ohne Matching-Regel</span><strong>{{ dashboard_without_matching }}</strong></div>
-        <div><span>Aktive Matching-Regeln</span><strong>{{ dashboard_active_matching_rules }}</strong></div>
-        <div><span>Kontoauszüge im Zeitraum</span><strong>{{ dashboard_statement_count }}</strong></div>
-        <div><span>Bankabstimmung</span><strong>{{ dashboard_reconciliation }}</strong></div>
-    </div>
-    {% else %}
-    <p class="bookkeeping-empty-state bookkeeping-card-empty">Für diesen Zeitraum sind noch keine Buchhaltungsdaten vorhanden.</p>
-    {% endif %}
-    <div class="bookkeeping-quick-actions">
-        <a href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import" class="btn btn-sm btn-outline-primary"><i class="bi bi-upload" aria-hidden="true"></i> Zum Bankimport</a>
-        <a href="{% url 'bookkeeping_overview' %}?status=open" class="btn btn-sm btn-outline-secondary"><i class="bi bi-list-check" aria-hidden="true"></i> Offene Buchungen</a>
+    <div class="bookkeeping-dashboard-lower-grid">
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-next-steps-card" aria-labelledby="next-steps-heading">
+            <div class="bookkeeping-dashboard-card-heading"><div><h2 id="next-steps-heading">Nächste Schritte</h2><p class="bookkeeping-dashboard-card-help">Priorisiert nach Dringlichkeit</p></div></div>
+            {% if dashboard_next_steps %}
+            <div class="bookkeeping-table-wrap"><table class="bookkeeping-dashboard-task-table"><thead><tr><th>Problem</th><th>Vorgang</th><th>Betrag</th><th>Aktion</th></tr></thead><tbody>{% for step in dashboard_next_steps %}<tr><td>{{ step.problem }}</td><td>{{ step.operation }}</td><td>{{ step.amount }}</td><td><a href="{{ step.url }}">{{ step.action }}</a></td></tr>{% endfor %}</tbody></table></div>
+            {% else %}<p class="bookkeeping-empty-state bookkeeping-empty-state-success">Derzeit sind keine weiteren Arbeiten erforderlich.</p>{% endif %}
+            {% if dashboard_open_tasks %}<a class="bookkeeping-dashboard-all-tasks" href="{{ dashboard_open_tasks_url }}">Alle Probleme anzeigen</a>{% endif %}
+        </article>
+
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-category-card" aria-labelledby="income-category-heading">
+            <h2 id="income-category-heading">Einnahmen nach Kategorie</h2>
+            {% if dashboard_categories_income %}<div class="bookkeeping-category-bars">{% for item in dashboard_categories_income %}<div class="bookkeeping-category-row"><div><span>{{ item.label }}</span><strong>{{ item.amount }}</strong></div><span class="bookkeeping-category-track"><span class="bookkeeping-category-fill bookkeeping-category-fill-income" style="width: {{ item.width }}%;"></span></span></div>{% endfor %}</div>{% else %}<p class="bookkeeping-empty-state">Im gewählten Zeitraum sind keine kategorisierten Einnahmen vorhanden.</p>{% endif %}
+        </article>
+
+        <article class="bookkeeping-dashboard-v2-card bookkeeping-category-card" aria-labelledby="expense-category-heading">
+            <h2 id="expense-category-heading">Ausgaben nach Kategorie</h2>
+            {% if dashboard_categories_expenses %}<div class="bookkeeping-category-bars">{% for item in dashboard_categories_expenses %}<div class="bookkeeping-category-row"><div><span>{{ item.label }}</span><strong>{{ item.amount }}</strong></div><span class="bookkeeping-category-track"><span class="bookkeeping-category-fill bookkeeping-category-fill-expenses" style="width: {{ item.width }}%;"></span></span></div>{% endfor %}</div>{% else %}<p class="bookkeeping-empty-state">Im gewählten Zeitraum sind keine kategorisierten Ausgaben vorhanden.</p>{% endif %}
+        </article>
     </div>
 </section>
 
@@ -178,12 +188,25 @@
                 {% for statement in bank_statements %}
                 <tr>
                     <td class="bookkeeping-actions">
+                        <a href="{% url 'bank_statement_delete' statement.id %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Kontoauszug löschen" aria-label="Kontoauszug löschen">
+                            <i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Kontoauszug löschen</span>
+                        </a>
                         {% if statement.paperless_document_url %}
                         <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
                             <a href="{{ statement.paperless_document_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="In Paperless öffnen" aria-label="In Paperless öffnen">
                                 <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">In Paperless öffnen</span>
                             </a>
                         </div>
+                        {% endif %}
+                        {% if statement.can_sync_metadata %}
+                        <form method="post" class="bookkeeping-icon-action-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="sync_bank_statement_metadata">
+                            <input type="hidden" name="statement_id" value="{{ statement.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-warning bookkeeping-icon-action" title="Metadaten erneut synchronisieren" aria-label="Metadaten erneut synchronisieren">
+                                <i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Metadaten erneut synchronisieren</span>
+                            </button>
+                        </form>
                         {% endif %}
                         {% if statement.can_retry %}
                         <form method="post" class="bookkeeping-icon-action-form">
@@ -194,8 +217,6 @@
                                 <i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Erneut übertragen</span>
                             </button>
                         </form>
-                        {% else %}
-                        <span class="bookkeeping-muted">–</span>
                         {% endif %}
                     </td>
                     <td class="bookkeeping-statement-month">
@@ -220,12 +241,16 @@
                     <td class="bookkeeping-paperless-cell">
                         {% if statement.paperless_status == "completed" %}
                         <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-success">Abgelegt</span>
+                        {% elif statement.paperless_status == "duplicate" %}
+                        <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-success">Bereits vorhanden</span>
+                        {% elif statement.paperless_status == "incomplete" %}
+                        <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Verknüpft – Metadaten unvollständig</span>
                         {% elif statement.paperless_status == "pending" %}
                         <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Übertragung läuft</span>
                         {% else %}
                         <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-danger">Fehlgeschlagen</span>
                         {% endif %}
-                        {% if statement.paperless_error %}<small class="bookkeeping-table-detail">{{ statement.paperless_error }}</small>{% endif %}
+                        {% if statement.paperless_error %}<small class="bookkeeping-table-detail">{{ statement.paperless_error|escape }}</small>{% endif %}
                     </td>
                 </tr>
                 {% endfor %}
@@ -241,35 +266,15 @@
 {% if selected_status == "reviewed" or selected_status == "booked" %}
 <div class="bookkeeping-page-heading">
     <div>
-        <h1 id="transactions-heading" class="bookkeeping-page-title">Buchungsfertig</h1>
-        <p class="bookkeeping-page-description">Monat oder Quartal kontrollieren.</p>
+        <h1 id="transactions-heading" class="bookkeeping-page-title">Buchungsfertig{% if ready_period_label %} – {{ ready_period_label }}{% endif %}</h1>
+        <p class="bookkeeping-page-description">Vorgänge im ausgewählten Zeitraum kontrollieren.</p>
     </div>
 </div>
-{% if available_ready_months or available_ready_quarters %}
-<section class="bookkeeping-card bookkeeping-ready-control-card" aria-labelledby="quarter-control-heading">
-    <div class="bookkeeping-ready-control-toolbar">
-        <form method="get" class="bookkeeping-period-control" data-bookkeeping-period-form>
-            <input type="hidden" name="status" value="{{ selected_status }}">
-            <input type="hidden" name="period_type" value="{{ ready_period_type }}">
-            <div class="bookkeeping-period-type-switch" role="group" aria-label="Ansicht">
-                <button type="submit" name="period_type" value="month" class="btn btn-sm {% if ready_period_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Monat</button>
-                <button type="submit" name="period_type" value="quarter" class="btn btn-sm {% if ready_period_type == 'quarter' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Quartal</button>
-            </div>
-            <label for="export-period" class="form-label">Zeitraum</label>
-            <div class="bookkeeping-period-control-fields">
-                <select id="export-period" name="period" class="form-select">
-                    {% if ready_period_type == 'month' %}
-                    {% for period in available_ready_months %}
-                    <option value="{{ period.value }}"{% if period.value == ready_period %} selected{% endif %}>{{ period.label }}</option>
-                    {% endfor %}
-                    {% else %}
-                    {% for period in available_ready_quarters %}
-                    <option value="{{ period.value }}"{% if period.value == ready_period %} selected{% endif %}>{{ period.label }}</option>
-                    {% endfor %}
-                    {% endif %}
-                </select>
-            </div>
-        </form>
+{% if ready_period_control.options %}
+<section class="bookkeeping-ready-workspace" aria-labelledby="quarter-control-heading">
+    <div class="bookkeeping-card bookkeeping-ready-toolbar-card">
+        <div class="bookkeeping-ready-control-toolbar">
+        {% include "bookkeeping/_period_control.html" with period_control=ready_period_control %}
         {% if ready_period_type == 'quarter' and export_period %}
         <form method="post" class="bookkeeping-export-form">
             {% csrf_token %}
@@ -289,12 +294,13 @@
             <button type="submit" class="btn btn-primary">Übergabepaket herunterladen</button>
         </form>
         {% endif %}
+        </div>
+        {% if ready_period_type == 'quarter' %}
+        <p class="bookkeeping-export-hint">Der separate CSV-Export enthält immer das vollständige Quartal.</p>
+        {% else %}
+        <p class="bookkeeping-export-hint">Das Übergabepaket enthält den ausgewählten Monat. Der CSV-Export erfolgt quartalsweise. <a href="{% url 'bookkeeping_overview' %}?status={{ selected_status }}&amp;period_type=quarter">Zum Quartal wechseln</a></p>
+        {% endif %}
     </div>
-    {% if ready_period_type == 'quarter' %}
-    <p class="bookkeeping-export-hint">Der separate CSV-Export enthält immer das vollständige Quartal.</p>
-    {% else %}
-    <p class="bookkeeping-export-hint">Das Übergabepaket enthält den ausgewählten Monat. Der CSV-Export erfolgt quartalsweise. <a href="{% url 'bookkeeping_overview' %}?status={{ selected_status }}&amp;period_type=quarter">Zum Quartal wechseln</a></p>
-    {% endif %}
     {% if accountant_package %}
     <div class="bookkeeping-package-summary" aria-label="Übergabepaket-Übersicht">
         <div><span>Buchungszeilen</span><strong>{{ accountant_package.booking_entries }}</strong></div>
@@ -308,21 +314,27 @@
         </div>
     </div>
     {% if accountant_package.warnings %}
-    <details class="bookkeeping-package-warnings">
-        <summary><span class="badge bg-warning text-dark">{{ accountant_package.status_label }}</span></summary>
+    <div class="bookkeeping-package-warnings bookkeeping-ready-notice" role="alert">
+        <div class="bookkeeping-ready-notice-heading">
+            <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+            <strong>{{ accountant_package.status_label }}</strong>
+        </div>
         <ul>
             {% for warning in accountant_package.warning_items %}
             <li>{{ warning }}</li>
             {% endfor %}
         </ul>
-    </details>
+    </div>
     {% else %}
-    <p class="bookkeeping-package-complete"><span class="badge bg-success">Paket vollständig</span></p>
+    <div class="bookkeeping-package-complete bookkeeping-ready-notice bookkeeping-ready-notice-success" role="status">
+        <i class="bi bi-check-circle" aria-hidden="true"></i>
+        <strong>Paket vollständig</strong>
+    </div>
     {% endif %}
     {% endif %}
 
     {% if quarter_control_available %}
-    <div id="quarter-control" class="bookkeeping-quarter-control" aria-labelledby="quarter-control-heading">
+    <div id="quarter-control" class="bookkeeping-quarter-control bookkeeping-card" aria-labelledby="quarter-control-heading">
         <div class="bookkeeping-quarter-control-heading">
             <div>
                 <h2 id="quarter-control-heading" class="bookkeeping-subsection-title">{% if ready_period_type == 'month' %}Monatskontrolle{% else %}Quartalskontrolle{% endif %}</h2>
@@ -353,7 +365,7 @@
         {% if quarter_control.inconsistent_transactions %}
         <div class="bookkeeping-quarter-control-inconsistencies">
             <h3 class="bookkeeping-quarter-control-subtitle">Inkonsistente Transaktionen</h3>
-            <div class="bookkeeping-quarter-control-table-wrap">
+            <div class="bookkeeping-quarter-control-table-wrap" role="region" aria-label="Inkonsistente Transaktionen" tabindex="0">
                 <table class="table table-sm bookkeeping-quarter-control-table mb-0">
                     <thead>
                         <tr>
@@ -382,8 +394,13 @@
         </div>
         {% endif %}
 
-        <details class="bookkeeping-bank-reconciliation">
-            <summary>Bankabstimmung{% if ready_period_type == 'month' and quarter_control.balance.statement_control.status == 'success' %}: stimmt überein{% endif %}</summary>
+        <section class="bookkeeping-bank-reconciliation" aria-labelledby="bank-reconciliation-heading">
+            <div class="bookkeeping-bank-reconciliation-heading">
+                <h3 id="bank-reconciliation-heading" class="bookkeeping-quarter-control-subtitle">Bankabstimmung</h3>
+                {% if ready_period_type == 'month' and quarter_control.balance.statement_control.status == 'success' %}
+                <span class="bookkeeping-quarter-control-status bookkeeping-quarter-control-status-success">Stimmt überein</span>
+                {% endif %}
+            </div>
             <div class="bookkeeping-quarter-control-balance">
             {% if ready_period_type == 'month' %}
                 {% if quarter_control.balance.statement %}
@@ -451,7 +468,7 @@
             {% endif %}
             {% endif %}
             </div>
-        </details>
+        </section>
     </div>
     {% endif %}
 </section>
@@ -462,8 +479,9 @@
 <div class="bookkeeping-page-heading">
     <div>
         <h1 id="transactions-heading" class="bookkeeping-page-title">{% if selected_status == "open" %}Offene Buchungen{% else %}{{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}{% endif %}</h1>
-        {% if selected_status == "open" %}<p class="bookkeeping-page-description">Offene Buchungen nach Monat erledigen.</p>{% endif %}
+        {% if selected_status == "open" %}<p class="bookkeeping-page-description">Alle offenen Buchungen.</p>{% endif %}
     </div>
+    {% if selected_status != "open" %}
     <form method="get" class="bookkeeping-filter-card" data-bookkeeping-period-form>
         <input type="hidden" name="status" value="{{ selected_status }}">
         <label for="transaction-month" class="form-label">Monat</label>
@@ -476,6 +494,7 @@
             </select>
         </div>
     </form>
+    {% endif %}
 </div>
 {% endif %}
 
@@ -519,25 +538,25 @@
                     </div>
                     {% elif transaction.status_code == "imported" %}
                     <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchung erfassen" aria-label="Buchung erfassen">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchung erfassen" aria-label="Buchung erfassen">
                             <i class="bi bi-journal-plus" aria-hidden="true"></i><span class="visually-hidden">Buchung erfassen</span>
                         </a>
                     </div>
                     {% elif transaction.status_code == "matched" %}
                     <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchungsdaten ergänzen" aria-label="Buchungsdaten ergänzen">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Buchungsdaten ergänzen" aria-label="Buchungsdaten ergänzen">
                             <i class="bi bi-pencil-square" aria-hidden="true"></i><span class="visually-hidden">Buchungsdaten ergänzen</span>
                         </a>
-                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
                             <i class="bi bi-chat-left-text" aria-hidden="true"></i><span class="visually-hidden">Anmerkung</span>
                         </a>
                     </div>
                     {% elif transaction.status_code == "reviewed" or transaction.status_code == "booked" %}
                     <div class="bookkeeping-action-buttons bookkeeping-icon-action-group">
-                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten">
+                        <a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}" class="btn btn-sm btn-outline-primary bookkeeping-icon-action" title="Bearbeiten" aria-label="Bearbeiten">
                             <i class="bi bi-pencil" aria-hidden="true"></i><span class="visually-hidden">Bearbeiten</span>
                         </a>
-                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
+                        <a href="{% url 'bank_transaction_note' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Anmerkung" aria-label="Anmerkung">
                             <i class="bi bi-chat-left-text" aria-hidden="true"></i><span class="visually-hidden">Anmerkung</span>
                         </a>
                         <a href="{% url 'bank_transaction_reset_booking' transaction.id %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Buchungssatz zurücksetzen" aria-label="Buchungssatz zurücksetzen">
@@ -612,7 +631,7 @@
                         <summary>Weitere Details</summary>
                         <dl class="bookkeeping-row-details-list">
                             {% if transaction.manual_invoice %}<div><dt>Belegart</dt><dd>Manueller Beleg</dd></div>{% endif %}
-                            {% if transaction.supporting_document_count %}<div><dt>Belege</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}&amp;month={{ selected_month }}">{{ transaction.supporting_document_count }} Belege</a></dd></div>{% endif %}
+                            {% if transaction.supporting_document_count %}<div><dt>Belege</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}">{{ transaction.supporting_document_count }} Belege</a></dd></div>{% endif %}
                             <div><dt>IBAN</dt><dd>{{ transaction.iban|default:"–" }}</dd></div>
                             {% if selected_status != "imported" %}
                             {% if not transaction.manual_invoice %}<div><dt>Matching-Regel</dt><dd>{% if transaction.matched_rule_id %}<a href="{{ transaction.matched_rule_url }}">{{ transaction.matched_rule }}</a>{% else %}{{ transaction.matched_rule|default:"–" }}{% endif %}</dd></div>

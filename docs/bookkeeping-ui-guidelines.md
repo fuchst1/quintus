@@ -73,7 +73,7 @@ Bevorzugtes Grundmuster:
 - Scrollbare Tabellenbereiche erhalten `role="region"`, einen beschreibenden `aria-label` und `tabindex="0"`.
 - Spaltenüberschriften verwenden `scope="col"`. Die Aktionsspalte steht links und heißt „Aktionen“.
 - Beträge stehen rechtsbündig über `.bookkeeping-amount`; Datum, Richtung und Status bleiben kompakt und nicht umbrechend. Längere Namen, Zwecke und Details dürfen umbrechen.
-- Die vorhandenen Zeilenlinien, alternierenden Hintergründe, Hover-Zustände und fixierten Tabellenköpfe werden über `.bookkeeping-data-table` beibehalten.
+- Die vorhandenen dezenten Zeilenlinien, weißen Datenzeilen, Hover-Zustände und fixierten Tabellenköpfe werden über `.bookkeeping-data-table` beibehalten. Zebra-Striping und vertikale Zellrahmen werden nicht verwendet.
 - Seltene oder umfangreiche Zusatzinformationen werden mit nativem `<details>` in der betroffenen Zelle angeboten, wie in `overview.html` und `_matching_rule_table.html`.
 - Fehlen Datensätze, erscheint eine kurze `.bookkeeping-empty-state` statt einer leeren Tabelle.
 

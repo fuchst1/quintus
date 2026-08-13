@@ -58,7 +58,7 @@ def get_export_booking_entries(*, start_date, end_date):
             payment_date__lte=end_date,
         )
         .select_related("bank_transaction")
-        .order_by("payment_date", "bank_transaction_id", "id")
+        .order_by("payment_date", "bank_transaction_id", "position", "id")
     )
     manual_entries = list(
         ManualInvoiceEntry.objects.filter(
