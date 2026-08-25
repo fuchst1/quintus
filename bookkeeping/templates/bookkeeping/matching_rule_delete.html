@@ -1,4 +1,4 @@
-{% extends "bookkeeping/base.html" %}
+{% extends bookkeeping_base_template %}
 
 {% block title %}Matching-Regel löschen – Quintus Buchhaltung{% endblock %}
 
@@ -12,7 +12,7 @@
         <form method="post" class="bookkeeping-confirmation-actions">
             {% csrf_token %}
             <button type="submit" class="btn btn-danger">Löschen</button>
-            <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+            <a href="{% url matching_rule_list_url_name %}" class="btn btn-outline-secondary">Abbrechen</a>
         </form>
     </div>
 </section>

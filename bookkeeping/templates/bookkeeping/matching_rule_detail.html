@@ -1,4 +1,4 @@
-{% extends "bookkeeping/base.html" %}
+{% extends bookkeeping_base_template %}
 {% load bookkeeping_formatting %}
 
 {% block title %}{{ object.name }} – Version {{ object.version_number }} – Quintus Buchhaltung{% endblock %}
@@ -12,7 +12,7 @@
             <p class="bookkeeping-page-description">Diese Regel wurde bereits verwendet und ist daher schreibgeschützt.</p>
             {% endif %}
         </div>
-        <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Zurück zu den Matching-Regeln</a>
+        <a href="{% url matching_rule_list_url_name %}" class="btn btn-outline-secondary">Zurück zu den Matching-Regeln</a>
     </div>
 
     {% if messages %}
@@ -54,12 +54,12 @@
         <h2 class="bookkeeping-section-title">Versionsverlauf</h2>
         <div class="bookkeeping-version-links">
             {% if previous_version %}
-            <a href="{% url 'matching_rule_detail' previous_version.pk %}" class="btn btn-sm btn-outline-secondary">Vorgängerversion: Version {{ previous_version.version_number }}</a>
+            <a href="{% url matching_rule_detail_url_name previous_version.pk %}" class="btn btn-sm btn-outline-secondary">Vorgängerversion: Version {{ previous_version.version_number }}</a>
             {% else %}
             <span>Keine Vorgängerversion</span>
             {% endif %}
             {% if next_version %}
-            <a href="{% url 'matching_rule_detail' next_version.pk %}" class="btn btn-sm btn-outline-primary">Nachfolgeversion: Version {{ next_version.version_number }}</a>
+            <a href="{% url matching_rule_detail_url_name next_version.pk %}" class="btn btn-sm btn-outline-primary">Nachfolgeversion: Version {{ next_version.version_number }}</a>
             {% else %}
             <span>Keine Nachfolgeversion</span>
             {% endif %}
@@ -144,8 +144,8 @@
                                     <button type="submit" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Übertragung erneut versuchen" aria-label="Übertragung erneut versuchen"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span class="visually-hidden">Übertragung erneut versuchen</span></button>
                                 </form>
                                 {% endif %}
-                                <a href="{% url 'matching_rule_document_remove' object.pk document.reference_uuid %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Verknüpfung entfernen" aria-label="Verknüpfung entfernen"><i class="bi bi-link-45deg" aria-hidden="true"></i><span class="visually-hidden">Verknüpfung entfernen</span></a>
-                                <a href="{% url 'matching_rule_document_delete' object.pk document.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Löschen" aria-label="Löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Löschen</span></a>
+                                <a href="{% url matching_rule_document_remove_url_name object.pk document.reference_uuid %}" class="btn btn-sm btn-outline-secondary bookkeeping-icon-action" title="Verknüpfung entfernen" aria-label="Verknüpfung entfernen"><i class="bi bi-link-45deg" aria-hidden="true"></i><span class="visually-hidden">Verknüpfung entfernen</span></a>
+                                <a href="{% url matching_rule_document_delete_url_name object.pk document.reference_uuid %}" class="btn btn-sm btn-outline-danger bookkeeping-icon-action" title="Löschen" aria-label="Löschen"><i class="bi bi-trash" aria-hidden="true"></i><span class="visually-hidden">Löschen</span></a>
                             </div>
                         </td>
                         <td>{{ document.original_filename }}</td>

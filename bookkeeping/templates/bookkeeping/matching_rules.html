@@ -1,4 +1,4 @@
-{% extends "bookkeeping/base.html" %}
+{% extends bookkeeping_base_template %}
 
 {% block title %}Matching-Regeln – Quintus Buchhaltung{% endblock %}
 
@@ -9,7 +9,7 @@
             <h1 id="matching-rules-heading" class="bookkeeping-page-title">Matching-Regeln</h1>
             <p class="bookkeeping-page-description">Regeln für die automatische Zuordnung.</p>
         </div>
-        <a href="{% url 'bookkeeping_overview' %}" class="btn btn-outline-secondary">Zurück zu den Transaktionen</a>
+        {% if bookkeeping_overview_url_name %}<a href="{% url bookkeeping_overview_url_name %}" class="btn btn-outline-secondary">Zurück zu den Transaktionen</a>{% endif %}
     </div>
 
     {% if messages %}

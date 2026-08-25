@@ -1,4 +1,4 @@
-{% extends "bookkeeping/base.html" %}
+{% extends bookkeeping_base_template %}
 
 {% block title %}Matching-Regel bearbeiten – Quintus Buchhaltung{% endblock %}
 
@@ -8,7 +8,7 @@
         <div>
             <h1 id="matching-rule-edit-heading" class="bookkeeping-page-title">Matching-Regel bearbeiten</h1>
         </div>
-        <a href="{% url 'matching_rule_list' %}" class="btn btn-outline-secondary">Abbrechen</a>
+        <a href="{% url matching_rule_list_url_name %}" class="btn btn-outline-secondary">Abbrechen</a>
     </div>
 
     {% if form.errors %}

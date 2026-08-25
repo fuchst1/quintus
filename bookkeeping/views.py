@@ -4,17 +4,18 @@ import logging
 import os
 import re
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import IntegrityError
-from django.db.models import Count, Prefetch, Q, Sum
+from django.db.models import Count, Max, Prefetch, Q, Sum
 from django.db import transaction as db_transaction
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse, reverse_lazy
+from django.urls import reverse
+from django.utils import timezone
 from django.views.generic import DeleteView, TemplateView, UpdateView
 
 from .bank_statement_parser import BankStatementParseError
@@ -231,6 +232,58 @@ def supporting_document_owner_url(document):
             kwargs={"pk": document.bank_transaction_id},
         )
     raise ValueError("SupportingDocument hat keinen gültigen Besitzer.")
+
+
+class BookkeepingMatchingRouteMixin:
+    """Keep matching-rule workflows reusable across UI URL namespaces."""
+
+    url_namespace = ""
+    bookkeeping_base_template = "bookkeeping/base.html"
+    bookkeeping_overview_url_name = "bookkeeping_overview"
+
+    def route_name(self, name):
+        if self.url_namespace:
+            return f"{self.url_namespace}:{name}"
+        return name
+
+    def reverse_route(self, name, **kwargs):
+        return reverse(self.route_name(name), kwargs=kwargs or None)
+
+    def matching_navigation_context(self):
+        return _bookkeeping_navigation_context(self.request)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(
+            {
+                "bookkeeping_base_template": self.bookkeeping_base_template,
+                "bookkeeping_overview_url_name": (
+                    self.bookkeeping_overview_url_name
+                ),
+                "matching_rule_list_url_name": self.route_name(
+                    "matching_rule_list"
+                ),
+                "matching_rule_detail_url_name": self.route_name(
+                    "matching_rule_detail"
+                ),
+                "matching_rule_edit_url_name": self.route_name(
+                    "matching_rule_edit"
+                ),
+                "matching_rule_version_url_name": self.route_name(
+                    "matching_rule_version"
+                ),
+                "matching_rule_delete_url_name": self.route_name(
+                    "matching_rule_delete"
+                ),
+                "matching_rule_document_remove_url_name": self.route_name(
+                    "matching_rule_document_remove"
+                ),
+                "matching_rule_document_delete_url_name": self.route_name(
+                    "matching_rule_document_delete"
+                ),
+            }
+        )
+        return context
 
 
 def _parse_month(value):
@@ -1571,17 +1624,63 @@ def _bookkeeping_navigation_context(request, filter_params=None):
     }
 
 
+RECENT_MATCH_WINDOW_DAYS = 30
+
+
+def _relative_date_display(value):
+    if value is None:
+        return "–"
+    days = (timezone.localdate() - value).days
+    if days <= 0:
+        return "Heute"
+    if days == 1:
+        return "Gestern"
+    return f"vor {days} Tagen"
+
+
+def _amount_tolerance_display(rule):
+    if rule.amount_tolerance_type == MatchingRule.ToleranceType.NONE:
+        return ""
+    if rule.amount_tolerance_value is None:
+        return ""
+    if rule.amount_tolerance_type == MatchingRule.ToleranceType.PERCENT:
+        return f" ±{format_austrian_decimal(rule.amount_tolerance_value)} %"
+    return f" ±{format_austrian_decimal(rule.amount_tolerance_value)} €"
+
+
 def _display_matching_rule(rule):
     expected_amount = (
         format_austrian_decimal(rule.expected_amount)
         if rule.expected_amount is not None
         else "–"
     )
+    amount_display = (
+        f"{expected_amount} €{_amount_tolerance_display(rule)}"
+        if rule.expected_amount is not None
+        else expected_amount
+    )
     notes_preview, notes_truncated = _note_preview(rule.notes)
     next_version = MatchingRule.objects.filter(previous_version=rule).first()
     linked_transaction_count = getattr(rule, "_linked_transaction_count", None)
     if linked_transaction_count is None:
         linked_transaction_count = rule.transactions.count()
+    recent_match_count = getattr(rule, "_recent_match_count", None)
+    if recent_match_count is None:
+        cutoff = timezone.localdate() - timedelta(days=RECENT_MATCH_WINDOW_DAYS)
+        recent_match_count = rule.transactions.filter(
+            booking_date__gte=cutoff
+        ).count()
+    if hasattr(rule, "_last_match_date"):
+        last_match_date = rule._last_match_date
+    else:
+        last_match = rule.transactions.order_by("-booking_date").first()
+        last_match_date = last_match.booking_date if last_match else None
+    condition_iban_full = rule.iban or ""
+    if len(condition_iban_full) > 8:
+        condition_iban_display = f"{condition_iban_full[:4]}…{condition_iban_full[-4:]}"
+    else:
+        condition_iban_display = condition_iban_full or "–"
+    name_is_opaque = bool(re.fullmatch(r"[A-Z0-9]{3,10}", rule.name.strip()))
     return {
         "id": rule.pk,
         "name": rule.name,
@@ -1603,7 +1702,29 @@ def _display_matching_rule(rule):
         "used": linked_transaction_count > 0,
         "previous_version_id": rule.previous_version_id,
         "next_version_id": next_version.pk if next_version else None,
+        "condition_kind_code": rule.match_type,
+        "condition_pattern": rule.text_pattern or "",
+        "condition_amount_display": amount_display,
+        "condition_iban_display": condition_iban_display,
+        "condition_iban_full": condition_iban_full,
+        "name_is_opaque": name_is_opaque,
+        "recent_match_count": recent_match_count,
+        "is_dead": rule.active and recent_match_count == 0,
+        "last_match_display": _relative_date_display(last_match_date),
     }
+
+
+def _matching_rules_queryset():
+    cutoff = timezone.localdate() - timedelta(days=RECENT_MATCH_WINDOW_DAYS)
+    return MatchingRule.objects.annotate(
+        _linked_transaction_count=Count("transactions", distinct=True),
+        _recent_match_count=Count(
+            "transactions",
+            filter=Q(transactions__booking_date__gte=cutoff),
+            distinct=True,
+        ),
+        _last_match_date=Max("transactions__booking_date"),
+    ).order_by("-created_at")
 
 
 def _matching_template_initials(rule):
@@ -3679,17 +3800,18 @@ class BookingEntryView(TemplateView):
         )
 
 
-class MatchingRuleListView(TemplateView):
+class MatchingRuleListView(BookkeepingMatchingRouteMixin, TemplateView):
     template_name = "bookkeeping/matching_rules.html"
+
+    def get_matching_rules_queryset(self):
+        return _matching_rules_queryset()
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         context["matching_rules"] = [
             _display_matching_rule(rule)
-            for rule in MatchingRule.objects.annotate(
-                _linked_transaction_count=Count("transactions", distinct=True)
-            ).order_by("-created_at")
+            for rule in self.get_matching_rules_queryset()
         ]
         context.setdefault("matching_rule_form", MatchingRuleForm())
         context.setdefault(
@@ -3719,7 +3841,7 @@ class MatchingRuleListView(TemplateView):
                 matching_template_formset.instance = matching_rule
                 matching_template_formset.save()
             messages.success(request, "Matching-Regel angelegt.")
-            return redirect("matching_rule_list")
+            return redirect(self.route_name("matching_rule_list"))
         return self.render_to_response(
             self.get_context_data(
                 matching_rule_form=matching_rule_form,
@@ -3729,15 +3851,17 @@ class MatchingRuleListView(TemplateView):
         )
 
 
-class MatchingRuleEditView(UpdateView):
+class MatchingRuleEditView(BookkeepingMatchingRouteMixin, UpdateView):
     model = MatchingRule
     form_class = MatchingRuleForm
     template_name = "bookkeeping/matching_rule_edit.html"
-    success_url = reverse_lazy("matching_rule_list")
+
+    def get_success_url(self):
+        return self.reverse_route("matching_rule_list")
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         context.setdefault(
             "matching_rule_formset",
             MatchingRuleBookingTemplateFormSet(
@@ -3756,7 +3880,7 @@ class MatchingRuleEditView(UpdateView):
                 "schreibgeschützt.",
             )
             return redirect(
-                "matching_rule_detail",
+                self.route_name("matching_rule_detail"),
                 pk=self.object.pk,
             )
         return super().dispatch(request, *args, **kwargs)
@@ -3789,7 +3913,7 @@ class MatchingRuleEditView(UpdateView):
         return redirect(self.get_success_url())
 
 
-class MatchingRuleDetailView(TemplateView):
+class MatchingRuleDetailView(BookkeepingMatchingRouteMixin, TemplateView):
     template_name = "bookkeeping/matching_rule_detail.html"
 
     def dispatch(self, request, *args, **kwargs):
@@ -3819,7 +3943,10 @@ class MatchingRuleDetailView(TemplateView):
                         request,
                         "Nachweis gespeichert. Die Übertragung zu Paperless läuft.",
                     )
-                return redirect("matching_rule_detail", pk=self.object.pk)
+                return redirect(
+                    self.route_name("matching_rule_detail"),
+                    pk=self.object.pk,
+                )
             return self.render_to_response(
                 self.get_context_data(supporting_document_form=document_form)
             )
@@ -3835,17 +3962,23 @@ class MatchingRuleDetailView(TemplateView):
                 messages.error(request, str(exc))
             else:
                 messages.success(request, "Erneute Übertragung zu Paperless gestartet.")
-            return redirect("matching_rule_detail", pk=self.object.pk)
+            return redirect(
+                self.route_name("matching_rule_detail"),
+                pk=self.object.pk,
+            )
         if action == "deactivate" and self.object.active:
             self.object.active = False
             self.object.save(update_fields=("active", "updated_at"))
             messages.success(request, "Matching-Regel deaktiviert.")
-        return redirect("matching_rule_detail", pk=self.object.pk)
+        return redirect(
+            self.route_name("matching_rule_detail"),
+            pk=self.object.pk,
+        )
 
     def get_context_data(self, **kwargs):
         refresh_pending_supporting_documents()
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         context["object"] = self.object
         context["matching_rule"] = self.object
         context["booking_templates"] = self.object.booking_templates.order_by(
@@ -3866,7 +3999,7 @@ class MatchingRuleDetailView(TemplateView):
         return context
 
 
-class SupportingDocumentActionView(TemplateView):
+class SupportingDocumentActionView(BookkeepingMatchingRouteMixin, TemplateView):
     template_name = "bookkeeping/supporting_document_confirm.html"
     action = "unlink"
 
@@ -3888,15 +4021,23 @@ class SupportingDocumentActionView(TemplateView):
         return super().dispatch(request, *args, **kwargs)
 
     def _owner_redirect(self):
-        return redirect(supporting_document_owner_url(self.document))
+        return redirect(self._owner_url())
+
+    def _owner_url(self):
+        if self.document.matching_rule_id is not None:
+            return self.reverse_route(
+                "matching_rule_detail",
+                pk=self.document.matching_rule_id,
+            )
+        return supporting_document_owner_url(self.document)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         context["document"] = display_supporting_document(self.document)
         context["document_object"] = self.document
         context["action"] = self.action
-        context["owner_url"] = supporting_document_owner_url(self.document)
+        context["owner_url"] = self._owner_url()
         context["owner"] = (
             self.document.matching_rule
             if self.owner_kind == "matching_rule"
@@ -3926,7 +4067,7 @@ class SupportingDocumentDeleteView(SupportingDocumentActionView):
     action = "delete"
 
 
-class MatchingRuleVersionView(TemplateView):
+class MatchingRuleVersionView(BookkeepingMatchingRouteMixin, TemplateView):
     template_name = "bookkeeping/matching_rule_version.html"
 
     def dispatch(self, request, *args, **kwargs):
@@ -3937,13 +4078,19 @@ class MatchingRuleVersionView(TemplateView):
                 "Eine neue Version kann nur für eine bereits verwendete Regel "
                 "angelegt werden.",
             )
-            return redirect("matching_rule_edit", pk=self.object.pk)
+            return redirect(
+                self.route_name("matching_rule_edit"),
+                pk=self.object.pk,
+            )
         if self.object.has_successor:
             messages.info(
                 request,
                 "Für diese Regel besteht bereits eine Nachfolgeversion.",
             )
-            return redirect("matching_rule_detail", pk=self.object.pk)
+            return redirect(
+                self.route_name("matching_rule_detail"),
+                pk=self.object.pk,
+            )
         return super().dispatch(request, *args, **kwargs)
 
     def _build_new_rule(self, source=None):
@@ -3954,6 +4101,8 @@ class MatchingRuleVersionView(TemplateView):
             match_type=source.match_type,
             iban=source.iban,
             expected_amount=source.expected_amount,
+            amount_tolerance_type=source.amount_tolerance_type,
+            amount_tolerance_value=source.amount_tolerance_value,
             text_pattern=source.text_pattern,
             notes=source.notes,
             active=True,
@@ -3963,7 +4112,7 @@ class MatchingRuleVersionView(TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         context["source_rule"] = self.object
         context.setdefault(
             "matching_rule_form",
@@ -4008,13 +4157,19 @@ class MatchingRuleVersionView(TemplateView):
                         "Eine neue Version kann nur für eine bereits verwendete "
                         "Regel angelegt werden.",
                     )
-                    return redirect("matching_rule_edit", pk=source.pk)
+                    return redirect(
+                        self.route_name("matching_rule_edit"),
+                        pk=source.pk,
+                    )
                 if source.has_successor:
                     messages.info(
                         request,
                         "Für diese Regel besteht bereits eine Nachfolgeversion.",
                     )
-                    return redirect("matching_rule_detail", pk=source.pk)
+                    return redirect(
+                        self.route_name("matching_rule_detail"),
+                        pk=source.pk,
+                    )
 
                 new_rule = form.save(commit=False)
                 new_rule.previous_version = source
@@ -4030,20 +4185,25 @@ class MatchingRuleVersionView(TemplateView):
                 request,
                 "Für diese Regel besteht bereits eine Nachfolgeversion.",
             )
-            return redirect("matching_rule_detail", pk=self.object.pk)
+            return redirect(
+                self.route_name("matching_rule_detail"),
+                pk=self.object.pk,
+            )
 
         messages.success(request, "Neue Version der Matching-Regel angelegt.")
-        return redirect("matching_rule_list")
+        return redirect(self.route_name("matching_rule_list"))
 
 
-class MatchingRuleDeleteView(DeleteView):
+class MatchingRuleDeleteView(BookkeepingMatchingRouteMixin, DeleteView):
     model = MatchingRule
     template_name = "bookkeeping/matching_rule_delete.html"
-    success_url = reverse_lazy("matching_rule_list")
+
+    def get_success_url(self):
+        return self.reverse_route("matching_rule_list")
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context.update(_bookkeeping_navigation_context(self.request))
+        context.update(self.matching_navigation_context())
         return context
 
     def dispatch(self, request, *args, **kwargs):
@@ -4053,14 +4213,14 @@ class MatchingRuleDeleteView(DeleteView):
                 request,
                 "Diese Regel wurde bereits verwendet und kann nicht gelöscht werden.",
             )
-            return redirect("matching_rule_list")
+            return redirect(self.route_name("matching_rule_list"))
         if self.object.has_successor:
             messages.error(
                 request,
                 "Diese Regel ist eine Vorgängerversion und kann nicht gelöscht "
                 "werden.",
             )
-            return redirect("matching_rule_list")
+            return redirect(self.route_name("matching_rule_list"))
         return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):

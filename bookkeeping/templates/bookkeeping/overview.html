@@ -481,6 +481,14 @@
         <h1 id="transactions-heading" class="bookkeeping-page-title">{% if selected_status == "open" %}Offene Buchungen{% else %}{{ page_heading }}{% if selected_month_label %} – {{ selected_month_label }}{% endif %}{% endif %}</h1>
         {% if selected_status == "open" %}<p class="bookkeeping-page-description">Alle offenen Buchungen.</p>{% endif %}
     </div>
+    {% if selected_status == "open" %}
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="run_matching">
+        <input type="hidden" name="status" value="{{ selected_status }}">
+        <button type="submit" class="btn btn-outline-secondary">Matching ausführen</button>
+    </form>
+    {% endif %}
     {% if selected_status != "open" %}
     <form method="get" class="bookkeeping-filter-card" data-bookkeeping-period-form>
         <input type="hidden" name="status" value="{{ selected_status }}">

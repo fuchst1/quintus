@@ -192,6 +192,21 @@ class MatchingRuleForm(forms.ModelForm):
             attrs={"class": "form-control", "inputmode": "decimal"}
         ),
     )
+    amount_tolerance_type = forms.ChoiceField(
+        choices=MatchingRule.ToleranceType.choices,
+        required=False,
+        label="Toleranz",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    amount_tolerance_value = AustrianDecimalField(
+        max_digits=14,
+        decimal_places=2,
+        required=False,
+        label="Toleranzwert",
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "inputmode": "decimal"}
+        ),
+    )
 
     class Meta:
         model = MatchingRule
@@ -201,6 +216,8 @@ class MatchingRuleForm(forms.ModelForm):
             "match_type",
             "iban",
             "expected_amount",
+            "amount_tolerance_type",
+            "amount_tolerance_value",
             "text_pattern",
             "notes",
             "active",
@@ -211,6 +228,8 @@ class MatchingRuleForm(forms.ModelForm):
             "match_type": "Regeltyp",
             "iban": "IBAN",
             "expected_amount": "Erwarteter Betrag",
+            "amount_tolerance_type": "Toleranz",
+            "amount_tolerance_value": "Toleranzwert",
             "text_pattern": "Textmuster",
             "notes": "Anmerkung",
             "active": "Aktiv",
@@ -283,6 +302,35 @@ class MatchingRuleForm(forms.ModelForm):
                 self.add_error(
                     "expected_amount",
                     "Der erwartete Betrag muss bei Textmuster-Regeln leer sein.",
+                )
+
+        tolerance_type = (
+            cleaned_data.get("amount_tolerance_type")
+            or MatchingRule.ToleranceType.NONE
+        )
+        cleaned_data["amount_tolerance_type"] = tolerance_type
+        tolerance_value = cleaned_data.get("amount_tolerance_value")
+        if tolerance_type == MatchingRule.ToleranceType.NONE:
+            cleaned_data["amount_tolerance_value"] = None
+        elif tolerance_type:
+            if match_type != MatchingRule.MatchType.EXACT or expected_amount is None:
+                self.add_error(
+                    "amount_tolerance_type",
+                    "Eine Betragstoleranz ist nur bei exakten Regeln mit "
+                    "erwartetem Betrag möglich.",
+                )
+            elif tolerance_value is None or tolerance_value <= 0:
+                self.add_error(
+                    "amount_tolerance_value",
+                    "Bitte einen Toleranzwert größer 0 angeben.",
+                )
+            elif (
+                tolerance_type == MatchingRule.ToleranceType.PERCENT
+                and tolerance_value > 100
+            ):
+                self.add_error(
+                    "amount_tolerance_value",
+                    "Die Toleranz darf 100 % nicht überschreiten.",
                 )
 
         return cleaned_data

@@ -45,6 +45,24 @@
         </div>
         {% endif %}
     </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.amount_tolerance_type.id_for_label }}" class="form-label">{{ matching_rule_form.amount_tolerance_type.label }}</label>
+        {{ matching_rule_form.amount_tolerance_type }}
+        {% if matching_rule_form.amount_tolerance_type.errors %}
+        <div id="{{ matching_rule_form.amount_tolerance_type.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.amount_tolerance_type.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-2">
+        <label for="{{ matching_rule_form.amount_tolerance_value.id_for_label }}" class="form-label">{{ matching_rule_form.amount_tolerance_value.label }}</label>
+        {{ matching_rule_form.amount_tolerance_value }}
+        {% if matching_rule_form.amount_tolerance_value.errors %}
+        <div id="{{ matching_rule_form.amount_tolerance_value.id_for_label }}_error" class="invalid-feedback bookkeeping-invalid-feedback">
+            {% for error in matching_rule_form.amount_tolerance_value.errors %}{% ifchanged error %}<div>{{ error }}</div>{% endifchanged %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
     <div class="col-md-1">
         <div class="form-check bookkeeping-active-field">
             {{ matching_rule_form.active }}
@@ -56,9 +74,11 @@
         </div>
         {% endif %}
     </div>
+    {% if not hide_submit %}
     <div class="col-md-1">
         <button type="submit" class="btn btn-primary w-100">{{ submit_label|default:"Anlegen" }}</button>
     </div>
+    {% endif %}
 </div>
 <div class="row g-2 mt-1">
     <div class="col-md-4">

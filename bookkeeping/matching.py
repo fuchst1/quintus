@@ -238,9 +238,19 @@ def _normalized_transaction_text(bank_transaction):
     )
 
 
+def _amount_within_tolerance(rule, amount):
+    tolerance_value = rule.amount_tolerance_value
+    if rule.amount_tolerance_type == MatchingRule.ToleranceType.PERCENT:
+        tolerance = rule.expected_amount * tolerance_value / Decimal("100")
+    else:
+        tolerance = tolerance_value
+    return abs(amount - rule.expected_amount) <= tolerance
+
+
 def match_imported_transactions():
     """Match each eligible transaction against exact rules before regex rules."""
     exact_candidates = defaultdict(list)
+    tolerant_rules = []
     regex_rules = []
     active_rules = MatchingRule.objects.filter(active=True)
     for rule in active_rules:
@@ -251,6 +261,9 @@ def match_imported_transactions():
                 or rule.expected_amount <= 0
                 or rule.text_pattern.strip()
             ):
+                continue
+            if rule.amount_tolerance_type != MatchingRule.ToleranceType.NONE:
+                tolerant_rules.append((rule, normalize_iban(rule.iban)))
                 continue
             key = (normalize_iban(rule.iban), rule.direction, rule.expected_amount)
             exact_candidates[key].append(rule)
@@ -280,16 +293,25 @@ def match_imported_transactions():
                 bank_transaction.matched_rule = None
                 bank_transaction.save(update_fields=("matched_rule",))
 
+            transaction_amount = abs(bank_transaction.amount)
+            partner_iban = normalize_iban(bank_transaction.partner_iban)
             exact_key = (
-                normalize_iban(bank_transaction.partner_iban),
+                partner_iban,
                 bank_transaction.direction,
-                abs(bank_transaction.amount),
+                transaction_amount,
             )
-            exact_matches = exact_candidates.get(exact_key, [])
+            candidates = list(exact_candidates.get(exact_key, []))
+            candidates.extend(
+                rule
+                for rule, rule_iban in tolerant_rules
+                if rule.direction == bank_transaction.direction
+                and rule_iban == partner_iban
+                and _amount_within_tolerance(rule, transaction_amount)
+            )
             matched_rule = None
-            if len(exact_matches) == 1:
-                matched_rule = exact_matches[0]
-            elif len(exact_matches) > 1:
+            if len(candidates) == 1:
+                matched_rule = candidates[0]
+            elif len(candidates) > 1:
                 ambiguous_count += 1
                 continue
             else:

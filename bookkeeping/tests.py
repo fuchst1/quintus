@@ -240,6 +240,7 @@ class BookkeepingOverviewUploadTests(TestCase):
             self.assertNotContains(response, "Banktransaktionen")
             self.assertNotContains(response, 'name="json_file"')
             self.assertNotContains(response, 'name="pdf"')
+        for response in (ready_response, rules_response):
             self.assertNotContains(response, "Matching ausführen")
 
     def test_valid_upload_displays_transactions_and_converts_positive_and_negative_amounts(self):
@@ -645,6 +646,12 @@ class BookkeepingOverviewFilteringTests(TestCase):
             {row["name"] for row in response.context["transactions"]},
             {"Offen", "Unvollständig"},
         )
+
+    def test_open_filter_shows_matching_button(self):
+        response = self.get_overview(status="open")
+
+        self.assertContains(response, "Matching ausführen")
+        self.assertContains(response, 'name="action" value="run_matching"')
 
     def test_open_rows_show_reason_actions_and_matched_rule(self):
         rule = MatchingRule.objects.create(
@@ -7157,6 +7164,85 @@ class TransactionMatchingTests(TestCase):
         self.assertEqual(result, (0, 1, 0))
         self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
 
+    def test_percent_tolerance_matches_transaction_within_range(self):
+        self.create_rule(
+            expected_amount=Decimal("100.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value=Decimal("5.00"),
+        )
+        bank_transaction = self.create_transaction(amount=Decimal("104.00"))
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result, (1, 0, 0))
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+
+    def test_percent_tolerance_rejects_transaction_outside_range(self):
+        self.create_rule(
+            expected_amount=Decimal("100.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value=Decimal("5.00"),
+        )
+        bank_transaction = self.create_transaction(amount=Decimal("106.00"))
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result, (0, 1, 0))
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.IMPORTED)
+
+    def test_absolute_tolerance_matches_transaction_within_range(self):
+        self.create_rule(
+            expected_amount=Decimal("100.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.ABSOLUTE,
+            amount_tolerance_value=Decimal("10.00"),
+        )
+        bank_transaction = self.create_transaction(amount=Decimal("108.00"))
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result, (1, 0, 0))
+        self.assertEqual(bank_transaction.status, BankTransaction.Status.MATCHED)
+
+    def test_overlapping_tolerant_rules_remain_ambiguous(self):
+        self.create_rule(
+            name="Regel 1",
+            expected_amount=Decimal("100.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.ABSOLUTE,
+            amount_tolerance_value=Decimal("10.00"),
+        )
+        self.create_rule(
+            name="Regel 2",
+            expected_amount=Decimal("105.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.ABSOLUTE,
+            amount_tolerance_value=Decimal("10.00"),
+        )
+        bank_transaction = self.create_transaction(amount=Decimal("104.00"))
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result, (0, 0, 1))
+        self.assertIsNone(bank_transaction.matched_rule_id)
+
+    def test_exact_and_tolerant_rule_together_are_ambiguous(self):
+        self.create_rule(name="Exakt", expected_amount=Decimal("100.00"))
+        self.create_rule(
+            name="Toleranz",
+            expected_amount=Decimal("98.00"),
+            amount_tolerance_type=MatchingRule.ToleranceType.ABSOLUTE,
+            amount_tolerance_value=Decimal("5.00"),
+        )
+        bank_transaction = self.create_transaction(amount=Decimal("100.00"))
+
+        result = match_imported_transactions()
+
+        bank_transaction.refresh_from_db()
+        self.assertEqual(result, (0, 0, 1))
+        self.assertIsNone(bank_transaction.matched_rule_id)
+
     def test_different_iban_does_not_match(self):
         self.create_rule()
         bank_transaction = self.create_transaction(
@@ -7616,6 +7702,59 @@ class MatchingRuleTests(TestCase):
         self.assertContains(
             response,
             "Der erwartete Betrag muss positiv sein.",
+        )
+
+    def test_amount_tolerance_percent_is_saved_and_displayed(self):
+        response = self.post_rule(
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value="5,00",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        rule = MatchingRule.objects.get()
+        self.assertEqual(
+            rule.amount_tolerance_type, MatchingRule.ToleranceType.PERCENT
+        )
+        self.assertEqual(rule.amount_tolerance_value, Decimal("5.00"))
+
+    def test_amount_tolerance_value_is_required_when_type_is_set(self):
+        response = self.post_rule(
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value="",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(response, "Bitte einen Toleranzwert größer 0 angeben.")
+
+    def test_amount_tolerance_percent_cannot_exceed_100(self):
+        response = self.post_rule(
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value="150,00",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(
+            response, "Die Toleranz darf 100 % nicht überschreiten."
+        )
+
+    def test_amount_tolerance_requires_exact_match_type(self):
+        response = self.post_rule(
+            match_type=MatchingRule.MatchType.REGEX,
+            iban="",
+            expected_amount="",
+            text_pattern="^Test$",
+            amount_tolerance_type=MatchingRule.ToleranceType.PERCENT,
+            amount_tolerance_value="5,00",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MatchingRule.objects.count(), 0)
+        self.assertContains(
+            response,
+            "Eine Betragstoleranz ist nur bei exakten Regeln mit "
+            "erwartetem Betrag möglich.",
         )
 
     def test_invalid_regex_is_rejected(self):

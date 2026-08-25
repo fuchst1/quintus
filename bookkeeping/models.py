@@ -85,6 +85,11 @@ class MatchingRule(models.Model):
         EXACT = "exact", "Exakter Betrag"
         REGEX = "regex", "Textmuster"
 
+    class ToleranceType(models.TextChoices):
+        NONE = "none", "Keine"
+        PERCENT = "percent", "Prozent"
+        ABSOLUTE = "absolute", "Betrag"
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -107,6 +112,17 @@ class MatchingRule(models.Model):
     text_pattern = models.CharField(max_length=500, blank=True)
     notes = models.TextField("Anmerkung", blank=True, default="")
     active = models.BooleanField(default=True)
+    amount_tolerance_type = models.CharField(
+        max_length=8,
+        choices=ToleranceType.choices,
+        default=ToleranceType.NONE,
+    )
+    amount_tolerance_value = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     previous_version = models.OneToOneField(
         "self",
         on_delete=models.PROTECT,
@@ -134,6 +150,8 @@ class MatchingRule(models.Model):
         "expected_amount",
         "text_pattern",
         "notes",
+        "amount_tolerance_type",
+        "amount_tolerance_value",
         "change_reason",
         "previous_version_id",
         "version_number",
@@ -228,6 +246,27 @@ class MatchingRule(models.Model):
                 errors["iban"] = (
                     "IBAN muss nach Normalisierung 15 bis 34 alphanumerische Zeichen enthalten."
                 )
+
+        if self.amount_tolerance_type == self.ToleranceType.NONE:
+            self.amount_tolerance_value = None
+        else:
+            if self.match_type != self.MatchType.EXACT or self.expected_amount is None:
+                errors["amount_tolerance_type"] = (
+                    "Eine Betragstoleranz ist nur bei exakten Regeln mit "
+                    "erwartetem Betrag möglich."
+                )
+            elif self.amount_tolerance_value is None or self.amount_tolerance_value <= 0:
+                errors["amount_tolerance_value"] = (
+                    "Bitte einen Toleranzwert größer 0 angeben."
+                )
+            elif (
+                self.amount_tolerance_type == self.ToleranceType.PERCENT
+                and self.amount_tolerance_value > 100
+            ):
+                errors["amount_tolerance_value"] = (
+                    "Die Toleranz darf 100 % nicht überschreiten."
+                )
+
         if errors:
             raise ValidationError(errors)
 
