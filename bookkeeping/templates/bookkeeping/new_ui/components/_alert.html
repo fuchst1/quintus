@@ -1,0 +1,16 @@
+<div class="core-ledger-alert core-ledger-alert--{{ variant|default:'info' }}"
+     role="{% if variant == 'error' or variant == 'warning' %}alert{% else %}status{% endif %}">
+    {% if variant == "success" %}
+        <i class="core-ledger-alert__icon bi bi-check-circle" aria-hidden="true"></i>
+    {% elif variant == "warning" %}
+        <i class="core-ledger-alert__icon bi bi-exclamation-triangle" aria-hidden="true"></i>
+    {% elif variant == "error" %}
+        <i class="core-ledger-alert__icon bi bi-x-octagon" aria-hidden="true"></i>
+    {% else %}
+        <i class="core-ledger-alert__icon bi bi-info-circle" aria-hidden="true"></i>
+    {% endif %}
+    <div class="core-ledger-alert__content">
+        {% if title %}<p class="core-ledger-alert__title">{{ title }}</p>{% endif %}
+        <p class="core-ledger-alert__message">{{ message }}</p>
+    </div>
+</div>

@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import IntegrityError
-from django.db.models import Count, Max, Prefetch, Q, Sum
+from django.db.models import Count, Exists, Max, OuterRef, Prefetch, Q, Sum
 from django.db import transaction as db_transaction
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -761,6 +761,18 @@ def _dashboard_context(params):
     period_url = f"{overview_url}?{period_query}" if period_query else overview_url
     open_url = f"{overview_url}?status=open"
     bank_import_url = f"{overview_url}?status=bank_import#bank-import"
+    missing_receipts_query = urlencode(
+        {
+            "status": BankTransaction.Status.REVIEWED,
+            "period_type": requested_type,
+            "period": selected,
+        }
+    )
+    missing_receipts_url = (
+        f"{overview_url}?{missing_receipts_query}"
+        if selected
+        else f"{overview_url}?status={BankTransaction.Status.REVIEWED}"
+    )
 
     status_urls = {
         "completed": f"{overview_url}?status=reviewed",
@@ -853,7 +865,7 @@ def _dashboard_context(params):
         "dashboard_next_steps_total": len(all_next_steps),
         "dashboard_open_tasks_url": open_url,
         "dashboard_missing_receipts": data.get("missing_receipts", 0),
-        "dashboard_missing_receipts_url": open_url,
+        "dashboard_missing_receipts_url": missing_receipts_url,
         "dashboard_workload": workload_rows,
         "dashboard_workload_total": total,
         "dashboard_processed_value": processed_value,
@@ -1891,6 +1903,13 @@ class BookkeepingOverviewView(TemplateView):
             )
         selected_transactions = BankTransaction.objects.select_related(
             "matched_rule"
+        ).annotate(
+            has_booking_entries_for_status=Exists(
+                BookingEntry.objects.filter(bank_transaction_id=OuterRef("pk"))
+            ),
+            has_supporting_documents_for_status=Exists(
+                SupportingDocument.objects.filter(bank_transaction_id=OuterRef("pk"))
+            ),
         ).prefetch_related(
             Prefetch(
                 "booking_entries",
@@ -2459,6 +2478,23 @@ class BookkeepingOverviewView(TemplateView):
             (entry.gross_amount for entry in booking_entries),
             Decimal("0"),
         )
+        receipt_missing = (
+            transaction.status in BOOKING_READY_STATUSES
+            and bool(
+                getattr(
+                    transaction,
+                    "has_booking_entries_for_status",
+                    booking_entries,
+                )
+            )
+            and not bool(
+                getattr(
+                    transaction,
+                    "has_supporting_documents_for_status",
+                    supporting_documents,
+                )
+            )
+        )
         return {
             "id": transaction.pk,
             "booking_date": transaction.booking_date.strftime("%d.%m.%Y"),
@@ -2523,6 +2559,7 @@ class BookkeepingOverviewView(TemplateView):
                 else None
             ),
             "supporting_document_count": len(supporting_documents),
+            "receipt_missing": receipt_missing,
             "booking_date_sort": transaction.booking_date,
         }
 

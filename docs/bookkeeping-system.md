@@ -48,7 +48,7 @@ Der aktuelle Datenstand wird durch die Bookkeeping-Migrationen `0001` bis `0019`
 ### 3.1 `BankTransaction`
 
 - **Zweck:** Repräsentiert genau eine importierte oder manuell angelegte Kontobewegung. Importierte Datensätze besitzen zur Dublettenvermeidung einen eindeutigen `source_hash`.
-- **Beziehungen:** Kann auf genau die verwendete `MatchingRule`-Version zeigen und besitzt eigene `BookingEntry`-Zeilen sowie optionale `SupportingDocument`-Belege.
+- **Beziehungen:** Kann auf genau die verwendete `MatchingRule`-Version zeigen und besitzt eigene `BookingEntry`-Zeilen. Für jede fertige Bankbuchung ist mindestens ein direkt zugeordneter `SupportingDocument`-Beleg erforderlich.
 - **Status:** `imported` (Eingelesen), `matched` (Zugeordnet), `reviewed` (Geprüft) und `booked` (Gebucht). In der Oberfläche gelten `reviewed` und `booked` als „Buchungsfertig“. Der aktuelle Abschluss setzt `reviewed`; ein bereits vorhandenes `booked` wird nicht zurückgestuft. Exporte verändern den Status nicht.
 - **Änderbarkeit und Snapshot:** Notizen und Buchungszeilen können über die vorgesehenen Masken bearbeitet oder zurückgesetzt werden. Die importierten Transaktionsdaten bleiben die Referenz für Betrag und Richtung. Ein Zurücksetzen löscht nur die Buchungszeilen, nicht die Transaktion, ihre Regelzuordnung oder Dokumente.
 

@@ -85,7 +85,7 @@
             {% if supporting_documents %}
             <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-info">{{ supporting_documents|length }} hinterlegt</span>
             {% else %}
-            <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-info">Kein Beleg hinterlegt</span>
+            <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Beleg fehlt</span>
             {% endif %}
         </div>
         <form method="post" enctype="multipart/form-data" class="bookkeeping-supporting-document-upload-form">

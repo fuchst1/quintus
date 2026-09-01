@@ -628,18 +628,23 @@
                 </td>
                 {% endif %}
                 <td class="bookkeeping-status">
-                    {% if transaction.status_code == "imported" or transaction.status_code == "matched" %}
-                    <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.open_reason }}</span>
-                    {% else %}
-                    <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.status }}</span>
-                    {% endif %}
+                    <div class="d-flex flex-column align-items-start gap-1">
+                        {% if transaction.status_code == "imported" or transaction.status_code == "matched" %}
+                        <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.open_reason }}</span>
+                        {% else %}
+                        <span class="badge bookkeeping-badge bookkeeping-badge-status">{{ transaction.status }}</span>
+                        {% endif %}
+                        {% if transaction.receipt_missing %}
+                        <span class="badge bookkeeping-badge bookkeeping-status-badge bookkeeping-status-badge-warning">Beleg fehlt</span>
+                        {% endif %}
+                    </div>
                 </td>
                 <td class="bookkeeping-details-column">
                     <details class="bookkeeping-row-details">
                         <summary>Weitere Details</summary>
                         <dl class="bookkeeping-row-details-list">
                             {% if transaction.manual_invoice %}<div><dt>Belegart</dt><dd>Manueller Beleg</dd></div>{% endif %}
-                            {% if transaction.supporting_document_count %}<div><dt>Belege</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}">{{ transaction.supporting_document_count }} Belege</a></dd></div>{% endif %}
+                            {% if transaction.receipt_missing %}<div><dt>Beleg</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}">Beleg fehlt</a></dd></div>{% elif transaction.supporting_document_count %}<div><dt>Belege</dt><dd><a href="{% url 'bank_transaction_booking' transaction.id %}?status={{ selected_status }}{% if selected_month %}&amp;month={{ selected_month }}{% endif %}">{{ transaction.supporting_document_count }} Belege</a></dd></div>{% endif %}
                             <div><dt>IBAN</dt><dd>{{ transaction.iban|default:"–" }}</dd></div>
                             {% if selected_status != "imported" %}
                             {% if not transaction.manual_invoice %}<div><dt>Matching-Regel</dt><dd>{% if transaction.matched_rule_id %}<a href="{{ transaction.matched_rule_url }}">{{ transaction.matched_rule }}</a>{% else %}{{ transaction.matched_rule|default:"–" }}{% endif %}</dd></div>

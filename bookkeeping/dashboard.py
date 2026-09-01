@@ -393,6 +393,20 @@ def _step(problem, operation, amount, action, url, priority, value_date):
     }
 
 
+def _required_bank_receipt_is_missing(transaction: BankTransaction) -> bool:
+    """Return whether a finished bank booking has no direct document upload.
+
+    One transaction-level upload covers all of its split booking rows.  A
+    pending or failed SupportingDocument still proves that an upload happened;
+    its transfer problem is reported separately.
+    """
+    return (
+        transaction.status in READY_BANK_STATUSES
+        and bool(transaction.booking_entries.all())
+        and not bool(transaction.supporting_documents.all())
+    )
+
+
 def _next_steps(bank_transactions, manual_invoices, statements, period_label, statement_controls=None):
     steps = []
     bank_url = reverse("bookkeeping_overview") + "?status=bank_import#bank-import"
@@ -426,9 +440,18 @@ def _next_steps(bank_transactions, manual_invoices, statements, period_label, st
             steps.append(_step("Buchungsdaten unvollständig", transaction.partner_name or "Banktransaktion", transaction.amount, "Buchung ergänzen", url, 40, transaction.booking_date))
         elif transaction.status == BankTransaction.Status.IMPORTED and transaction.matched_rule_id:
             steps.append(_step("Vorgang wartet auf Prüfung", transaction.partner_name or "Banktransaktion", transaction.amount, "Öffnen", url, 50, transaction.booking_date))
-        for entry in transaction.booking_entries.all():
-            if not entry.receipt_group or not entry.receipt_number:
-                steps.append(_step("Erforderlicher Beleg fehlt", transaction.partner_name or "Bankbeleg", entry.gross_amount or transaction.amount, "Beleg hochladen", url, 20, entry.payment_date))
+        if _required_bank_receipt_is_missing(transaction):
+            steps.append(
+                _step(
+                    "Erforderlicher Beleg fehlt",
+                    transaction.partner_name or "Bankbeleg",
+                    transaction.amount,
+                    "Beleg hochladen",
+                    url,
+                    20,
+                    transaction.booking_date,
+                )
+            )
         for document in transaction.supporting_documents.all():
             if document.transfer_status == SupportingDocument.TransferStatus.FAILED:
                 steps.append(_step("Paperless-Upload fehlgeschlagen", transaction.partner_name or "Bankbeleg", transaction.amount, "Paperless erneut prüfen", url, 10, transaction.booking_date))
@@ -439,9 +462,6 @@ def _next_steps(bank_transactions, manual_invoices, statements, period_label, st
             steps.append(_step("Manueller Beleg ist noch nicht fertig", invoice.partner_name or "Manueller Beleg", invoice.gross_amount or MONEY_ZERO, "Öffnen", url, 40, value_date))
         elif invoice.status == ManualInvoice.Status.READY and not invoice.booking_entries.exists():
             steps.append(_step("Buchungsdaten unvollständig", invoice.partner_name or "Manueller Beleg", invoice.gross_amount or MONEY_ZERO, "Buchung ergänzen", url, 40, value_date))
-        for entry in invoice.booking_entries.all():
-            if not entry.receipt_group or not entry.receipt_number:
-                steps.append(_step("Erforderlicher Beleg fehlt", invoice.partner_name or "Manueller Beleg", entry.gross_amount or invoice.gross_amount or MONEY_ZERO, "Beleg hochladen", url, 20, entry.payment_date))
         if invoice.paperless_status == ManualInvoice.PaperlessStatus.FAILED:
             steps.append(_step("Paperless-Upload fehlgeschlagen", invoice.partner_name or "Manueller Beleg", invoice.gross_amount or MONEY_ZERO, "Paperless erneut prüfen", url, 10, value_date))
     return sorted(steps, key=lambda item: (item["priority"], item["date"], item["operation"]))
@@ -505,18 +525,11 @@ def build_dashboard_data(period_type: str, period: str) -> dict[str, object]:
         all_ready_manual,
         _last_quarter_periods(available.get("quarter", [])),
     )
-    # There is no separate ``receipt_required`` field in the current model.
-    # A persisted booking row with an empty receipt group/number is therefore
-    # the only reliable representation of a missing required receipt.
-    missing_receipt_sources = set()
-    for transaction in selected_bank:
-        for entry in transaction.booking_entries.all():
-            if not entry.receipt_group or not entry.receipt_number:
-                missing_receipt_sources.add(("bank", transaction.pk))
-    for invoice in selected_manual:
-        for entry in invoice.booking_entries.all():
-            if not entry.receipt_group or not entry.receipt_number:
-                missing_receipt_sources.add(("manual", invoice.pk))
+    missing_receipt_sources = {
+        transaction.pk
+        for transaction in selected_bank
+        if _required_bank_receipt_is_missing(transaction)
+    }
     return {
         "empty": not (selected_bank or selected_manual or statements),
         "available": available,

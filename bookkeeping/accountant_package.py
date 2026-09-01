@@ -444,10 +444,12 @@ class AccountantPackageService:
         documents = SupportingDocument.objects.filter(
             bank_transaction_id__in=transaction_ids,
         ).select_related("bank_transaction")
+        transaction_ids_with_documents: set[str] = set()
         for document in documents:
             transaction = transactions.get(str(document.bank_transaction_id))
             if transaction is None:
                 continue
+            transaction_ids_with_documents.add(str(transaction.pk))
             document_date = transaction.value_date or transaction.booking_date
             reference = _DocumentReference(
                 kind="Bankbeleg",
@@ -476,6 +478,27 @@ class AccountantPackageService:
                 document,
             )
             inspection.references.append(reference)
+        for transaction_id in sorted(
+            transaction_ids - transaction_ids_with_documents
+        ):
+            transaction = transactions[transaction_id]
+            document_date = transaction.value_date or transaction.booking_date
+            inspection.references.append(
+                _DocumentReference(
+                    kind="Bankbeleg",
+                    directory=ZIP_DIRECTORIES["bank"],
+                    display_date=document_date,
+                    reference=str(transaction.pk)[:8],
+                    name=transaction.partner_name or "–",
+                    amount=transaction.amount,
+                    paperless_id=None,
+                    source_status="missing",
+                    original_filename="beleg-fehlt.pdf",
+                    status="Beleg fehlt",
+                    warning=True,
+                    note="Für diese Buchung wurde kein Beleg hochgeladen.",
+                )
+            )
         return transaction_ids
 
     @staticmethod

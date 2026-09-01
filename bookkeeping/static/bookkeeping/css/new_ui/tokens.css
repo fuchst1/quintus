@@ -1,0 +1,112 @@
+:root {
+    /* Core Ledger colors: docs/DESIGN.md is the canonical source. */
+    --core-ledger-color-navigation: #041632;
+    --core-ledger-color-navigation-hover: #102644;
+    --core-ledger-color-navigation-active: #1b2b48;
+    --core-ledger-color-on-navigation: #ffffff;
+    --core-ledger-color-on-navigation-muted: #b7c7eb;
+
+    --core-ledger-color-primary: #1b2b48;
+    --core-ledger-color-primary-hover: #273a5d;
+    --core-ledger-color-primary-active: #10213e;
+    --core-ledger-color-on-primary: #ffffff;
+
+    --core-ledger-color-background: #fbf8fb;
+    --core-ledger-color-surface: #ffffff;
+    --core-ledger-color-surface-subtle: #f5f3f6;
+    --core-ledger-color-surface-hover: #efedf0;
+    --core-ledger-color-surface-selected: #e5eaf3;
+
+    --core-ledger-color-text: #1b1b1e;
+    --core-ledger-color-text-muted: #545f72;
+    --core-ledger-color-text-subtle: #75777e;
+    --core-ledger-color-text-inverse: #ffffff;
+
+    --core-ledger-color-border: #d5d4da;
+    --core-ledger-color-border-strong: #b8bac2;
+    --core-ledger-color-focus: #4f5e7e;
+
+    --core-ledger-color-success: #2d6a4f;
+    --core-ledger-color-success-container: #dcefe5;
+    --core-ledger-color-on-success-container: #194c36;
+
+    --core-ledger-color-warning: #8a5a00;
+    --core-ledger-color-warning-container: #fff0cc;
+    --core-ledger-color-on-warning-container: #684300;
+
+    --core-ledger-color-error: #ba1a1a;
+    --core-ledger-color-error-container: #ffdad6;
+    --core-ledger-color-on-error-container: #93000a;
+
+    --core-ledger-color-info: #315b8a;
+    --core-ledger-color-info-container: #dce9f7;
+    --core-ledger-color-on-info-container: #24496f;
+
+    /* Typography */
+    --core-ledger-font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    --core-ledger-display-lg-font-size: 30px;
+    --core-ledger-display-lg-font-weight: 700;
+    --core-ledger-display-lg-line-height: 38px;
+    --core-ledger-display-lg-letter-spacing: -0.02em;
+
+    --core-ledger-headline-md-font-size: 24px;
+    --core-ledger-headline-md-font-weight: 600;
+    --core-ledger-headline-md-line-height: 32px;
+    --core-ledger-headline-md-letter-spacing: -0.01em;
+
+    --core-ledger-title-sm-font-size: 18px;
+    --core-ledger-title-sm-font-weight: 600;
+    --core-ledger-title-sm-line-height: 24px;
+
+    --core-ledger-body-md-font-size: 14px;
+    --core-ledger-body-md-font-weight: 400;
+    --core-ledger-body-md-line-height: 20px;
+
+    --core-ledger-body-sm-font-size: 13px;
+    --core-ledger-body-sm-font-weight: 400;
+    --core-ledger-body-sm-line-height: 18px;
+
+    --core-ledger-data-table-font-size: 13px;
+    --core-ledger-data-table-font-weight: 400;
+    --core-ledger-data-table-line-height: 16px;
+
+    --core-ledger-form-label-font-size: 13px;
+    --core-ledger-form-label-font-weight: 600;
+    --core-ledger-form-label-line-height: 18px;
+    --core-ledger-form-label-text-transform: none;
+
+    --core-ledger-label-caps-font-size: 11px;
+    --core-ledger-label-caps-font-weight: 700;
+    --core-ledger-label-caps-line-height: 16px;
+    --core-ledger-label-caps-letter-spacing: 0.05em;
+    --core-ledger-label-caps-text-transform: uppercase;
+
+    /* Shape */
+    --core-ledger-radius-sm: 2px;
+    --core-ledger-radius-default: 4px;
+    --core-ledger-radius-md: 6px;
+    --core-ledger-radius-lg: 8px;
+    --core-ledger-radius-xl: 12px;
+    --core-ledger-radius-full: 9999px;
+
+    /* Spacing */
+    --core-ledger-space-base: 4px;
+    --core-ledger-space-xs: 4px;
+    --core-ledger-space-sm: 8px;
+    --core-ledger-space-md: 16px;
+    --core-ledger-space-lg: 24px;
+    --core-ledger-space-xl: 32px;
+    --core-ledger-space-gutter: 16px;
+    --core-ledger-margin-mobile: 16px;
+    --core-ledger-margin-tablet: 24px;
+    --core-ledger-margin-desktop: 32px;
+
+    /* Layout */
+    --core-ledger-sidebar-width: 240px;
+    --core-ledger-sidebar-rail-width: 64px;
+    --core-ledger-content-max-width: none;
+    --core-ledger-breakpoint-desktop: 1280px;
+    --core-ledger-breakpoint-tablet: 768px;
+    --core-ledger-breakpoint-mobile: 768px;
+}

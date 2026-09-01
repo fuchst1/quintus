@@ -1,0 +1,35 @@
+<header class="core-ledger-page-header">
+    {% if breadcrumbs %}
+        <nav aria-label="Brotkrümelnavigation">
+            <ol class="core-ledger-breadcrumbs">
+                {% for breadcrumb in breadcrumbs %}
+                    <li{% if forloop.last %} aria-current="page"{% endif %}>
+                        {% if breadcrumb.url and not forloop.last %}
+                            <a href="{{ breadcrumb.url }}">{{ breadcrumb.label }}</a>
+                        {% else %}
+                            <span>{{ breadcrumb.label }}</span>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ol>
+        </nav>
+    {% endif %}
+
+    <div class="core-ledger-page-header__content">
+        <div class="core-ledger-page-header__copy">
+            {% if heading_level == "2" %}
+                <h2 class="core-ledger-page-header__title">{{ title }}</h2>
+            {% else %}
+                <h1 class="core-ledger-page-header__title">{{ title }}</h1>
+            {% endif %}
+            {% if description %}
+                <p class="core-ledger-page-header__description">{{ description }}</p>
+            {% endif %}
+        </div>
+        {% if actions_template %}
+            <div class="core-ledger-page-header__actions">
+                {% include actions_template %}
+            </div>
+        {% endif %}
+    </div>
+</header>

@@ -1,0 +1,13 @@
+<div class="core-ledger-action-bar{% if mode == 'sticky' %} core-ledger-action-bar--sticky{% endif %}">
+    {% if feedback %}
+        <p class="core-ledger-action-bar__feedback" role="status" aria-live="polite">
+            <i class="bi bi-info-circle" aria-hidden="true"></i>
+            <span>{{ feedback }}</span>
+        </p>
+    {% endif %}
+    {% if actions_template %}
+        <div class="core-ledger-action-bar__actions">
+            {% include actions_template %}
+        </div>
+    {% endif %}
+</div>

@@ -1,0 +1,46 @@
+<div class="modal fade core-ledger-modal"
+     id="{{ modal_id }}"
+     tabindex="-1"
+     aria-labelledby="{{ modal_id }}-title"
+     {% if description %}aria-describedby="{{ modal_id }}-description"{% endif %}
+     data-core-ledger-modal-invalid="{{ reopen_on_invalid|yesno:'true,false' }}">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form action="{{ form_action|default:'' }}"
+                  method="{{ form_method|default:'post' }}"
+                  data-core-ledger-loading-form>
+                {% if form_method != "get" %}{% csrf_token %}{% endif %}
+                <div class="modal-header">
+                    <div>
+                        <h2 class="modal-title" id="{{ modal_id }}-title">{{ title }}</h2>
+                        {% if description %}
+                            <p class="core-ledger-modal__description" id="{{ modal_id }}-description">{{ description }}</p>
+                        {% endif %}
+                    </div>
+                    <button type="button"
+                            class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon"
+                            data-bs-dismiss="modal"
+                            aria-label="Dialog schließen"
+                            title="Schließen">
+                        <i class="bi bi-x-lg" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    {% include body_template %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button"
+                            class="core-ledger-button core-ledger-button--secondary"
+                            data-bs-dismiss="modal">
+                        {{ cancel_label|default:"Abbrechen" }}
+                    </button>
+                    <button type="submit"
+                            class="core-ledger-button core-ledger-button--primary"
+                            data-core-ledger-submit>
+                        <span>{{ submit_label|default:"Speichern" }}</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>

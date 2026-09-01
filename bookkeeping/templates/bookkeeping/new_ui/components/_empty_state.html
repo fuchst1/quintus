@@ -1,0 +1,15 @@
+<section class="core-ledger-empty-state" aria-labelledby="{{ empty_id }}-title">
+    <i class="core-ledger-empty-state__icon bi {{ icon|default:'bi-inbox' }}" aria-hidden="true"></i>
+    <div class="core-ledger-empty-state__content">
+        <h3 class="core-ledger-empty-state__title" id="{{ empty_id }}-title">{{ title }}</h3>
+        {% if description %}<p class="core-ledger-empty-state__description">{{ description }}</p>{% endif %}
+    </div>
+    {% if action_url and action_label %}
+        <a class="core-ledger-empty-state__action core-ledger-button core-ledger-button--secondary" href="{{ action_url }}">
+            {% if action_icon %}<i class="bi {{ action_icon }}" aria-hidden="true"></i>{% endif %}
+            <span>{{ action_label }}</span>
+        </a>
+    {% elif action_template %}
+        <div class="core-ledger-empty-state__action">{% include action_template %}</div>
+    {% endif %}
+</section>

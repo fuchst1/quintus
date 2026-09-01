@@ -1,0 +1,369 @@
+{% extends "bookkeeping/new_ui/base.html" %}
+{% load static bookkeeping_ui %}
+
+{% block title %}Core-Ledger-Komponenten · Quintus Buchhaltung{% endblock %}
+{% block body_class %}core-ledger-showcase-page{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'bookkeeping/css/new_ui/showcase.css' %}">{% endblock %}
+
+{% block content %}
+<div class="core-ledger-showcase">
+    {% include "bookkeeping/new_ui/components/_page_header.html" with title="Core-Ledger-Komponenten" description="Verbindliche Bausteine für die neue Quintus-Buchhaltung mit realistischen Inhalten und allen vorgesehenen Zuständen." breadcrumbs=showcase_breadcrumbs actions_template="bookkeeping/new_ui/showcase/_page_actions.html" only %}
+
+    <nav class="core-ledger-showcase-index" aria-label="Komponenten auf dieser Seite">
+        <a href="#seitenkopf">Seitenkopf</a>
+        <a href="#schaltflaechen">Schaltflächen</a>
+        <a href="#formular">Formular</a>
+        <a href="#tabellen">Tabellen</a>
+        <a href="#status">Status</a>
+        <a href="#meldungen">Meldungen</a>
+        <a href="#karten">Karten und Bereiche</a>
+        <a href="#dialog">Dialog und Aktionsleiste</a>
+    </nav>
+
+    <section id="seitenkopf" class="core-ledger-showcase-section" aria-labelledby="seitenkopf-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="seitenkopf-title">Seitenkopf ohne Aktionen</h2>
+            <p>Die Aktionsfläche entfällt vollständig, wenn die Seite keine direkte Hauptaktion hat.</p>
+        </div>
+        <div class="core-ledger-showcase-example">
+            {% include "bookkeeping/new_ui/components/_page_header.html" with title="Kontenabstimmung Juli 2026" description="Offene Abweichungen zwischen Bankkonto und Buchungsjournal prüfen." heading_level="2" only %}
+        </div>
+    </section>
+
+    <section id="schaltflaechen" class="core-ledger-showcase-section" aria-labelledby="schaltflaechen-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="schaltflaechen-title">Schaltflächen und Zustände</h2>
+            <p>Erzwungene Hover-, Fokus- und Aktivzustände dienen nur der visuellen Referenz. Die echten Zustände reagieren auf Maus und Tastatur.</p>
+        </div>
+
+        <div class="core-ledger-showcase-button-matrix">
+            <section aria-labelledby="button-primary-title">
+                <h3 id="button-primary-title">Primär</h3>
+                <div class="core-ledger-showcase-state-row">
+                    <div><span>Standard</span><button type="button" class="core-ledger-button core-ledger-button--primary">Speichern</button></div>
+                    <div><span>Hover</span><button type="button" class="core-ledger-button core-ledger-button--primary is-hovered">Speichern</button></div>
+                    <div><span>Fokus</span><button type="button" class="core-ledger-button core-ledger-button--primary is-focused">Speichern</button></div>
+                    <div><span>Aktiv</span><button type="button" class="core-ledger-button core-ledger-button--primary is-active">Speichern</button></div>
+                    <div><span>Deaktiviert</span><button type="button" class="core-ledger-button core-ledger-button--primary" disabled>Speichern</button></div>
+                    <div><span>Lädt</span><button type="button" class="core-ledger-button core-ledger-button--primary is-loading" disabled aria-disabled="true" aria-busy="true"><span>Buchung wird gespeichert</span></button></div>
+                </div>
+            </section>
+
+            <section aria-labelledby="button-secondary-title">
+                <h3 id="button-secondary-title">Sekundär</h3>
+                <div class="core-ledger-showcase-state-row">
+                    <div><span>Standard</span><button type="button" class="core-ledger-button core-ledger-button--secondary">Vorschau</button></div>
+                    <div><span>Hover</span><button type="button" class="core-ledger-button core-ledger-button--secondary is-hovered">Vorschau</button></div>
+                    <div><span>Fokus</span><button type="button" class="core-ledger-button core-ledger-button--secondary is-focused">Vorschau</button></div>
+                    <div><span>Aktiv</span><button type="button" class="core-ledger-button core-ledger-button--secondary is-active">Vorschau</button></div>
+                    <div><span>Deaktiviert</span><button type="button" class="core-ledger-button core-ledger-button--secondary" disabled>Vorschau</button></div>
+                    <div><span>Lädt</span><button type="button" class="core-ledger-button core-ledger-button--secondary is-loading" disabled aria-disabled="true" aria-busy="true"><span>Vorschau wird erstellt</span></button></div>
+                </div>
+            </section>
+
+            <section aria-labelledby="button-quiet-title">
+                <h3 id="button-quiet-title">Leise Aktion</h3>
+                <div class="core-ledger-showcase-state-row">
+                    <div><span>Standard</span><button type="button" class="core-ledger-button core-ledger-button--quiet">Zurück</button></div>
+                    <div><span>Hover</span><button type="button" class="core-ledger-button core-ledger-button--quiet is-hovered">Zurück</button></div>
+                    <div><span>Fokus</span><button type="button" class="core-ledger-button core-ledger-button--quiet is-focused">Zurück</button></div>
+                    <div><span>Aktiv</span><button type="button" class="core-ledger-button core-ledger-button--quiet is-active">Zurück</button></div>
+                    <div><span>Deaktiviert</span><button type="button" class="core-ledger-button core-ledger-button--quiet" disabled>Zurück</button></div>
+                    <div><span>Lädt</span><button type="button" class="core-ledger-button core-ledger-button--quiet is-loading" disabled aria-disabled="true" aria-busy="true"><span>Ansicht wird geladen</span></button></div>
+                </div>
+            </section>
+
+            <section aria-labelledby="button-destructive-title">
+                <h3 id="button-destructive-title">Destruktiv</h3>
+                <div class="core-ledger-showcase-state-row">
+                    <div><span>Standard</span><button type="button" class="core-ledger-button core-ledger-button--destructive">Beleg löschen</button></div>
+                    <div><span>Hover</span><button type="button" class="core-ledger-button core-ledger-button--destructive is-hovered">Beleg löschen</button></div>
+                    <div><span>Fokus</span><button type="button" class="core-ledger-button core-ledger-button--destructive is-focused">Beleg löschen</button></div>
+                    <div><span>Aktiv</span><button type="button" class="core-ledger-button core-ledger-button--destructive is-active">Beleg löschen</button></div>
+                    <div><span>Deaktiviert</span><button type="button" class="core-ledger-button core-ledger-button--destructive" disabled>Beleg löschen</button></div>
+                    <div><span>Lädt</span><button type="button" class="core-ledger-button core-ledger-button--destructive is-loading" disabled aria-disabled="true" aria-busy="true"><span>Beleg wird gelöscht</span></button></div>
+                </div>
+            </section>
+
+            <section aria-labelledby="button-icon-title">
+                <h3 id="button-icon-title">Nur Symbol</h3>
+                <div class="core-ledger-showcase-state-row">
+                    <div><span>Standard</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Buchung bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></div>
+                    <div><span>Hover</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon is-hovered" aria-label="Buchung bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></div>
+                    <div><span>Fokus</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon is-focused" aria-label="Buchung bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></div>
+                    <div><span>Aktiv</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon is-active" aria-label="Buchung bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></div>
+                    <div><span>Deaktiviert</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Buchung bearbeiten (nicht verfügbar)" title="Buchung bearbeiten" disabled><i class="bi bi-pencil" aria-hidden="true"></i></button></div>
+                    <div><span>Lädt</span><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon is-loading" aria-label="Buchung wird geladen" title="Buchung wird geladen" disabled aria-disabled="true" aria-busy="true"></button></div>
+                </div>
+            </section>
+        </div>
+
+        <div class="core-ledger-showcase-example">
+            <p class="core-ledger-showcase-caption">Langes deutsches Aktionslabel</p>
+            <button type="button" class="core-ledger-button core-ledger-button--secondary">
+                Vollständige Buchungsunterlagen für die Steuerberatung vorbereiten
+            </button>
+        </div>
+    </section>
+
+    <section id="formular" class="core-ledger-showcase-section" aria-labelledby="formular-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="formular-title">Formular, Hilfe und Validierung</h2>
+            <p>Beschriftungen bleiben sichtbar; Pflichtangaben, Hilfen und Fehler sind programmatisch zugeordnet.</p>
+        </div>
+
+        <div class="core-ledger-validation-summary" role="alert" tabindex="-1" aria-labelledby="validation-title">
+            <h3 class="core-ledger-validation-summary__title" id="validation-title"><i class="bi bi-x-octagon" aria-hidden="true"></i> Zwei Angaben müssen korrigiert werden</h3>
+            <ul>
+                <li><a href="#invalid-invoice-number">Die Rechnungsnummer fehlt.</a></li>
+                <li><a href="#invalid-booking-date">Das Buchungsdatum liegt außerhalb des offenen Zeitraums.</a></li>
+            </ul>
+        </div>
+
+        <form class="core-ledger-showcase-form" aria-label="Beispiel für eine Eingangsrechnung">
+            <div class="core-ledger-showcase-form-grid">
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invoice-partner">Geschäftspartner</label>
+                    <input class="core-ledger-control" id="invoice-partner" name="partner" type="text" value="Wien Energie GmbH" autocomplete="organization">
+                </div>
+
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invoice-number">
+                        Rechnungsnummer <span class="core-ledger-required" aria-hidden="true">*</span>
+                        <span class="visually-hidden">(Pflichtfeld)</span>
+                    </label>
+                    <input class="core-ledger-control" id="invoice-number" name="invoice_number" type="text" value="RE-2026-0815" required aria-describedby="invoice-number-help">
+                    <p class="core-ledger-help" id="invoice-number-help">Wie auf dem Originalbeleg angegeben, einschließlich Bindestrichen.</p>
+                </div>
+
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invoice-category">Buchungskategorie</label>
+                    <select class="core-ledger-control" id="invoice-category" name="category">
+                        <option>7410 – Betriebskosten Lehnergasse</option>
+                        <option>7200 – Instandhaltung Bahngasse</option>
+                        <option>7750 – Rechts- und Beratungsaufwand</option>
+                    </select>
+                </div>
+
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invoice-date">Rechnungsdatum</label>
+                    <input class="core-ledger-control" id="invoice-date" name="invoice_date" type="date" value="2026-07-31">
+                </div>
+
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invalid-invoice-number">
+                        Rechnungsnummer mit Fehler <span class="core-ledger-required" aria-hidden="true">*</span>
+                        <span class="visually-hidden">(Pflichtfeld)</span>
+                    </label>
+                    <input class="core-ledger-control is-invalid" id="invalid-invoice-number" name="invalid_invoice_number" type="text" aria-invalid="true" aria-describedby="invalid-invoice-number-error" required>
+                    <p class="core-ledger-error" id="invalid-invoice-number-error"><i class="bi bi-x-circle" aria-hidden="true"></i> Bitte die Rechnungsnummer vom Beleg eintragen.</p>
+                </div>
+
+                <div class="core-ledger-field">
+                    <label class="core-ledger-label" for="invalid-booking-date">Buchungsdatum mit Fehler</label>
+                    <input class="core-ledger-control is-invalid" id="invalid-booking-date" name="invalid_booking_date" type="date" value="2025-12-15" aria-invalid="true" aria-describedby="invalid-booking-date-error">
+                    <p class="core-ledger-error" id="invalid-booking-date-error"><i class="bi bi-x-circle" aria-hidden="true"></i> Bitte ein Datum im offenen Zeitraum 01.07.2026 bis 30.09.2026 wählen.</p>
+                </div>
+
+                <div class="core-ledger-field core-ledger-showcase-form-grid__wide">
+                    <label class="core-ledger-label" for="invoice-note">Interne Anmerkung</label>
+                    <textarea class="core-ledger-control" id="invoice-note" name="note" rows="3" aria-describedby="invoice-note-help">Akontozahlung laut Jahresabrechnung nach Prüfung der Verbrauchsstellen zuordnen.</textarea>
+                    <p class="core-ledger-help" id="invoice-note-help">Nur für die interne Bearbeitung; wird nicht an Paperless übertragen.</p>
+                </div>
+
+                <div class="core-ledger-field core-ledger-showcase-form-grid__wide">
+                    <div class="form-check">
+                        <input class="form-check-input" id="invoice-reviewed" name="reviewed" type="checkbox" checked>
+                        <label class="form-check-label" for="invoice-reviewed">Originalbeleg und Betrag wurden geprüft</label>
+                    </div>
+                </div>
+            </div>
+        </form>
+
+        <section class="core-ledger-showcase-example" aria-labelledby="readonly-title">
+            <h3 id="readonly-title">Schreibgeschützte Werte</h3>
+            <dl class="core-ledger-readonly">
+                <div><dt>Importquelle</dt><dd>Bankauszug 2026 / Nummer 07</dd></div>
+                <div><dt>Referenz</dt><dd>AT12 3456 7890 1234 5678 · 31.07.2026</dd></div>
+                <div><dt>Erkannter Betrag</dt><dd class="core-ledger-numeric">1.248,00 EUR</dd></div>
+            </dl>
+        </section>
+    </section>
+
+    <section id="tabellen" class="core-ledger-showcase-section" aria-labelledby="tabellen-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="tabellen-title">Kompakte Datentabelle</h2>
+            <p>Spalten bleiben fachlich im Seitentemplate; gemeinsame Klassen regeln Dichte, Ausrichtung und Zustände.</p>
+        </div>
+
+        <div class="core-ledger-table-wrap" tabindex="0" role="region" aria-labelledby="transactions-caption">
+            <table class="core-ledger-table">
+                <caption id="transactions-caption">Bankbewegungen im Juli 2026</caption>
+                <thead>
+                    <tr>
+                        <th scope="col"><span class="visually-hidden">Auswahl</span></th>
+                        <th scope="col" aria-sort="descending"><button type="button" class="core-ledger-button core-ledger-button--quiet">Buchungsdatum <i class="bi bi-arrow-down" aria-hidden="true"></i></button></th>
+                        <th scope="col">Geschäftspartner und Verwendungszweck</th>
+                        <th scope="col" class="core-ledger-numeric">Betrag</th>
+                        <th scope="col">Statushinweis</th>
+                        <th scope="col" class="core-ledger-actions"><span class="visually-hidden">Aktionen</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><input class="form-check-input" type="checkbox" aria-label="Buchung von Wien Energie auswählen"></td>
+                        <td class="core-ledger-date"><time datetime="2026-07-31">31.07.2026</time></td>
+                        <td><strong>Wien Energie GmbH</strong><br><span>Strom Akonto Juli 2026</span></td>
+                        <td class="core-ledger-numeric">−1.248,00&nbsp;EUR</td>
+                        <td>{% status_badge "bank_transaction" "reviewed" %}</td>
+                        <td class="core-ledger-actions"><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Buchung von Wien Energie bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></td>
+                    </tr>
+                    <tr class="is-hovered">
+                        <td><input class="form-check-input" type="checkbox" aria-label="Buchung von Hausbetreuung Donau auswählen"></td>
+                        <td class="core-ledger-date"><time datetime="2026-07-29">29.07.2026</time></td>
+                        <td><strong>Hausbetreuung Donau GmbH</strong><br><span>Stiegenhausreinigung Bahngasse</span></td>
+                        <td class="core-ledger-numeric">−864,40&nbsp;EUR</td>
+                        <td><i class="bi bi-cursor" aria-hidden="true"></i> Hover-Vorschau</td>
+                        <td class="core-ledger-actions"><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Buchung von Hausbetreuung Donau öffnen" title="Buchung öffnen"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i></button></td>
+                    </tr>
+                    <tr class="is-selected" aria-selected="true">
+                        <td><input class="form-check-input" type="checkbox" checked aria-label="Ausgewählte Buchung von Mustermann auswählen"></td>
+                        <td class="core-ledger-date"><time datetime="2026-07-25">25.07.2026</time></td>
+                        <td><strong>Anna Mustermann</strong><br><span>Miete Juli 2026, Lehnergasse 18 / Top 12</span></td>
+                        <td class="core-ledger-numeric">+1.092,50&nbsp;EUR</td>
+                        <td><i class="bi bi-check-square" aria-hidden="true"></i> Ausgewählt</td>
+                        <td class="core-ledger-actions"><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Ausgewählte Buchung von Anna Mustermann bearbeiten" title="Buchung bearbeiten"><i class="bi bi-pencil" aria-hidden="true"></i></button></td>
+                    </tr>
+                    <tr class="is-error">
+                        <td><input class="form-check-input" type="checkbox" aria-label="Fehlerhafte Buchung von Gebäudeservice West auswählen"></td>
+                        <td class="core-ledger-date"><time datetime="2026-07-21">21.07.2026</time></td>
+                        <td>
+                            <strong>Gebäudeservice West GmbH</strong><br>
+                            <span class="core-ledger-truncate" tabindex="0" title="Jahreswartung der Heizungs-, Warmwasser- und Lüftungsanlage in der Liegenschaft Meidlinger Hauptstraße 44 einschließlich Anfahrt und Material" aria-label="Vollständiger Verwendungszweck: Jahreswartung der Heizungs-, Warmwasser- und Lüftungsanlage in der Liegenschaft Meidlinger Hauptstraße 44 einschließlich Anfahrt und Material">Jahreswartung der Heizungs-, Warmwasser- und Lüftungsanlage in der Liegenschaft Meidlinger Hauptstraße 44 einschließlich Anfahrt und Material</span>
+                        </td>
+                        <td class="core-ledger-numeric">−3.780,00&nbsp;EUR</td>
+                        <td><i class="bi bi-x-octagon" aria-hidden="true"></i> Fehler: Gegenkonto fehlt</td>
+                        <td class="core-ledger-actions"><button type="button" class="core-ledger-button core-ledger-button--quiet core-ledger-button--icon" aria-label="Fehlerhafte Buchung korrigieren" title="Buchung korrigieren"><i class="bi bi-exclamation-circle" aria-hidden="true"></i></button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="core-ledger-table-wrap">
+            <table class="core-ledger-table">
+                <caption>Leere Belegliste</caption>
+                <thead><tr><th scope="col">Datum</th><th scope="col">Beleg</th><th scope="col" class="core-ledger-numeric">Betrag</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td colspan="3">
+                            {% include "bookkeeping/new_ui/components/_empty_state.html" with empty_id="empty-table" title="Keine Belege in diesem Zeitraum" description="Für Juli 2026 wurden noch keine manuellen Belege erfasst." icon="bi-receipt" action_url="#dialog" action_label="Ersten Beleg erfassen" action_icon="bi-plus-lg" only %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section id="status" class="core-ledger-showcase-section" aria-labelledby="status-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="status-title">Zentrale Statusdarstellung</h2>
+            <p>Alle Beschriftungen stammen aus den vorhandenen Django-Auswahlwerten; die semantische Zuordnung erfolgt ausschließlich in der zentralen Registry.</p>
+        </div>
+
+        <div class="core-ledger-showcase-status-groups">
+            {% for group in status_groups %}
+                <section class="core-ledger-panel" aria-labelledby="status-group-{{ forloop.counter }}">
+                    <header class="core-ledger-panel__header"><h3 class="core-ledger-panel__title" id="status-group-{{ forloop.counter }}">{{ group.label }}</h3></header>
+                    <div class="core-ledger-showcase-badges">
+                        {% for status in group.statuses %}
+                            {% status_badge status.family status.value %}
+                        {% empty %}
+                            <span>Keine Statuswerte definiert.</span>
+                        {% endfor %}
+                    </div>
+                </section>
+            {% endfor %}
+            <section class="core-ledger-panel" aria-labelledby="status-unknown-title">
+                <header class="core-ledger-panel__header"><h3 class="core-ledger-panel__title" id="status-unknown-title">Unbekannter Fallback</h3></header>
+                <div class="core-ledger-showcase-badges">
+                    {% status_badge "bank_transaction" "nicht_bekannt" %}
+                    {% status_badge "nicht_bekannte_familie" "legacy_status" %}
+                </div>
+            </section>
+        </div>
+    </section>
+
+    <section id="meldungen" class="core-ledger-showcase-section" aria-labelledby="meldungen-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="meldungen-title">Meldungen und Leerzustand</h2>
+            <p>Semantische Symbole und konkrete Texte ergänzen die Farbe.</p>
+        </div>
+
+        <div class="core-ledger-showcase-alerts">
+            {% include "bookkeeping/new_ui/components/_alert.html" with variant="info" title="Import wird verarbeitet" message="Der Bankauszug 07/2026 wird geprüft. Diese Ansicht kann inzwischen verlassen werden." only %}
+            {% include "bookkeeping/new_ui/components/_alert.html" with variant="success" title="Buchung abgeschlossen" message="Die Buchung wurde gespeichert und für die Steuerberatung vorgemerkt." only %}
+            {% include "bookkeeping/new_ui/components/_alert.html" with variant="warning" title="Belegangaben unvollständig" message="Bitte Rechnungsdatum und Gegenkonto ergänzen, bevor die Buchung abgeschlossen wird." only %}
+            {% include "bookkeeping/new_ui/components/_alert.html" with variant="error" title="Paperless-Übertragung fehlgeschlagen" message="Die Verbindung war nicht erreichbar. Prüfen Sie die Zugangsdaten und starten Sie die Übertragung erneut." only %}
+        </div>
+
+        <div class="core-ledger-showcase-example">
+            {% include "bookkeeping/new_ui/components/_empty_state.html" with empty_id="empty-rules" title="Noch keine passende Matching-Regel" description="Für diesen Geschäftspartner ist keine automatische Kontierung eingerichtet. Die Buchung kann manuell bearbeitet oder eine wiederverwendbare Regel angelegt werden." icon="bi-sliders" action_url="#formular" action_label="Regel erstellen" action_icon="bi-plus-lg" only %}
+        </div>
+    </section>
+
+    <section id="karten" class="core-ledger-showcase-section" aria-labelledby="karten-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="karten-title">Karten und Bereiche</h2>
+            <p>Nur fachlich eigenständige Gruppen erhalten eine umschließende Fläche.</p>
+        </div>
+
+        <div class="core-ledger-showcase-card-grid">
+            <article class="core-ledger-card">
+                <header class="core-ledger-card__header"><h3 class="core-ledger-card__title">Offener Buchungszeitraum</h3></header>
+                <dl class="core-ledger-readonly">
+                    <div><dt>Zeitraum</dt><dd>3. Quartal 2026</dd></div>
+                    <div><dt>Bankbewegungen</dt><dd class="core-ledger-numeric">84</dd></div>
+                    <div><dt>Noch zu prüfen</dt><dd class="core-ledger-numeric">7</dd></div>
+                </dl>
+                <a class="core-ledger-button core-ledger-button--secondary" href="#tabellen">Offene Buchungen ansehen</a>
+            </article>
+
+            <section class="core-ledger-panel" aria-labelledby="panel-title">
+                <header class="core-ledger-panel__header"><h3 class="core-ledger-panel__title" id="panel-title">Prüfhinweise für die Quartalsübergabe</h3></header>
+                <ul>
+                    <li>Zwei Bankbewegungen besitzen noch keinen Beleg.</li>
+                    <li>Eine manuelle Rechnung wartet auf die Paperless-Übertragung.</li>
+                    <li>Der Anfangs- und Endsaldo des Bankauszugs stimmen überein.</li>
+                </ul>
+            </section>
+        </div>
+    </section>
+
+    <section id="dialog" class="core-ledger-showcase-section" aria-labelledby="dialog-title">
+        <div class="core-ledger-showcase-section__heading">
+            <h2 id="dialog-title">Standarddialog und Aktionsleiste</h2>
+            <p>Der Dialog nutzt das Bootstrap-Fokusmanagement; die Aktionsreihenfolge bleibt in Dialog und Seite konsistent.</p>
+        </div>
+
+        <div class="core-ledger-showcase-example">
+            <button type="button" class="core-ledger-button core-ledger-button--primary" data-bs-toggle="modal" data-bs-target="#showcase-form-modal">
+                <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                <span>Kurze Buchung im Dialog erfassen</span>
+            </button>
+        </div>
+
+        <div class="core-ledger-showcase-action-bars">
+            <section aria-labelledby="standard-action-bar-title">
+                <h3 id="standard-action-bar-title">Standard</h3>
+                {% include "bookkeeping/new_ui/components/_action_bar.html" with feedback="Alle Pflichtangaben sind vollständig." actions_template="bookkeeping/new_ui/showcase/_action_bar_actions.html" mode="standard" only %}
+            </section>
+            <section aria-labelledby="sticky-action-bar-title">
+                <h3 id="sticky-action-bar-title">Sticky für lange Formulare</h3>
+                {% include "bookkeeping/new_ui/components/_action_bar.html" with feedback="Eine ungespeicherte Änderung." actions_template="bookkeeping/new_ui/showcase/_action_bar_actions.html" mode="sticky" only %}
+            </section>
+        </div>
+    </section>
+
+    {% include "bookkeeping/new_ui/components/_form_modal.html" with modal_id="showcase-form-modal" title="Manuelle Buchung erfassen" description="Kurze Eingaben bleiben im aktuellen Arbeitskontext." body_template="bookkeeping/new_ui/showcase/_modal_form_body.html" form_method="get" submit_label="Buchung speichern" reopen_on_invalid=False only %}
+</div>
+{% endblock %}

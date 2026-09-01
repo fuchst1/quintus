@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     BankTransactionNoteView,
@@ -22,6 +22,10 @@ from .views import (
 
 
 urlpatterns = [
+    path(
+        'new-ui/',
+        include('bookkeeping.new_ui_urls', namespace='bookkeeping_new_ui'),
+    ),
     path('', BookkeepingOverviewView.as_view(), name='bookkeeping_overview'),
     path(
         'bank-statements/<int:pk>/delete/',

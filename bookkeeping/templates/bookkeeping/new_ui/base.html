@@ -1,0 +1,140 @@
+{% load static %}
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Quintus Buchhaltung{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'bookkeeping/css/new_ui/tokens.css' %}">
+    <link rel="stylesheet" href="{% static 'bookkeeping/css/new_ui/components.css' %}">
+    {% block extra_css %}{% endblock %}
+</head>
+<body class="core-ledger {% block body_class %}{% endblock %}">
+    <a class="core-ledger-skip-link" href="#core-ledger-main">Zum Inhalt springen</a>
+
+    <div class="core-ledger-shell">
+        <aside
+            class="core-ledger-sidebar offcanvas-md offcanvas-start"
+            id="core-ledger-navigation"
+            tabindex="-1"
+            aria-label="Buchhaltungsnavigation"
+        >
+            <div class="core-ledger-sidebar__header">
+                <a
+                    class="core-ledger-brand"
+                    href="{% url 'bookkeeping_overview' %}"
+                    aria-label="Quintus Buchhaltung – Dashboard"
+                    title="Quintus Buchhaltung"
+                >
+                    <span class="core-ledger-brand__mark" aria-hidden="true">Q</span>
+                    <span class="core-ledger-brand__copy">
+                        <span class="core-ledger-brand__name">Quintus</span>
+                        <span class="core-ledger-brand__area">Buchhaltung</span>
+                    </span>
+                </a>
+                <button
+                    type="button"
+                    class="core-ledger-sidebar__close core-ledger-button core-ledger-button--quiet core-ledger-button--icon d-md-none"
+                    data-bs-dismiss="offcanvas"
+                    aria-label="Navigation schließen"
+                    title="Navigation schließen"
+                >
+                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+            </div>
+
+            <div class="core-ledger-sidebar__body offcanvas-body">
+                <nav class="core-ledger-nav" aria-label="Buchhaltungsbereiche">
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'bookkeeping_overview' %}"
+                        aria-label="Dashboard"
+                        title="Dashboard"
+                        {% if request.resolver_match.url_name == 'bookkeeping_overview' and not request.GET.status %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-grid-1x2" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Dashboard</span>
+                    </a>
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'bookkeeping_overview' %}?status=bank_import#bank-import"
+                        aria-label="Bankimport"
+                        title="Bankimport"
+                        {% if request.resolver_match.url_name == 'bookkeeping_overview' and request.GET.status == 'bank_import' %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-upload" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Bankimport</span>
+                    </a>
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'manual_invoice_list' %}"
+                        aria-label="Manuelle Belege"
+                        title="Manuelle Belege"
+                        {% if request.resolver_match.url_name == 'manual_invoice_list' %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-receipt" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Manuelle Belege</span>
+                    </a>
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'bookkeeping_overview' %}?status=open"
+                        aria-label="Offene Vorgänge"
+                        title="Offene Vorgänge"
+                        {% if request.resolver_match.url_name == 'bookkeeping_overview' and request.GET.status == 'open' %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-inbox" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Offene Vorgänge</span>
+                    </a>
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'bookkeeping_overview' %}?status=reviewed"
+                        aria-label="Buchungsfertige Vorgänge"
+                        title="Buchungsfertige Vorgänge"
+                        {% if request.resolver_match.url_name == 'bookkeeping_overview' and request.GET.status == 'reviewed' or request.resolver_match.url_name == 'bookkeeping_overview' and request.GET.status == 'booked' %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-search" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Buchungsfertig</span>
+                    </a>
+                    <a
+                        class="core-ledger-nav__link"
+                        href="{% url 'matching_rule_list' %}"
+                        aria-label="Matching-Regeln"
+                        title="Matching-Regeln"
+                        {% if request.resolver_match.url_name == 'matching_rule_list' %}aria-current="page"{% endif %}
+                    >
+                        <i class="core-ledger-nav__icon bi bi-sliders" aria-hidden="true"></i>
+                        <span class="core-ledger-nav__label">Matching-Regeln</span>
+                    </a>
+                </nav>
+            </div>
+        </aside>
+
+        <div class="core-ledger-page">
+            <header class="core-ledger-mobile-header d-md-none">
+                <button
+                    type="button"
+                    class="core-ledger-mobile-header__menu"
+                    data-bs-toggle="offcanvas"
+                    data-bs-target="#core-ledger-navigation"
+                    aria-controls="core-ledger-navigation"
+                    aria-label="Navigation öffnen"
+                    title="Navigation öffnen"
+                >
+                    <i class="bi bi-list" aria-hidden="true"></i>
+                </button>
+                <span class="core-ledger-mobile-header__title">Quintus Buchhaltung</span>
+            </header>
+
+            <main class="core-ledger-main" id="core-ledger-main" tabindex="-1">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{% static 'bookkeeping/js/new_ui/components.js' %}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

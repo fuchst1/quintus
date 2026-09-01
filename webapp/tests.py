@@ -6780,7 +6780,10 @@ class ReminderUiIntegrationTests(TestCase):
         )
         self.lease.index_type = LeaseAgreement.IndexType.VPI
         self.lease.last_index_adjustment = timezone.localdate()
-        self.lease.save(update_fields=["index_type", "last_index_adjustment"])
+        self.lease.exit_date = timezone.localdate() + timedelta(days=30)
+        self.lease.save(
+            update_fields=["index_type", "last_index_adjustment", "exit_date"]
+        )
 
         response = self.client.get(reverse("lease_list"))
 

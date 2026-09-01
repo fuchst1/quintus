@@ -647,6 +647,66 @@ class BookkeepingOverviewFilteringTests(TestCase):
             {"Offen", "Unvollständig"},
         )
 
+    def test_ready_rows_derive_missing_receipt_from_direct_uploads(self):
+        missing = self.create_transaction(
+            date(2026, 7, 15),
+            BankTransaction.Status.REVIEWED,
+            "Ohne Upload",
+        )
+        uploaded = self.create_transaction(
+            date(2026, 7, 16),
+            BankTransaction.Status.REVIEWED,
+            "Mit Upload",
+        )
+        matching_only = self.create_transaction(
+            date(2026, 7, 17),
+            BankTransaction.Status.REVIEWED,
+            "Nur Matching-Nachweis",
+        )
+        for transaction in (missing, uploaded, matching_only):
+            BookingEntry.objects.create(
+                bank_transaction=transaction,
+                receipt_group="BK",
+                receipt_number="7",
+                payment_date=transaction.booking_date,
+                booking_text=transaction.partner_name,
+                partner_name=transaction.partner_name,
+                gross_amount=transaction.amount,
+                vat_symbol="20",
+                category="7600",
+            )
+        SupportingDocument.objects.create(
+            bank_transaction=uploaded,
+            original_filename="upload.pdf",
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+        rule = MatchingRule.objects.create(
+            name="Nachweis ist kein Buchungsbeleg",
+            direction=MatchingRule.Direction.INCOMING,
+            match_type=MatchingRule.MatchType.REGEX,
+            text_pattern="Nachweis",
+        )
+        matching_only.matched_rule = rule
+        matching_only.save(update_fields=("matched_rule",))
+        SupportingDocument.objects.create(
+            matching_rule=rule,
+            original_filename="nachweis.pdf",
+            transfer_status=SupportingDocument.TransferStatus.COMPLETED,
+            paperless_document_id=701,
+        )
+
+        response = self.get_overview(
+            status=BankTransaction.Status.REVIEWED,
+            period_type="month",
+            period="2026-07",
+        )
+        rows = {row["name"]: row for row in response.context["transactions"]}
+
+        self.assertTrue(rows["Ohne Upload"]["receipt_missing"])
+        self.assertFalse(rows["Mit Upload"]["receipt_missing"])
+        self.assertTrue(rows["Nur Matching-Nachweis"]["receipt_missing"])
+        self.assertContains(response, "Beleg fehlt")
+
     def test_open_filter_shows_matching_button(self):
         response = self.get_overview(status="open")
 
@@ -1630,12 +1690,70 @@ class BookkeepingDashboardTests(TestCase):
         self.assertEqual(steps[0]["problem"], "Kontoauszug fehlt")
         self.assertTrue(any(step["url"].startswith("/bookkeeping/transactions/") for step in steps))
 
-    def test_missing_receipts_counts_empty_receipt_fields(self):
+    def test_missing_receipts_follow_document_upload_instead_of_receipt_metadata(self):
         transaction = self.transaction(status=BankTransaction.Status.REVIEWED)
-        self.entry(transaction, receipt=False)
+        self.entry(transaction, receipt=True)
+
         response = self.overview(period="2026-07")
+
         self.assertEqual(response.context["dashboard_missing_receipts"], 1)
         self.assertContains(response, "Belege fehlen")
+        self.assertIn("status=reviewed", response.context["dashboard_missing_receipts_url"])
+        self.assertEqual(
+            [
+                step["problem"]
+                for step in response.context["dashboard_next_steps"]
+                if step["problem"] == "Erforderlicher Beleg fehlt"
+            ],
+            ["Erforderlicher Beleg fehlt"],
+        )
+
+        SupportingDocument.objects.create(
+            bank_transaction=transaction,
+            original_filename="beleg.pdf",
+            transfer_status=SupportingDocument.TransferStatus.PENDING,
+        )
+        uploaded_response = self.overview(period="2026-07")
+
+        self.assertEqual(uploaded_response.context["dashboard_missing_receipts"], 0)
+        self.assertFalse(
+            any(
+                step["problem"] == "Erforderlicher Beleg fehlt"
+                for step in uploaded_response.context["dashboard_next_steps"]
+            )
+        )
+
+    def test_split_booking_creates_one_missing_receipt_task(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED)
+        self.entry(transaction, amount="4.00")
+        self.entry(transaction, amount="6.00", category="4851")
+
+        response = self.overview(period="2026-07")
+        missing_steps = [
+            step
+            for step in response.context["dashboard_next_steps"]
+            if step["problem"] == "Erforderlicher Beleg fehlt"
+        ]
+
+        self.assertEqual(response.context["dashboard_missing_receipts"], 1)
+        self.assertEqual(len(missing_steps), 1)
+
+    def test_failed_receipt_upload_is_reported_as_failure_not_missing(self):
+        transaction = self.transaction(status=BankTransaction.Status.REVIEWED)
+        self.entry(transaction)
+        SupportingDocument.objects.create(
+            bank_transaction=transaction,
+            original_filename="beleg.pdf",
+            transfer_status=SupportingDocument.TransferStatus.FAILED,
+            transfer_error="Paperless nicht erreichbar",
+        )
+
+        response = self.overview(period="2026-07")
+        problems = [step["problem"] for step in response.context["dashboard_next_steps"]]
+
+        self.assertEqual(response.context["dashboard_missing_receipts"], 0)
+        self.assertIn("Paperless-Upload fehlgeschlagen", problems)
+        self.assertNotIn("Erforderlicher Beleg fehlt", problems)
 
     def test_empty_dashboard_has_explicit_empty_messages_and_actions(self):
         response = self.overview()
@@ -2173,9 +2291,19 @@ class AccountantPackageTests(TestCase):
         deleted.refresh_from_db()
         self.assertEqual(deleted.paperless_status, ManualInvoice.PaperlessStatus.DELETED)
 
-    def test_bank_document_is_included_but_missing_bank_document_is_not_a_warning(self):
+    def test_bank_document_is_included_and_missing_bank_document_is_a_warning(self):
         transaction = self.transaction(date(2026, 8, 15))
         self.entry(transaction, date(2026, 8, 15))
+        missing_transaction = self.transaction(
+            date(2026, 8, 16),
+            amount=Decimal("25.00"),
+            partner_name="Ohne Beleg",
+        )
+        self.entry(
+            missing_transaction,
+            date(2026, 8, 16),
+            amount=Decimal("25.00"),
+        )
         document = SupportingDocument.objects.create(
             bank_transaction=transaction,
             original_filename="Beleg mit / Pfad.pdf",
@@ -2198,11 +2326,16 @@ class AccountantPackageTests(TestCase):
 
         self.assertEqual(download.call_args_list[0].args, (document.paperless_document_id,))
         self.assertTrue(any(name.startswith("Bankbelege/") for name in contents))
-        self.assertFalse(
+        self.assertTrue(
             any(
-                row["Typ"] == "Bankbeleg" and row["Status"] == "Fehlend"
+                row["Typ"] == "Bankbeleg" and row["Status"] == "Beleg fehlt"
                 for row in rows
             )
+        )
+        self.assertFalse(result.preview["complete"])
+        self.assertIn(
+            "Für diese Buchung wurde kein Beleg hochgeladen.",
+            result.preview["warning_items"],
         )
 
     def test_quarter_includes_three_statements_and_missing_statement_is_warning(self):
@@ -5445,7 +5578,7 @@ class BookingEntryTests(TestCase):
         self.assertEqual(content.count(">Abbrechen</a>"), 1)
         self.assertNotIn("<details", content)
         self.assertNotIn("<summary", content)
-        self.assertContains(response, "Kein Beleg hinterlegt")
+        self.assertContains(response, "Beleg fehlt")
         self.assertContains(response, "Beleg hochladen")
         self.assertContains(response, "PDF-Beleg")
         self.assertContains(response, "Originale Banktransaktion")
